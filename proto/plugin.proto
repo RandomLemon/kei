@@ -1,0 +1,219 @@
+// 外部插件 gRPC 协议。
+//
+// 拓扑：核心进程只作为 gRPC **Server** 提供 BotService，外部插件进程作为客户端
+// 主动连接核心（监听地址来自插件配置 plugins.<name>.grpc_addr），并在自己一侧
+// 作为 **Server** 提供 PluginService：
+//
+//   - BotService：核心实现，插件调用，用于发消息、读配置、写日志；
+//   - PluginService：外部插件进程实现，核心主动 dial 后调用，用于初始化、
+//     投递事件与关闭插件。
+//
+// 因此本文件中 BotService 的客户端由外部插件使用，PluginService 的客户端由核心
+// 的插件加载器使用。字段命名与 pkg/bot 的 Go 类型一一对应，JSON 载荷统一用
+// 「JSON 字符串」承载，以避免 proto 与业务结构体之间的强耦合（业务结构体可独立演进）。
+syntax = "proto3";
+
+package plugin;
+
+option go_package = "github.com/RandomLemon/kei/proto/pluginpb";
+
+// Empty 是无字段的占位消息，用于无返回值或无需参数的 RPC。
+message Empty {}
+
+// ---------- PluginService（外部插件进程实现，核心 dial 后调用） ----------
+
+// InitRequest 是核心在连接插件后下发的初始化参数。
+//
+// 每个字段都是「核心交给插件」的信息，而非插件对自身的描述：插件名、版本等
+// 元信息由核心从配置中读取后下发，令牌与配置也由核心注入。
+message InitRequest {
+  // name 是核心为该插件配置的名称，插件应以它作为自身标识。
+  string name = 1;
+  // version 是核心记录的插件版本，仅用于日志与展示。
+  string version = 2;
+  // author 是核心记录的插件作者，仅用于展示。
+  string author = 3;
+  // description 是核心记录的插件说明，仅用于展示。
+  string description = 4;
+  // permissions 是核心授予该插件的权限列表。
+  repeated string permissions = 5;
+  // config_json 是核心下发的该插件配置，JSON object 字符串；无配置时为空串。
+  string config_json = 6;
+  // token 是核心分配给该插件的认证令牌，后续 BotService 调用都需携带。
+  string token = 7;
+  // reply_service_addr 是核心 BotService 的监听地址，插件据此反向调用核心。
+  string reply_service_addr = 8;
+}
+
+// InitResponse 是插件对初始化的应答。
+message InitResponse {
+  // ok 表示插件是否初始化成功。
+  bool ok = 1;
+  // error 是失败原因，ok 为 true 时为空。
+  string error = 2;
+}
+
+// Event 是核心投递给插件的平台无关事件，对应 bot.Event。
+message Event {
+  // id 是事件唯一标识，用于去重。
+  string id = 1;
+  // type 是事件分类：message/notice/request/meta。
+  string type = 2;
+  // platform 是产生事件的平台名，与适配器名一致。
+  string platform = 3;
+  // bot_id 是接收该事件的机器人标识。
+  string bot_id = 4;
+  // time_unix_ms 是事件发生时间，Unix 毫秒（UTC）。
+  int64 time_unix_ms = 5;
+  // message 是消息内容，仅在 type 为 message 时存在。
+  Message message = 6;
+  // sender 是消息发送者，可能缺省。
+  User sender = 7;
+  // channel 是消息所在会话，私聊时可能缺省。
+  Channel channel = 8;
+  // command 是解析后的命令，未触发命令时缺省。
+  Command command = 9;
+  // raw_json 是平台原始事件，JSON 字符串，仅用于调试。
+  string raw_json = 10;
+}
+
+// Message 是平台无关的消息，对应 bot.Message。
+message Message {
+  // id 是消息 ID，发送前可为空。
+  string id = 1;
+  // kind 是会话类型：private/group/channel。
+  string kind = 2;
+  // segments 是按顺序排列的消息段。
+  repeated Segment segments = 3;
+}
+
+// Segment 是消息的一个片段，对应 bot.Segment。
+message Segment {
+  // type 是片段类型：text/image/at/face/reply/markdown/card/file。
+  string type = 1;
+  // data_json 是片段数据，JSON object 字符串，键名见 pkg/bot 的 Key* 常量。
+  string data_json = 2;
+}
+
+// User 是消息发送者或 @ 的目标用户，对应 bot.User。
+message User {
+  // id 是平台内的用户唯一标识。
+  string id = 1;
+  // name 是用户显示名。
+  string name = 2;
+  // is_bot 表示该用户是否为机器人。
+  bool is_bot = 3;
+}
+
+// Channel 是消息所在的会话，对应 bot.Channel。
+message Channel {
+  // id 是平台内的会话唯一标识。
+  string id = 1;
+  // name 是会话显示名。
+  string name = 2;
+  // kind 是会话类型：private/group/channel。
+  string kind = 3;
+}
+
+// Command 是解析后的命令，对应 bot.Command。
+message Command {
+  // name 是命令名，不含前缀。
+  string name = 1;
+  // args 是命令参数，保持原样不做拆分。
+  repeated string args = 2;
+  // raw 是命令的原始文本。
+  string raw = 3;
+}
+
+// HandleResult 是插件处理事件的应答。
+message HandleResult {
+  // handled 表示插件是否消费了该事件。
+  bool handled = 1;
+  // error 是处理失败原因，成功时为空。
+  string error = 2;
+}
+
+// ---------- BotService（核心实现，插件调用） ----------
+
+// SendRequest 是插件请求核心发送消息的请求。
+message SendRequest {
+  // token 是插件在 Init 阶段获得的认证令牌，必填。
+  string token = 1;
+  // target 是消息接收方。
+  Target target = 2;
+  // message 是待发送的统一消息。
+  Message message = 3;
+  // reply_to 非空时表示引用回复该消息 ID。
+  string reply_to = 4;
+}
+
+// Target 描述消息接收方，对应 bot.Target。
+message Target {
+  // platform 是平台名。
+  string platform = 1;
+  // channel_id 是群/频道 ID，私聊时可为空。
+  string channel_id = 2;
+  // user_id 是用户 ID，群聊时可为空。
+  string user_id = 3;
+  // kind 是会话类型：private/group/channel。
+  string kind = 4;
+  // bot_id 是机器人标识（核心配置中的 bot 名称）；为空时由核心按平台自动选择
+  // （该平台只有一个 bot 时可用），同平台多个 bot 时必须显式指定。
+  string bot_id = 5;
+}
+
+// SendResponse 是发送结果的应答。
+message SendResponse {
+  // message_id 是平台返回的消息 ID，发送失败时为空。
+  string message_id = 1;
+  // error 是发送失败原因，成功时为空。
+  string error = 2;
+}
+
+// GetConfigRequest 是插件读取自身配置的请求。
+message GetConfigRequest {
+  // token 是插件令牌，必填。
+  string token = 1;
+  // key 是配置键，支持 "a.b.c" 多级路径；为空表示读取整份配置。
+  string key = 2;
+}
+
+// GetConfigResponse 是配置读取的应答。
+message GetConfigResponse {
+  // found 表示配置或键是否存在。
+  bool found = 1;
+  // value_json 是配置值的 JSON 字符串，found 为 false 时为空。
+  string value_json = 2;
+}
+
+// LogRequest 是插件写入核心日志的请求。
+message LogRequest {
+  // token 是插件令牌，必填。
+  string token = 1;
+  // level 是日志级别：debug/info/warn/error，未知取值按 info 处理。
+  string level = 2;
+  // message 是日志正文。
+  string message = 3;
+  // fields_json 是结构化字段，JSON object 字符串。
+  string fields_json = 4;
+}
+
+// PluginService 由外部插件实现，核心调用。
+service PluginService {
+  // Init 初始化插件并下发生效配置与令牌。
+  rpc Init(InitRequest) returns (InitResponse);
+  // HandleEvent 把事件投递给插件处理。
+  rpc HandleEvent(Event) returns (HandleResult);
+  // Shutdown 通知插件退出，插件需释放资源并尽快返回。
+  rpc Shutdown(Empty) returns (Empty);
+}
+
+// BotService 由核心实现，插件调用。
+service BotService {
+  // SendMessage 以插件身份发送消息，需要 send_message 权限。
+  rpc SendMessage(SendRequest) returns (SendResponse);
+  // GetConfig 读取插件自身的配置。
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  // Log 以插件身份写入核心结构化日志。
+  rpc Log(LogRequest) returns (Empty);
+}

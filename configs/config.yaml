@@ -1,0 +1,91 @@
+# kei 示例配置。
+#
+# 所有键都可以用环境变量覆盖，规则见 README「配置」一节：
+#   KEI_LOG_LEVEL=debug
+#   KEI_METRICS_ADDR=127.0.0.1:9090
+#   KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx     # 替换 bots 中 name=feishu-main 的 app_secret
+#   KEI_PLUGINS_WEATHER_API_KEY=xxx
+#   KEI_AUTH_ADMIN_USERS=ou_xxx,123456
+
+log:
+  level: info    # debug | info | warn | error
+  format: text   # text | json
+
+# Prometheus 指标与健康检查；addr 为空表示不暴露。
+metrics:
+  addr: 127.0.0.1:19090
+
+# 限流：0 表示不限制。
+limits:
+  handler_rate: 0    # 每用户每秒允许处理的规则次数
+  handler_burst: 0
+  send_rate: 0       # 每个 bot 每秒允许发送的条数
+  send_burst: 0
+
+# Auth 中间件的管理员名单（用户 ID），配合 bot.WithAdmin() 规则使用。
+auth:
+  admin_users: []
+
+# 外部插件（gRPC）通道：addr 非空时启动 BotService，供外部插件回调核心。
+grpc:
+  addr: ""
+  cert_file: ""
+  key_file: ""
+  ca_file: ""
+
+bots:
+  # Mock 适配器：本地联调用，通过 HTTP 控制面手动注入事件并观察发送结果。
+  #   curl -XPOST 127.0.0.1:18080/inject -d '{"text":"/echo hello"}'
+  #   curl 127.0.0.1:18080/sent
+  - name: mock-main
+    adapter: mock
+    platform: mock
+    listen_addr: 127.0.0.1:18080
+
+  # 飞书：在开放平台把事件订阅地址配置为 https://<你的域名>/feishu/event，
+  # 并把 verification_token / encrypt_key 填成开放平台上的值。
+  # app_secret 建议用 KEI_BOTS_FEISHU_MAIN_APP_SECRET 覆盖而不是写在文件里。
+  - name: feishu-main
+    adapter: feishu
+    app_id: cli_xxx
+    app_secret: xxx
+    verification_token: xxx
+    encrypt_key: ""
+    listen_addr: 127.0.0.1:18081
+    path: /feishu/event
+
+  # OneBot v11（HTTP 上报 + HTTP API）：需要 OneBot 实现把事件上报到
+  # http://127.0.0.1:18082/onebot/event，并开放 HTTP API。
+  - name: qq-main
+    adapter: onebot
+    api_url: http://127.0.0.1:3000
+    listen_addr: 127.0.0.1:18082
+    path: /onebot/event
+    secret: ""
+    access_token: ""
+
+# 插件：未列出的插件一律不启用。
+plugins:
+  echo:
+    enabled: true
+
+  weather:
+    enabled: true
+    # 默认使用免密钥的 open-meteo；换供应商时覆盖下面几项。
+    # geocode_url: https://geocoding-api.open-meteo.com/v1/search
+    # forecast_url: https://api.open-meteo.com/v1/forecast
+    # api_key: xxx
+    # api_key_header: Authorization
+    # api_key_prefix: "Bearer "
+    # timeout: 8s
+
+  manage:
+    enabled: true
+    # plugins_admin_only: true   # /plugins 改为仅管理员可用（需配置 auth.admin_users）
+
+  # 外部插件示例（需要 grpc.addr 非空，插件进程见 cmd/example-plugin）：
+  # external-echo:
+  #   enabled: true
+  #   grpc_addr: 127.0.0.1:19071
+  #   token: change-me
+  #   greeting: 你好

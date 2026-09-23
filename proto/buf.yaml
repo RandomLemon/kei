@@ -1,0 +1,18 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # 协议由 AGENTS.md 第 12 节固定：包名必须为 "plugin"、文件位于 proto/ 根、
+    # 且 RPC 使用业务化类型名（HandleEvent(Event) returns HandleResult）。
+    # 外部插件按该签名实现，不能为满足 lint 风格规则而改名。
+    - PACKAGE_DIRECTORY_MATCH
+    - PACKAGE_VERSION_SUFFIX
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+breaking:
+  use:
+    - FILE

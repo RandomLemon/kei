@@ -1,0 +1,19 @@
+# direnv / nix
+.direnv/
+result
+result-*
+
+# go
+/bin/
+*.test
+*.out
+coverage.txt
+
+# 本地运行产物
+/data/
+*.log
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
