@@ -13,14 +13,23 @@ type fakeCatalog struct{ metas []bot.Metadata }
 
 func (f fakeCatalog) Plugins() []bot.Metadata { return f.metas }
 
+type fakeAdapterCatalog struct{ infos []bot.AdapterInfo }
+
+func (f fakeAdapterCatalog) Adapters() []bot.AdapterInfo { return f.infos }
+
 func setup(t *testing.T, cfg map[string]any, catalog bot.PluginCatalog) *bot.RecordingRegistrar {
+	return setupWithAdapters(t, cfg, catalog, nil)
+}
+
+func setupWithAdapters(t *testing.T, cfg map[string]any, catalog bot.PluginCatalog, adapters bot.AdapterCatalog) *bot.RecordingRegistrar {
 	t.Helper()
 	reg := bot.NewRecordingRegistrar()
 	pc := bot.PluginContext{
-		Name:    "manage",
-		Config:  bot.NewConfig(cfg),
-		Logger:  slog.New(slog.DiscardHandler),
-		Catalog: catalog,
+		Name:     "manage",
+		Config:   bot.NewConfig(cfg),
+		Logger:   slog.New(slog.DiscardHandler),
+		Catalog:  catalog,
+		Adapters: adapters,
 	}
 	ctx := bot.WithPluginContext(context.Background(), pc)
 	if err := (&Plugin{}).Setup(ctx, reg); err != nil {
@@ -90,6 +99,48 @@ func TestPluginListing(t *testing.T) {
 	})
 }
 
+func TestAdapterListing(t *testing.T) {
+	const name = "manage-test-adapter"
+	bot.RegisterAdapter(bot.AdapterMetadata{
+		Name:        name,
+		Version:     "v9.9",
+		Author:      "core",
+		Description: "测试适配器",
+		Platforms:   []string{"testplat"},
+		Permissions: []bot.Permission{bot.PermNetwork, bot.PermNetListen},
+	}, func(bot.AdapterContext) (bot.Adapter, error) { return nil, nil })
+
+	t.Run("注册表与绑定信息", func(t *testing.T) {
+		catalog := fakeAdapterCatalog{infos: []bot.AdapterInfo{
+			{BotID: "test-internal", Metadata: bot.AdapterMetadata{Name: name, Platforms: []string{"testplat"}}},
+			{BotID: "test-external", Metadata: bot.AdapterMetadata{Name: "ext-adapter"}, External: true},
+		}}
+		reg := setupWithAdapters(t, nil, nil, catalog)
+		got := invoke(t, reg, "adapters")
+
+		for _, want := range []string{name, "testplat", "network,net_listen", "测试适配器",
+			"test-internal → " + name + "（进程内）", "test-external → ext-adapter（外部 gRPC）"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("回复缺少 %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("无适配器目录", func(t *testing.T) {
+		reg := setupWithAdapters(t, nil, nil, nil)
+		if got := invoke(t, reg, "adapters"); !strings.Contains(got, "绑定信息不可用") {
+			t.Fatalf("回复 = %q", got)
+		}
+	})
+
+	t.Run("空绑定列表", func(t *testing.T) {
+		reg := setupWithAdapters(t, nil, nil, fakeAdapterCatalog{})
+		if got := invoke(t, reg, "adapters"); !strings.Contains(got, "没有已绑定的适配器实例") {
+			t.Fatalf("回复 = %q", got)
+		}
+	})
+}
+
 func TestAdminRules(t *testing.T) {
 	t.Run("默认仅 /admin 需要管理员", func(t *testing.T) {
 		reg := setup(t, nil, nil)
@@ -115,7 +166,7 @@ func TestAdminRules(t *testing.T) {
 
 func TestPriorityBeatsFallbackPlugins(t *testing.T) {
 	reg := setup(t, nil, nil)
-	for _, cmd := range []string{"ping", "version", "plugins", "admin"} {
+	for _, cmd := range []string{"ping", "version", "plugins", "adapters", "admin"} {
 		rule, ok := reg.Command(cmd)
 		if !ok {
 			t.Fatalf("缺少命令 %s", cmd)

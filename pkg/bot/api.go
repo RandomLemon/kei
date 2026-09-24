@@ -68,6 +68,8 @@ type PluginContext struct {
 	Bot BotAPI
 	// Catalog 提供插件列表，可能为 nil。
 	Catalog PluginCatalog
+	// Adapters 提供已加载适配器列表，可能为 nil。
+	Adapters AdapterCatalog
 }
 
 // Config 是插件的独立配置，来自 configs 中该插件名下的键值。

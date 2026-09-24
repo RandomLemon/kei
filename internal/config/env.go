@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -79,6 +80,8 @@ func applyEnvPath(c *Config, botNames []string, segments []string, key, value st
 		applyBotEnv(c, botNames, full[len("bots_"):], value)
 	case strings.HasPrefix(full, "plugins_"):
 		applyPluginEnv(c, full[len("plugins_"):], value)
+	case strings.HasPrefix(full, "adapters_"):
+		return applyAdapterEnv(c, full[len("adapters_"):], value)
 	}
 	return nil
 }
@@ -160,6 +163,68 @@ func applyPluginEnv(c *Config, rest, value string) {
 		setSetting(&pc.Settings, tail, value)
 		c.Plugins[name] = pc
 	}
+}
+
+// applyAdapterEnv 处理 KEI_ADAPTERS_<NAME>_... 形式的覆盖。
+//
+// 只有配置中已存在的适配器名才会被命中，未知适配器名一律忽略。
+// 同时命中多个适配器时取名字规范化后最长者，长度相同时全部应用。
+func applyAdapterEnv(c *Config, rest, value string) error {
+	best, tail := -1, ""
+	var names []string
+	for name := range c.Adapters {
+		canonical := canonicalName(name)
+		if canonical == "" {
+			continue
+		}
+		prefix := canonical + "_"
+		if len(rest) <= len(prefix) || !strings.HasPrefix(rest, prefix) {
+			continue
+		}
+		if len(canonical) > best {
+			best = len(canonical)
+			names = names[:0]
+		}
+		if len(canonical) == best {
+			names = append(names, name)
+			tail = rest[len(prefix):]
+		}
+	}
+	for _, name := range names {
+		ac := c.Adapters[name]
+		switch tail {
+		case "grpc_addr":
+			ac.GrpcAddr = value
+		case "token":
+			ac.Token = value
+		case "platform":
+			ac.Platform = value
+		case "permissions":
+			ac.Permissions = splitList(value)
+		case "timeout":
+			d, err := parseDurationValue(tail, value)
+			if err != nil {
+				return fmt.Errorf("config: 环境变量 KEI_ADAPTERS_%s_%s: %w", strings.ToUpper(name), strings.ToUpper(tail), err)
+			}
+			ac.Timeout = d
+		default:
+			setSetting(&ac.Settings, tail, value)
+		}
+		c.Adapters[name] = ac
+	}
+	return nil
+}
+
+// parseDurationValue 解析环境变量中的时长：先按 time.ParseDuration，
+// 纯数字按秒处理；两者都失败时报错。
+func parseDurationValue(field, value string) (time.Duration, error) {
+	if d, err := time.ParseDuration(strings.TrimSpace(value)); err == nil {
+		return d, nil
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+		return time.Duration(n) * time.Second, nil
+	}
+	return 0, fmt.Errorf("需要时长（如 10s），实际为 %q", value)
 }
 
 // setSetting 写入一个 Settings 键。path 是规范化后的路径（小写下划线形式）。

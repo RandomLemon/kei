@@ -39,14 +39,17 @@ QQ / 飞书 / OneBot / Mock
 ```
 cmd/bot/                 入口：加载配置、装配适配器与插件、优雅退出
 cmd/example-plugin/      Go 外部插件示例（独立进程）
-pkg/bot/                 公开 SDK：Event/Message/Adapter/Plugin/Registrar/Reply/BotAPI
+cmd/example-adapter/     Go 外部适配器示例（独立进程）
+pkg/bot/                 公开 SDK：Event/Message/Adapter 注册表/Plugin/Registrar/Reply/BotAPI
 pkg/message/             消息段构建器
 internal/engine/         核心引擎（BotAPI 实现、发送限流与重试、优雅关闭）
 internal/eventbus/       事件总线（分片保序、去重、drain）
 internal/router/         路由匹配与 Registrar 实现
 internal/middleware/     中间件（Recover/Logger/Metrics/Timeout/Auth/RateLimit/Dedup）
 internal/metrics/        Prometheus 文本指标（标准库实现）
-internal/pluginmgr/      插件生命周期管理 + gRPC 外部插件加载 / BotService 服务端
+internal/pluginmgr/      插件生命周期管理 + gRPC 外部插件加载
+internal/adaptermgr/     适配器装配：注册表查表、权限裁剪、外部适配器通道
+internal/grpcsrv/        BotService gRPC 服务端（插件与外部适配器共用）
 internal/config/         YAML 配置加载与环境变量覆盖
 internal/storage/        bot.Storage 内存实现
 internal/dedup/          带 TTL 与容量的去重集合
@@ -56,8 +59,9 @@ adapters/onebot/         OneBot v11（HTTP 上报 + HTTP API）
 adapters/feishu/         飞书开放平台（事件订阅回调 + 消息发送）
 plugins/echo/            示例插件：/echo
 plugins/weather/         示例插件：外部 HTTP 调用 + 多轮对话
-plugins/manage/          管理命令：/ping、/version、/plugins、/admin
-proto/plugin.proto       外部插件 gRPC 协议（含生成代码 proto/pluginpb）
+plugins/manage/          管理命令：/ping、/version、/plugins、/adapters、/admin
+proto/plugin.proto       外部插件 gRPC 协议 + BotService（含生成代码 proto/pluginpb）
+proto/adapter.proto      外部适配器 gRPC 协议（同 package，复用 plugin.proto 消息）
 configs/config.yaml      示例配置
 ```
 
@@ -102,7 +106,7 @@ curl -sS -XPOST 127.0.0.1:18080/inject \
 # {"event_id":"mock-..."}
 
 # 3) 查看机器人实际发出的消息
-curl -sS 127.0.0.1:18080/sent | jq '.[0].Request.Message.segments'
+curl -sS 127.0.0.1:18080/sent | jq '.[0].Request.Message.Segments'
 # [{"Type":"text","Data":{"text":"hello kei"}}]
 
 # 4) 查看指标
@@ -281,8 +285,118 @@ type Adapter interface {
 | `onebot` | HTTP 上报（`Authorization: Bearer <secret>`）+ HTTP API | 文本/图片/At/表情/引用/文件；不支持 Markdown、卡片 |
 | `feishu` | 事件订阅回调（challenge、签名校验、AES 解密、3s 内 ACK）+ 开放平台 API | 文本/Markdown/图片/At/卡片/引用/文件 |
 
-新增平台：实现 `Adapter`，放到 `adapters/<platform>`，然后在 `cmd/bot/main.go` 的
-`buildAdapter` 里加一个分支并登记配置键（`adapterSettings`）。适配器不依赖 `internal/`。
+适配器与插件一样由注册表驱动：适配器在自己的包内 `init()` 注册「元信息 + 工厂」，
+主程序只做空导入，`bots[].adapter` 按注册名装配。因此第三方适配器可以是独立包或
+独立 module（只依赖 `pkg/bot`），**核心仓库无需任何改动**。
+
+```go
+package myim
+
+func init() {
+	bot.RegisterAdapter(bot.AdapterMetadata{
+		Name:        "myim",
+		Version:     "v0.1.0",
+		Author:      "third-party",
+		Description: "MyIM 平台适配器",
+		Platforms:   []string{"myim"},                                 // 写入 Event.Platform
+		Permissions: []bot.Permission{bot.PermNetwork, bot.PermNetListen},
+		Options:     []string{"api_base", "listen_addr"},              // 未知配置键会告警
+	}, New)
+}
+
+// New 每个 bot 实例调用一次，必须是互相隔离的实例。
+func New(ac bot.AdapterContext) (bot.Adapter, error) {
+	if ac.HTTPClient == nil {
+		return nil, errors.New("myim: 未声明 network 权限")
+	}
+	return &Adapter{
+		botID:   ac.BotID,                                  // 必须写入 Event.BotID / SendRequest.BotID
+		apiBase: ac.Config.String("api_base", ""),
+		http:    ac.HTTPClient,
+		log:     ac.Logger.With("bot", ac.BotID, "adapter", "myim"),
+	}, nil
+}
+```
+
+启用只需空导入 + 配置：
+
+```yaml
+bots:
+  - name: myim-main
+    adapter: myim
+    api_base: https://im.example.com
+    listen_addr: 127.0.0.1:18091
+```
+
+权限由核心在装配期裁剪，声明必须如实：
+
+| 权限 | 拿到什么 | 未声明时 |
+| --- | --- | --- |
+| `network` | `AdapterContext.HTTPClient` | 为 `nil`，工厂应报错而不是回落到自带客户端 |
+| `storage` | `AdapterContext.Storage` | 注入拒绝式存储（`ErrPermissionDenied`） |
+| `net_listen` | 允许监听入站端口 | 配置里出现保留键 `listen_addr` 时启动失败 |
+| `receive_event` | 外部适配器经 `BotService.EmitEvent` 投递事件 | 该调用被拒绝 |
+
+`/adapters` 会列出已注册适配器与每个 bot 的绑定关系（含进程内/外部 gRPC 标记）。
+
+独立 module 形式（推荐给第三方）：
+
+```text
+kei-adapter-myim/
+├── go.mod      # require github.com/RandomLemon/kei
+├── myim.go     # 实现 bot.Adapter
+└── register.go # init() 中 RegisterAdapter
+```
+
+想用其他语言写适配器（独立进程 + gRPC）见下一节。
+
+## 外部适配器（gRPC）
+
+适配器也可以作为独立进程运行（Python/Node/Rust 均可按 `proto/adapter.proto` 实现）：
+
+- 核心提供 `BotService`（`EmitEvent`/`GetConfig`/`Log`），用 `token` 鉴权、可选 mTLS；
+- 核心作为客户端连接适配器进程的 `AdapterService`（`Init`/`Start`/`Stop`/`Send`/`Shutdown`），
+  `Init` 一次、每个绑定的 bot `Start` 一次，因此一个进程可服务多个 bot；
+- 事件上行只经 `BotService.EmitEvent`（需 `receive_event` 权限，归属校验由核心完成），
+  适配器要先 ACK 平台再投递；断连后核心按指数退避重连，达上限只停用相关 bot，主进程不受影响。
+
+1）在配置里声明外部适配器（`grpc.addr` 必须是固定端口）：
+
+```yaml
+grpc:
+  addr: 127.0.0.1:19070            # 核心 BotService 监听地址
+adapters:
+  example:
+    grpc_addr: 127.0.0.1:19071     # 适配器 AdapterService 地址
+    token: change-me               # 必填
+    platform: example              # 适配器上报多个平台时必填
+    timeout: 10s
+    permissions: [receive_event, network, net_listen]
+    listen_addr: 127.0.0.1:18091   # 其余键作为进程级配置下发
+bots:
+  - name: example-main
+    adapter: example
+```
+
+2）启动核心与适配器进程：
+
+```bash
+nix develop --command go run ./cmd/bot -config configs/config.yaml
+
+nix develop --command go run ./cmd/example-adapter \
+  -listen 127.0.0.1:19071 -platform example -control 127.0.0.1:19081
+
+# 模拟平台推来一条消息（适配器 ACK 后经 EmitEvent 投递，由插件回复）
+curl -sS -XPOST 127.0.0.1:19081/inject -H 'content-type: application/json' \
+  -d '{"bot_id":"example-main","text":"/echo hi from adapter"}'
+curl -sS '127.0.0.1:19081/sent?bot_id=example-main' \
+  | jq -r '.[-1].message.segments[0].data_json | fromjson | .text'
+# "hi from adapter"
+```
+
+适配器进程的 `-listen`/`-platform`/`-control` 见 `cmd/example-adapter`：它实现了
+`AdapterService`，把 `/inject` 收到的文本包装成 `bot.Event` 经 `EmitEvent` 投递，
+并记录收到的发送请求。真实适配器把它换成平台 SDK 调用即可。
 
 ## 外部插件（gRPC）
 

@@ -1,6 +1,6 @@
 // Package external 实现外部插件 gRPC 协议中「核心侧」的插件加载通道。
 //
-// 本包与 internal/pluginmgr/grpcsrv 是一个协议的两端：
+// 本包与 internal/grpcsrv 是一个协议的两端：
 //   - grpcsrv 由核心提供 BotService，供插件反向调用；
 //   - 本包作为 gRPC 客户端连接插件进程的 PluginService，把事件投递给插件。
 //
@@ -34,7 +34,7 @@ import (
 
 // Config 是一个外部插件的连接与身份配置。
 //
-// Name 是核心侧对插件的唯一标识，同时也是 grpcsrv.TokenInfo.Plugin 的取值，
+// Name 是核心侧对插件的唯一标识，同时也是 grpcsrv.TokenInfo.Name 的取值，
 // 插件反向调用核心时据此确定自身身份与权限。
 type Config struct {
 	// Name 是插件名（配置键），也是核心侧 Metadata().Name。

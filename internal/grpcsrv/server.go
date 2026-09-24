@@ -1,11 +1,15 @@
-// Package grpcsrv 实现外部插件 gRPC 协议中「核心侧」的服务端。
+// Package grpcsrv 实现 gRPC 协议中「核心侧」的服务端，由外部插件与外部适配器共用。
 //
-// 本包只实现 proto/plugin.proto 中的 BotService（供外部插件反向调用核心），
-// 不实现 PluginService（那是外部插件进程自身的服务，由插件加载器作为客户端调用）。
+// 本包只实现 proto/plugin.proto 中的 BotService：外部插件与外部适配器都作为
+// 客户端反向调用核心。两侧其余的服务由各自的进程实现，核心作为客户端调用：
+//
+//   - PluginService：外部插件进程实现，由插件加载器 dial 后投递事件；
+//   - AdapterService：外部适配器进程实现，由适配器加载器 dial 后启停与发送。
 //
 // 数据流：
 //
 //	外部插件 --BotService.SendMessage--> 本包 --bot.BotAPI.Send--> 适配器 --> 平台
+//	平台 --> 外部适配器 --BotService.EmitEvent--> 本包 --Options.EmitEvent--> EventBus
 package grpcsrv
 
 import (
@@ -28,11 +32,39 @@ import (
 	"github.com/RandomLemon/kei/proto/pluginpb"
 )
 
-// TokenInfo 描述一个插件令牌对应的身份与权限。
+// TokenKind 是令牌持有者的类别，决定其可使用哪些 RPC 与身份校验规则。
+type TokenKind string
+
+const (
+	// TokenPlugin 表示令牌属于一个外部插件。
+	TokenPlugin TokenKind = "plugin"
+	// TokenAdapter 表示令牌属于一个外部适配器。
+	TokenAdapter TokenKind = "adapter"
+)
+
+// Label 返回该类别的中文称谓，用于错误信息与日志正文。
+func (k TokenKind) Label() string {
+	if k == TokenAdapter {
+		return "适配器"
+	}
+	return "插件"
+}
+
+// Field 返回该类别在结构化日志中的字段名。
+func (k TokenKind) Field() string {
+	if k == TokenAdapter {
+		return "adapter"
+	}
+	return "plugin"
+}
+
+// TokenInfo 描述一个令牌对应的身份、类别与权限。
 type TokenInfo struct {
-	// Plugin 是 token 对应的插件名，也是其在 Configs 中的键。
-	Plugin string
-	// Permissions 是该插件被授予的权限。
+	// Name 是 token 对应的插件或适配器名，也是其在 Configs 中的键。
+	Name string
+	// Kind 是令牌持有者的类别，只能是 TokenPlugin 或 TokenAdapter。
+	Kind TokenKind
+	// Permissions 是该身份被授予的权限。
 	Permissions []bot.Permission
 }
 
@@ -40,30 +72,40 @@ type TokenInfo struct {
 type Options struct {
 	// Addr 是监听地址，支持 ":0" 表示由系统分配端口，必填。
 	Addr string
-	// Tokens 是 token 到插件信息的映射，非空 token 才能通过认证。
+	// Tokens 是 token 到身份信息的映射，非空 token 才能通过认证。
 	Tokens map[string]TokenInfo
 	// Bot 是 SendMessage 的落地实现，必填。
 	Bot bot.BotAPI
-	// Configs 是插件名到配置的映射，供 GetConfig 读取，可为 nil。
+	// Configs 是插件/适配器名到配置的映射，供 GetConfig 读取，可为 nil。
 	Configs map[string]*bot.Config
 	// Logger 是日志器，nil 时使用 slog.Default()。
 	Logger *slog.Logger
 	// TLS 非 nil 时启用 TLS；mTLS 由调用方在 tls.Config 中配置 ClientAuth。
 	TLS *tls.Config
+	// EmitEvent 是外部适配器上行事件的入口，nil 表示核心未接入事件通道。
+	EmitEvent EmitEventFunc
 }
+
+// EmitEventFunc 把外部适配器上报的事件投递给核心事件总线。
+//
+// adapter 是令牌身份对应的适配器名，ev 是已还原为统一事件的对象。
+// 返回值仅表示是否成功入队（事件已 ACK，不表示已被处理）；调用方必须快速返回，
+// 业务处理在事件总线的 worker 中进行，以免阻塞适配器的平台回调线程。
+type EmitEventFunc func(ctx context.Context, adapter string, ev *bot.Event) error
 
 // Server 是 BotService 的 gRPC 服务端。
 //
 // Server 持有并管理自己的 grpc.Server；Start 非阻塞，Stop 幂等。
 // Server 可安全地被多个 goroutine 并发调用。
 type Server struct {
-	addr     string
-	tokens   map[string]TokenInfo
-	configs  map[string]*bot.Config
-	botAPI   bot.BotAPI
-	logger   *slog.Logger
-	tlsConf  *tls.Config
-	listener net.Listener
+	addr      string
+	tokens    map[string]TokenInfo
+	configs   map[string]*bot.Config
+	botAPI    bot.BotAPI
+	logger    *slog.Logger
+	tlsConf   *tls.Config
+	emitEvent EmitEventFunc
+	listener  net.Listener
 
 	grpc *grpc.Server
 
@@ -87,14 +129,18 @@ func New(opts Options) (*Server, error) {
 // 此时忽略 opts.Addr；否则 Start 时按 opts.Addr 监听。
 func newServer(opts Options, ln net.Listener) (*Server, error) {
 	if opts.Addr == "" && ln == nil {
-		return nil, errors.New("pluginmgr/grpcsrv: Options.Addr 不能为空")
+		return nil, errors.New("grpcsrv: Options.Addr 不能为空")
 	}
 	if opts.Bot == nil {
-		return nil, errors.New("pluginmgr/grpcsrv: Options.Bot 不能为空")
+		return nil, errors.New("grpcsrv: Options.Bot 不能为空")
 	}
 
 	tokens := make(map[string]TokenInfo, len(opts.Tokens))
 	for k, v := range opts.Tokens {
+		if v.Kind != TokenPlugin && v.Kind != TokenAdapter {
+			return nil, fmt.Errorf("grpcsrv: token %q 的身份类别 %q 非法，只能是 %q 或 %q",
+				k, v.Kind, TokenPlugin, TokenAdapter)
+		}
 		v.Permissions = append([]bot.Permission(nil), v.Permissions...)
 		tokens[k] = v
 	}
@@ -109,13 +155,14 @@ func newServer(opts Options, ln net.Listener) (*Server, error) {
 	}
 
 	s := &Server{
-		addr:     opts.Addr,
-		tokens:   tokens,
-		configs:  configs,
-		botAPI:   opts.Bot,
-		logger:   logger,
-		tlsConf:  opts.TLS,
-		listener: ln,
+		addr:      opts.Addr,
+		tokens:    tokens,
+		configs:   configs,
+		botAPI:    opts.Bot,
+		logger:    logger,
+		tlsConf:   opts.TLS,
+		emitEvent: opts.EmitEvent,
+		listener:  ln,
 	}
 
 	var serverOpts []grpc.ServerOption
@@ -147,10 +194,10 @@ func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopped {
-		return errors.New("pluginmgr/grpcsrv: Server 已停止，不可重新启动")
+		return errors.New("grpcsrv: Server 已停止，不可重新启动")
 	}
 	if s.started {
-		return errors.New("pluginmgr/grpcsrv: Server 已启动")
+		return errors.New("grpcsrv: Server 已启动")
 	}
 
 	ln := s.listener
@@ -158,13 +205,13 @@ func (s *Server) Start() error {
 		var err error
 		ln, err = net.Listen("tcp", s.addr)
 		if err != nil {
-			return fmt.Errorf("pluginmgr/grpcsrv: 监听 %s: %w", s.addr, err)
+			return fmt.Errorf("grpcsrv: 监听 %s: %w", s.addr, err)
 		}
 	}
 	s.ln = ln
 	s.started = true
 
-	s.logger.Info("gRPC 插件服务端已启动",
+	s.logger.Info("gRPC BotService 已启动",
 		"addr", ln.Addr().String(),
 		"tls", s.tlsConf != nil,
 		"tokens", len(s.tokens),
@@ -174,7 +221,7 @@ func (s *Server) Start() error {
 		// Serve 在 Stop/GracefulStop 触发后返回，并自行关闭监听 socket；
 		// 该 goroutine 因此必然退出，不会泄漏。
 		if err := s.grpc.Serve(ln); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			s.logger.Error("gRPC 插件服务端异常退出", "err", err)
+			s.logger.Error("gRPC BotService 异常退出", "err", err)
 		}
 	}()
 	return nil
@@ -235,11 +282,11 @@ type botService struct {
 	srv *Server
 }
 
-// authenticate 校验 token 并返回对应插件信息；未知或空 token 返回 Unauthenticated。
+// authenticate 校验 token 并返回对应身份信息；未知或空 token 返回 Unauthenticated。
 func (s *Server) authenticate(token string) (TokenInfo, error) {
 	info, ok := s.tokens[token]
 	if !ok {
-		return TokenInfo{}, status.Error(codes.Unauthenticated, "未认证的插件令牌")
+		return TokenInfo{}, status.Error(codes.Unauthenticated, "未认证的令牌")
 	}
 	return info, nil
 }
@@ -270,7 +317,7 @@ func (b *botService) SendMessage(ctx context.Context, req *pluginpb.SendRequest)
 	meta := bot.Metadata{Permissions: info.Permissions}
 	if !meta.HasPermission(bot.PermSendMessage) {
 		return nil, status.Errorf(codes.PermissionDenied,
-			"插件 %s 缺少 %s 权限", info.Plugin, bot.PermSendMessage)
+			"%s %s 缺少 %s 权限", info.Kind.Label(), info.Name, bot.PermSendMessage)
 	}
 
 	msg, err := messageFromProto(req.GetMessage())
@@ -289,7 +336,7 @@ func (b *botService) SendMessage(ctx context.Context, req *pluginpb.SendRequest)
 			return nil, status.FromContextError(ctxErr).Err()
 		}
 		b.srv.logger.Warn("插件发送消息失败",
-			"plugin", info.Plugin,
+			"plugin", info.Name,
 			"platform", target.Platform,
 			"channel_id", target.ChannelID,
 			"user_id", target.UserID,
@@ -332,16 +379,17 @@ func (b *botService) send(ctx context.Context, target bot.Target, msg *bot.Messa
 	})
 }
 
-// GetConfig 读取插件自身的配置。
+// GetConfig 读取插件或适配器自身的配置。
 //
-// key 为空表示读取整份配置；键或插件配置缺失时返回 found=false。
+// key 为空表示读取整份配置；键或该身份的配置缺失时返回 found=false。
+// 外部适配器的进程级配置同样以适配器名为键从这里读取。
 func (b *botService) GetConfig(_ context.Context, req *pluginpb.GetConfigRequest) (*pluginpb.GetConfigResponse, error) {
 	info, err := b.srv.authenticate(req.GetToken())
 	if err != nil {
 		return nil, err
 	}
 
-	cfg := b.srv.configs[info.Plugin]
+	cfg := b.srv.configs[info.Name]
 	key := req.GetKey()
 	var value any
 	if key == "" {
@@ -365,7 +413,7 @@ func (b *botService) GetConfig(_ context.Context, req *pluginpb.GetConfigRequest
 	return &pluginpb.GetConfigResponse{Found: true, ValueJson: string(encoded)}, nil
 }
 
-// Log 把插件日志写入核心日志器，并绑定 plugin 字段。
+// Log 把插件或适配器日志写入核心日志器，并按其类别绑定 plugin/adapter 字段。
 //
 // 未知 level 按 info 处理；fields_json 解析失败时降级为原始字符串字段，不报错。
 func (b *botService) Log(ctx context.Context, req *pluginpb.LogRequest) (*pluginpb.Empty, error) {
@@ -384,7 +432,7 @@ func (b *botService) Log(ctx context.Context, req *pluginpb.LogRequest) (*plugin
 		level = slog.LevelError
 	}
 
-	logger := b.srv.logger.With("plugin", info.Plugin)
+	logger := b.srv.logger.With(info.Kind.Field(), info.Name)
 	switch fields := req.GetFieldsJson(); fields {
 	case "":
 		logger.Log(ctx, level, req.GetMessage())
@@ -397,6 +445,61 @@ func (b *botService) Log(ctx context.Context, req *pluginpb.LogRequest) (*plugin
 		logger.Log(ctx, level, req.GetMessage(), "fields", attrs)
 	}
 	return &pluginpb.Empty{}, nil
+}
+
+// EmitEvent 接收外部适配器上报的平台事件并交给核心的事件入口。
+//
+// 只允许外部适配器调用：外部插件的事件流向相反，由核心经 PluginService.HandleEvent
+// 投递，因此插件令牌即使带 receive_event 权限也会被拒绝。事件除令牌外还需要
+// receive_event 权限，权限不足时事件不会落到事件总线。
+//
+// 失败语义：认证、身份类别、权限、参数、未接入事件入口以 status error 返回；
+// 事件入队失败（Options.EmitEvent 报错）走 EmitEventResponse.Error，因为这是业务
+// 失败而非 RPC 失败，适配器可在自己的逻辑中重试；RPC 自身被取消/超时仍按传输失败
+// 上报。ok 只表示事件已入队，不表示已被处理。
+func (b *botService) EmitEvent(ctx context.Context, req *pluginpb.EmitEventRequest) (*pluginpb.EmitEventResponse, error) {
+	info, err := b.srv.authenticate(req.GetToken())
+	if err != nil {
+		return nil, err
+	}
+	if info.Kind != TokenAdapter {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"EmitEvent 只允许外部适配器调用，%s %s 被拒绝", info.Kind.Label(), info.Name)
+	}
+	meta := bot.Metadata{Permissions: info.Permissions}
+	if !meta.HasPermission(bot.PermReceiveEvent) {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"%s %s 缺少 %s 权限", info.Kind.Label(), info.Name, bot.PermReceiveEvent)
+	}
+	if b.srv.emitEvent == nil {
+		return nil, status.Error(codes.FailedPrecondition, "核心未接入事件入口")
+	}
+	if req.GetEvent() == nil {
+		return nil, status.Error(codes.InvalidArgument, "event 不能为空")
+	}
+	ev := EventFromProto(req.GetEvent())
+
+	if err := b.srv.emitEvent(ctx, info.Name, ev); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// RPC 自身已被取消/超时，按传输失败上报，交由 gRPC 结束调用。
+			return nil, status.FromContextError(ctxErr).Err()
+		}
+		b.srv.logger.Warn("适配器投递事件失败",
+			"adapter", info.Name,
+			"event_id", ev.ID,
+			"event_type", string(ev.Type),
+			"err", err,
+		)
+		return &pluginpb.EmitEventResponse{Error: err.Error()}, nil
+	}
+
+	// 事件上行是高频路径，成功只记 debug，避免刷屏。
+	b.srv.logger.Debug("适配器投递事件已入队",
+		"adapter", info.Name,
+		"event_id", ev.ID,
+		"event_type", string(ev.Type),
+	)
+	return &pluginpb.EmitEventResponse{Ok: true}, nil
 }
 
 // EventToProto 把统一事件转换为 proto 事件，供外部插件加载器复用。
@@ -413,7 +516,7 @@ func EventToProto(ev *bot.Event) *pluginpb.Event {
 		Type:     string(ev.Type),
 		Platform: ev.Platform,
 		BotId:    ev.BotID,
-		Message:  messageToProto(ev.Message),
+		Message:  MessageToProto(ev.Message),
 		RawJson:  encodeJSON(ev.Raw),
 	}
 	if !ev.Time.IsZero() {
@@ -470,8 +573,11 @@ func EventFromProto(ev *pluginpb.Event) *bot.Event {
 	return out
 }
 
-// messageToProto 转换消息段集合；msg 为 nil 时返回 nil。
-func messageToProto(msg *bot.Message) *pluginpb.Message {
+// MessageToProto 转换消息段集合；msg 为 nil 时返回 nil。
+//
+// 导出供外部适配器通道（internal/adaptermgr/external）构造 AdapterSendRequest，
+// 与插件通道共用同一套消息段编码，避免两处实现漂移。
+func MessageToProto(msg *bot.Message) *pluginpb.Message {
 	if msg == nil {
 		return nil
 	}

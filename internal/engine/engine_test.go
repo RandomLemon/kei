@@ -162,6 +162,13 @@ func newMock(name string) *mock.Adapter {
 	return mock.New(mock.Options{Name: name, Platform: "mock"})
 }
 
+// textMessage 构造一条只含文本的消息，避免测试误用空消息（空消息会被引擎拒绝）。
+func textMessage(text string) *bot.Message {
+	return &bot.Message{Kind: bot.MessageGroup, Segments: []bot.Segment{
+		{Type: bot.SegText, Data: map[string]any{bot.KeyText: text}},
+	}}
+}
+
 func TestEchoIntegrationRoundTrip(t *testing.T) {
 	ad := newMock("mock-main")
 	h := startEngine(t, mockConfig(config.BotConfig{Name: "mock-main", Adapter: "mock"}), []bot.Plugin{&echo.Plugin{}}, map[string]*mock.Adapter{"mock-main": ad})
@@ -400,11 +407,11 @@ func TestEngineSendResolvesAdapter(t *testing.T) {
 	var errs []error
 	record := func(_ *bot.SendResult, err error) { errs = append(errs, err) }
 
-	record(h.eng.Send(ctx, bot.Target{Platform: "mock", ChannelID: "c1"}, &bot.Message{Kind: bot.MessageGroup}))
-	record(h.eng.Send(ctx, bot.Target{Platform: "mock", BotID: "mock-main", ChannelID: "c1"}, &bot.Message{Kind: bot.MessageGroup}))
-	record(h.eng.Send(ctx, bot.Target{Platform: "feishu", ChannelID: "c1"}, &bot.Message{}))
-	record(h.eng.Send(ctx, bot.Target{Platform: "mock", BotID: "missing", ChannelID: "c1"}, &bot.Message{}))
-	record(h.eng.Send(ctx, bot.Target{ChannelID: "c1"}, &bot.Message{}))
+	record(h.eng.Send(ctx, bot.Target{Platform: "mock", ChannelID: "c1"}, textMessage("hi")))
+	record(h.eng.Send(ctx, bot.Target{Platform: "mock", BotID: "mock-main", ChannelID: "c1"}, textMessage("hi")))
+	record(h.eng.Send(ctx, bot.Target{Platform: "feishu", ChannelID: "c1"}, textMessage("hi")))
+	record(h.eng.Send(ctx, bot.Target{Platform: "mock", BotID: "missing", ChannelID: "c1"}, textMessage("hi")))
+	record(h.eng.Send(ctx, bot.Target{ChannelID: "c1"}, textMessage("hi")))
 	record(h.eng.Send(ctx, bot.Target{Platform: "mock"}, nil))
 
 	if errs[0] != nil || errs[1] != nil {
@@ -418,8 +425,33 @@ func TestEngineSendResolvesAdapter(t *testing.T) {
 	if got := len(ad.Sent()); got != 2 {
 		t.Fatalf("发送记录数 = %d, want 2", got)
 	}
-	if got := ad.Sent()[0].Message.PlainText(); got != "" {
-		t.Fatalf("空消息段 = %q", got)
+	if got := ad.Sent()[0].Message.PlainText(); got != "hi" {
+		t.Fatalf("发送内容 = %q, want hi", got)
+	}
+}
+
+// TestSendRejectsMessageWithoutSegments 覆盖「降级后没有可发送的段」：空消息与
+// 全部段都被丢弃的消息都必须报错，绝不能静默发出空消息。
+func TestSendRejectsMessageWithoutSegments(t *testing.T) {
+	ad := newMock("mock-main")
+	h := startEngine(t, mockConfig(config.BotConfig{Name: "mock-main", Adapter: "mock"}), nil, map[string]*mock.Adapter{"mock-main": ad})
+
+	if _, err := h.eng.Send(context.Background(), bot.Target{Platform: "mock", BotID: "mock-main"}, &bot.Message{Kind: bot.MessageGroup}); err == nil {
+		t.Fatal("空消息应报错")
+	}
+
+	// 引用段在 mock 上受支持，改成把适配器能力限制为仅文本，再发一条纯引用消息。
+	textOnly := mock.New(mock.Options{Name: "text-only", Platform: "textonly", Capabilities: bot.Capabilities{Text: true}})
+	cfg := mockConfig(config.BotConfig{Name: "text-only", Adapter: "mock"})
+	h2 := startEngine(t, cfg, nil, map[string]*mock.Adapter{"text-only": textOnly})
+	msg := &bot.Message{Kind: bot.MessageGroup, Segments: []bot.Segment{
+		{Type: bot.SegReply, Data: map[string]any{bot.KeyMessageID: "m0"}},
+	}}
+	if _, err := h2.eng.Send(context.Background(), bot.Target{Platform: "textonly", BotID: "text-only"}, msg); err == nil {
+		t.Fatal("降级后为空的引用消息应报错")
+	}
+	if got := len(textOnly.Sent()); got != 0 {
+		t.Fatalf("不应产生发送记录: %d", got)
 	}
 }
 
@@ -431,13 +463,13 @@ func TestMultiBotSamePlatformNeedsExplicitBotID(t *testing.T) {
 	)
 	h := startEngine(t, cfg, nil, ads)
 
-	if _, err := h.eng.Send(context.Background(), bot.Target{Platform: "mock"}, &bot.Message{}); err == nil {
+	if _, err := h.eng.Send(context.Background(), bot.Target{Platform: "mock"}, textMessage("hi")); err == nil {
 		t.Fatal("同平台多 bot 且未指定 BotID 时应报错")
 	}
-	if _, err := h.eng.Send(context.Background(), bot.Target{Platform: "mock", BotID: "mock-b"}, &bot.Message{}); err != nil {
+	if _, err := h.eng.Send(context.Background(), bot.Target{Platform: "mock", BotID: "mock-b"}, textMessage("hi")); err != nil {
 		t.Fatalf("指定 BotID 后应成功: %v", err)
 	}
-	if _, err := h.eng.Send(context.Background(), bot.Target{Platform: "mock", BotID: "mock-a"}, &bot.Message{}); err != nil {
+	if _, err := h.eng.Send(context.Background(), bot.Target{Platform: "mock", BotID: "mock-a"}, textMessage("hi")); err != nil {
 		t.Fatalf("指定 BotID 后应成功: %v", err)
 	}
 	if got := len(ads["mock-b"].Sent()); got != 1 {

@@ -48,7 +48,7 @@ func (m Metadata) HasPermission(p Permission) bool {
 // Permission 是插件权限标识。
 type Permission string
 
-// 支持的权限。
+// 支持的权限；插件与适配器共用同一类型，适配器侧的裁剪规则见 AdapterMetadata。
 const (
 	// PermSendMessage 允许插件主动发送消息（而不仅是回复当前会话）。
 	PermSendMessage Permission = "send_message"
@@ -58,9 +58,13 @@ const (
 	PermNetwork Permission = "network"
 	// PermStorage 允许读写 Storage。
 	PermStorage Permission = "storage"
+	// PermNetListen 允许启动入站监听（webhook / 长连接），适配器使用。
+	PermNetListen Permission = "net_listen"
+	// PermReceiveEvent 允许向核心投递事件（外部适配器的 BotService.EmitEvent）。
+	PermReceiveEvent Permission = "receive_event"
 	// PermAdmin 允许执行管理员命令（配合 Auth 中间件）。
 	PermAdmin Permission = "admin"
-	// PermAll 表示全部权限，仅内置插件可用。
+	// PermAll 表示全部权限，仅内置插件可用；适配器不得声明。
 	PermAll Permission = "*"
 )
 

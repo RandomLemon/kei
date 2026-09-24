@@ -224,20 +224,24 @@ const (
 	BotService_SendMessage_FullMethodName = "/plugin.BotService/SendMessage"
 	BotService_GetConfig_FullMethodName   = "/plugin.BotService/GetConfig"
 	BotService_Log_FullMethodName         = "/plugin.BotService/Log"
+	BotService_EmitEvent_FullMethodName   = "/plugin.BotService/EmitEvent"
 )
 
 // BotServiceClient is the client API for BotService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// BotService 由核心实现，插件调用。
+// BotService 由核心实现，外部插件与外部适配器都作为客户端调用。
 type BotServiceClient interface {
 	// SendMessage 以插件身份发送消息，需要 send_message 权限。
 	SendMessage(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
-	// GetConfig 读取插件自身的配置。
+	// GetConfig 读取调用方自身的配置（适配器读取其进程级配置）。
 	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
-	// Log 以插件身份写入核心结构化日志。
+	// Log 以调用方身份写入核心结构化日志。
 	Log(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*Empty, error)
+	// EmitEvent 供外部适配器投递平台事件，需要 receive_event 权限；
+	// 返回 ok 只表示事件已入队，不表示已被处理。
+	EmitEvent(ctx context.Context, in *EmitEventRequest, opts ...grpc.CallOption) (*EmitEventResponse, error)
 }
 
 type botServiceClient struct {
@@ -278,18 +282,31 @@ func (c *botServiceClient) Log(ctx context.Context, in *LogRequest, opts ...grpc
 	return out, nil
 }
 
+func (c *botServiceClient) EmitEvent(ctx context.Context, in *EmitEventRequest, opts ...grpc.CallOption) (*EmitEventResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EmitEventResponse)
+	err := c.cc.Invoke(ctx, BotService_EmitEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BotServiceServer is the server API for BotService service.
 // All implementations must embed UnimplementedBotServiceServer
 // for forward compatibility.
 //
-// BotService 由核心实现，插件调用。
+// BotService 由核心实现，外部插件与外部适配器都作为客户端调用。
 type BotServiceServer interface {
 	// SendMessage 以插件身份发送消息，需要 send_message 权限。
 	SendMessage(context.Context, *SendRequest) (*SendResponse, error)
-	// GetConfig 读取插件自身的配置。
+	// GetConfig 读取调用方自身的配置（适配器读取其进程级配置）。
 	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
-	// Log 以插件身份写入核心结构化日志。
+	// Log 以调用方身份写入核心结构化日志。
 	Log(context.Context, *LogRequest) (*Empty, error)
+	// EmitEvent 供外部适配器投递平台事件，需要 receive_event 权限；
+	// 返回 ok 只表示事件已入队，不表示已被处理。
+	EmitEvent(context.Context, *EmitEventRequest) (*EmitEventResponse, error)
 	mustEmbedUnimplementedBotServiceServer()
 }
 
@@ -308,6 +325,9 @@ func (UnimplementedBotServiceServer) GetConfig(context.Context, *GetConfigReques
 }
 func (UnimplementedBotServiceServer) Log(context.Context, *LogRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Log not implemented")
+}
+func (UnimplementedBotServiceServer) EmitEvent(context.Context, *EmitEventRequest) (*EmitEventResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EmitEvent not implemented")
 }
 func (UnimplementedBotServiceServer) mustEmbedUnimplementedBotServiceServer() {}
 func (UnimplementedBotServiceServer) testEmbeddedByValue()                    {}
@@ -384,6 +404,24 @@ func _BotService_Log_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BotService_EmitEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EmitEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BotServiceServer).EmitEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BotService_EmitEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BotServiceServer).EmitEvent(ctx, req.(*EmitEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BotService_ServiceDesc is the grpc.ServiceDesc for BotService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -402,6 +440,10 @@ var BotService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Log",
 			Handler:    _BotService_Log_Handler,
+		},
+		{
+			MethodName: "EmitEvent",
+			Handler:    _BotService_EmitEvent_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

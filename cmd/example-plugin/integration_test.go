@@ -30,8 +30,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/RandomLemon/kei/internal/grpcsrv"
 	"github.com/RandomLemon/kei/internal/pluginmgr/external"
-	"github.com/RandomLemon/kei/internal/pluginmgr/grpcsrv"
 	"github.com/RandomLemon/kei/pkg/bot"
 	"github.com/RandomLemon/kei/proto/pluginpb"
 )
@@ -88,7 +88,7 @@ func startHarness(t *testing.T, coreTLS *tls.Config, coreCreds credentials.Trans
 	core, err := grpcsrv.New(grpcsrv.Options{
 		Addr: "127.0.0.1:0",
 		Tokens: map[string]grpcsrv.TokenInfo{
-			coreToken: {Plugin: plugName, Permissions: []bot.Permission{bot.PermSendMessage}},
+			coreToken: {Name: plugName, Kind: grpcsrv.TokenPlugin, Permissions: []bot.Permission{bot.PermSendMessage}},
 		},
 		Bot:    fb,
 		Logger: testLogger(),
@@ -247,7 +247,7 @@ func TestEndToEndRejectsBadToken(t *testing.T) {
 	fb := &fakeBot{}
 	core, err := grpcsrv.New(grpcsrv.Options{
 		Addr:   "127.0.0.1:0",
-		Tokens: map[string]grpcsrv.TokenInfo{coreToken: {Plugin: plugName}},
+		Tokens: map[string]grpcsrv.TokenInfo{coreToken: {Name: plugName, Kind: grpcsrv.TokenPlugin}},
 		Bot:    fb,
 		Logger: testLogger(),
 	})
@@ -479,7 +479,7 @@ func TestMutualTLSRejectsClientWithoutCert(t *testing.T) {
 	fb := &fakeBot{}
 	core, err := grpcsrv.New(grpcsrv.Options{
 		Addr:   "127.0.0.1:0",
-		Tokens: map[string]grpcsrv.TokenInfo{coreToken: {Plugin: plugName, Permissions: []bot.Permission{bot.PermSendMessage}}},
+		Tokens: map[string]grpcsrv.TokenInfo{coreToken: {Name: plugName, Kind: grpcsrv.TokenPlugin, Permissions: []bot.Permission{bot.PermSendMessage}}},
 		Bot:    fb,
 		Logger: testLogger(),
 		TLS:    f.serverTLS,
@@ -691,7 +691,7 @@ func startCore(t *testing.T, fb *fakeBot, addr string) *grpcsrv.Server {
 	core, err := grpcsrv.New(grpcsrv.Options{
 		Addr: addr,
 		Tokens: map[string]grpcsrv.TokenInfo{
-			coreToken: {Plugin: plugName, Permissions: []bot.Permission{bot.PermSendMessage}},
+			coreToken: {Name: plugName, Kind: grpcsrv.TokenPlugin, Permissions: []bot.Permission{bot.PermSendMessage}},
 		},
 		Bot:    fb,
 		Logger: testLogger(),

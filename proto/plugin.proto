@@ -198,6 +198,25 @@ message LogRequest {
   string fields_json = 4;
 }
 
+// EmitEventRequest 是外部适配器向核心投递平台事件的请求。
+//
+// 该 RPC 只供外部适配器使用：外部插件的事件流向相反，由核心经 PluginService.
+// HandleEvent 投递。适配器必须先 ACK 平台，再调用本 RPC。
+message EmitEventRequest {
+  // token 是适配器在 Init 阶段获得的认证令牌，必填。
+  string token = 1;
+  // event 是待投递的平台无关事件；为空视为参数非法。
+  Event event = 2;
+}
+
+// EmitEventResponse 是事件投递的应答。
+message EmitEventResponse {
+  // ok 表示事件是否已入队，不表示已被处理或已被插件消费。
+  bool ok = 1;
+  // error 是入队失败原因，ok 为 true 时为空。
+  string error = 2;
+}
+
 // PluginService 由外部插件实现，核心调用。
 service PluginService {
   // Init 初始化插件并下发生效配置与令牌。
@@ -208,12 +227,15 @@ service PluginService {
   rpc Shutdown(Empty) returns (Empty);
 }
 
-// BotService 由核心实现，插件调用。
+// BotService 由核心实现，外部插件与外部适配器都作为客户端调用。
 service BotService {
   // SendMessage 以插件身份发送消息，需要 send_message 权限。
   rpc SendMessage(SendRequest) returns (SendResponse);
-  // GetConfig 读取插件自身的配置。
+  // GetConfig 读取调用方自身的配置（适配器读取其进程级配置）。
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
-  // Log 以插件身份写入核心结构化日志。
+  // Log 以调用方身份写入核心结构化日志。
   rpc Log(LogRequest) returns (Empty);
+  // EmitEvent 供外部适配器投递平台事件，需要 receive_event 权限；
+  // 返回 ok 只表示事件已入队，不表示已被处理。
+  rpc EmitEvent(EmitEventRequest) returns (EmitEventResponse);
 }

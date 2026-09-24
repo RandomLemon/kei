@@ -26,12 +26,26 @@ limits:
 auth:
   admin_users: []
 
-# 外部插件（gRPC）通道：addr 非空时启动 BotService，供外部插件回调核心。
+# 外部插件（gRPC）通道：addr 非空时启动 BotService，供外部插件与外部适配器回调核心。
 grpc:
   addr: ""
   cert_file: ""
   key_file: ""
   ca_file: ""
+
+# 外部适配器（独立进程）：声明 grpc_addr 即视为外部适配器，由 bots[].adapter 引用。
+# 进程内适配器（内置 adapters/ 或第三方 Go module）无需在此声明。
+# 可用 KEI_ADAPTERS_MYIM_TOKEN 之类的环境变量覆盖各字段。
+adapters:
+  # 示例（适配器进程见 cmd/example-adapter，需要 grpc.addr 非空）：
+  # myim:
+  #   grpc_addr: 127.0.0.1:50071   # 适配器 AdapterService 监听地址
+  #   token: change-me             # 适配器反向调用核心的令牌
+  #   platform: myim               # 适配器上报多个平台时必填
+  #   timeout: 10s                 # 单次 RPC 超时与就绪等待上限
+  #   permissions: [receive_event, network, net_listen]
+  #   # 其余键作为进程级配置下发给适配器进程
+  #   listen_addr: 127.0.0.1:18091
 
 bots:
   # Mock 适配器：本地联调用，通过 HTTP 控制面手动注入事件并观察发送结果。

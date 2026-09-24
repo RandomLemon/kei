@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/RandomLemon/kei/internal/pluginmgr/grpcsrv"
+	"github.com/RandomLemon/kei/internal/grpcsrv"
 	"github.com/RandomLemon/kei/pkg/bot"
 	"github.com/RandomLemon/kei/proto/pluginpb"
 )

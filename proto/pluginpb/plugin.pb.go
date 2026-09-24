@@ -1126,6 +1126,119 @@ func (x *LogRequest) GetFieldsJson() string {
 	return ""
 }
 
+// EmitEventRequest 是外部适配器向核心投递平台事件的请求。
+//
+// 该 RPC 只供外部适配器使用：外部插件的事件流向相反，由核心经 PluginService.
+// HandleEvent 投递。适配器必须先 ACK 平台，再调用本 RPC。
+type EmitEventRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// token 是适配器在 Init 阶段获得的认证令牌，必填。
+	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	// event 是待投递的平台无关事件；为空视为参数非法。
+	Event         *Event `protobuf:"bytes,2,opt,name=event,proto3" json:"event,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmitEventRequest) Reset() {
+	*x = EmitEventRequest{}
+	mi := &file_plugin_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmitEventRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmitEventRequest) ProtoMessage() {}
+
+func (x *EmitEventRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmitEventRequest.ProtoReflect.Descriptor instead.
+func (*EmitEventRequest) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *EmitEventRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *EmitEventRequest) GetEvent() *Event {
+	if x != nil {
+		return x.Event
+	}
+	return nil
+}
+
+// EmitEventResponse 是事件投递的应答。
+type EmitEventResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// ok 表示事件是否已入队，不表示已被处理或已被插件消费。
+	Ok bool `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	// error 是入队失败原因，ok 为 true 时为空。
+	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmitEventResponse) Reset() {
+	*x = EmitEventResponse{}
+	mi := &file_plugin_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmitEventResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmitEventResponse) ProtoMessage() {}
+
+func (x *EmitEventResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmitEventResponse.ProtoReflect.Descriptor instead.
+func (*EmitEventResponse) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *EmitEventResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *EmitEventResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_plugin_proto protoreflect.FileDescriptor
 
 const file_plugin_proto_rawDesc = "" +
@@ -1209,16 +1322,23 @@ const file_plugin_proto_rawDesc = "" +
 	"\x05level\x18\x02 \x01(\tR\x05level\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1f\n" +
 	"\vfields_json\x18\x04 \x01(\tR\n" +
-	"fieldsJson2\xa0\x01\n" +
+	"fieldsJson\"M\n" +
+	"\x10EmitEventRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12#\n" +
+	"\x05event\x18\x02 \x01(\v2\r.plugin.EventR\x05event\"9\n" +
+	"\x11EmitEventResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error2\xa0\x01\n" +
 	"\rPluginService\x121\n" +
 	"\x04Init\x12\x13.plugin.InitRequest\x1a\x14.plugin.InitResponse\x122\n" +
 	"\vHandleEvent\x12\r.plugin.Event\x1a\x14.plugin.HandleResult\x12(\n" +
-	"\bShutdown\x12\r.plugin.Empty\x1a\r.plugin.Empty2\xb2\x01\n" +
+	"\bShutdown\x12\r.plugin.Empty\x1a\r.plugin.Empty2\xf4\x01\n" +
 	"\n" +
 	"BotService\x128\n" +
 	"\vSendMessage\x12\x13.plugin.SendRequest\x1a\x14.plugin.SendResponse\x12@\n" +
 	"\tGetConfig\x12\x18.plugin.GetConfigRequest\x1a\x19.plugin.GetConfigResponse\x12(\n" +
-	"\x03Log\x12\x12.plugin.LogRequest\x1a\r.plugin.EmptyB+Z)github.com/RandomLemon/kei/proto/pluginpbb\x06proto3"
+	"\x03Log\x12\x12.plugin.LogRequest\x1a\r.plugin.Empty\x12@\n" +
+	"\tEmitEvent\x12\x18.plugin.EmitEventRequest\x1a\x19.plugin.EmitEventResponseB+Z)github.com/RandomLemon/kei/proto/pluginpbb\x06proto3"
 
 var (
 	file_plugin_proto_rawDescOnce sync.Once
@@ -1232,7 +1352,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 	return file_plugin_proto_rawDescData
 }
 
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_plugin_proto_goTypes = []any{
 	(*Empty)(nil),             // 0: plugin.Empty
 	(*InitRequest)(nil),       // 1: plugin.InitRequest
@@ -1250,6 +1370,8 @@ var file_plugin_proto_goTypes = []any{
 	(*GetConfigRequest)(nil),  // 13: plugin.GetConfigRequest
 	(*GetConfigResponse)(nil), // 14: plugin.GetConfigResponse
 	(*LogRequest)(nil),        // 15: plugin.LogRequest
+	(*EmitEventRequest)(nil),  // 16: plugin.EmitEventRequest
+	(*EmitEventResponse)(nil), // 17: plugin.EmitEventResponse
 }
 var file_plugin_proto_depIdxs = []int32{
 	4,  // 0: plugin.Event.message:type_name -> plugin.Message
@@ -1259,23 +1381,26 @@ var file_plugin_proto_depIdxs = []int32{
 	5,  // 4: plugin.Message.segments:type_name -> plugin.Segment
 	11, // 5: plugin.SendRequest.target:type_name -> plugin.Target
 	4,  // 6: plugin.SendRequest.message:type_name -> plugin.Message
-	1,  // 7: plugin.PluginService.Init:input_type -> plugin.InitRequest
-	3,  // 8: plugin.PluginService.HandleEvent:input_type -> plugin.Event
-	0,  // 9: plugin.PluginService.Shutdown:input_type -> plugin.Empty
-	10, // 10: plugin.BotService.SendMessage:input_type -> plugin.SendRequest
-	13, // 11: plugin.BotService.GetConfig:input_type -> plugin.GetConfigRequest
-	15, // 12: plugin.BotService.Log:input_type -> plugin.LogRequest
-	2,  // 13: plugin.PluginService.Init:output_type -> plugin.InitResponse
-	9,  // 14: plugin.PluginService.HandleEvent:output_type -> plugin.HandleResult
-	0,  // 15: plugin.PluginService.Shutdown:output_type -> plugin.Empty
-	12, // 16: plugin.BotService.SendMessage:output_type -> plugin.SendResponse
-	14, // 17: plugin.BotService.GetConfig:output_type -> plugin.GetConfigResponse
-	0,  // 18: plugin.BotService.Log:output_type -> plugin.Empty
-	13, // [13:19] is the sub-list for method output_type
-	7,  // [7:13] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	3,  // 7: plugin.EmitEventRequest.event:type_name -> plugin.Event
+	1,  // 8: plugin.PluginService.Init:input_type -> plugin.InitRequest
+	3,  // 9: plugin.PluginService.HandleEvent:input_type -> plugin.Event
+	0,  // 10: plugin.PluginService.Shutdown:input_type -> plugin.Empty
+	10, // 11: plugin.BotService.SendMessage:input_type -> plugin.SendRequest
+	13, // 12: plugin.BotService.GetConfig:input_type -> plugin.GetConfigRequest
+	15, // 13: plugin.BotService.Log:input_type -> plugin.LogRequest
+	16, // 14: plugin.BotService.EmitEvent:input_type -> plugin.EmitEventRequest
+	2,  // 15: plugin.PluginService.Init:output_type -> plugin.InitResponse
+	9,  // 16: plugin.PluginService.HandleEvent:output_type -> plugin.HandleResult
+	0,  // 17: plugin.PluginService.Shutdown:output_type -> plugin.Empty
+	12, // 18: plugin.BotService.SendMessage:output_type -> plugin.SendResponse
+	14, // 19: plugin.BotService.GetConfig:output_type -> plugin.GetConfigResponse
+	0,  // 20: plugin.BotService.Log:output_type -> plugin.Empty
+	17, // 21: plugin.BotService.EmitEvent:output_type -> plugin.EmitEventResponse
+	15, // [15:22] is the sub-list for method output_type
+	8,  // [8:15] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -1289,7 +1414,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

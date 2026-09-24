@@ -29,7 +29,7 @@ func (p *Plugin) Metadata() bot.Metadata {
 		Name:        "manage",
 		Version:     "v0.1.0",
 		Author:      "core",
-		Description: "管理命令：/ping、/version、/plugins、/admin",
+		Description: "管理命令：/ping、/version、/plugins、/adapters、/admin",
 	}
 }
 
@@ -59,6 +59,10 @@ func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 	reg.OnCommand("plugins", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		return r.Text(p.describePlugins(pc.Catalog)).Send(ctx)
 	}, pluginOpts...)
+
+	reg.OnCommand("adapters", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+		return r.Text(p.describeAdapters(pc.Adapters, bot.RegisteredAdapters())).Send(ctx)
+	}, bot.WithPriority(100), bot.WithID("manage:adapters"))
 
 	reg.OnCommand("admin", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		return r.Text("管理员校验通过").Send(ctx)
@@ -96,17 +100,74 @@ func (p *Plugin) describePlugins(catalog bot.PluginCatalog) string {
 			b.WriteString(" by " + m.Author)
 		}
 		if len(m.Permissions) > 0 {
-			perms := make([]string, 0, len(m.Permissions))
-			for _, p := range m.Permissions {
-				perms = append(perms, string(p))
-			}
-			b.WriteString(" [" + strings.Join(perms, ",") + "]")
+			b.WriteString(" [" + joinPermissions(m.Permissions) + "]")
 		}
 		if m.Description != "" {
 			b.WriteString(" — " + m.Description)
 		}
 	}
 	return b.String()
+}
+
+// describeAdapters 把适配器注册表与已绑定实例格式化为多行文本。
+//
+// 注册表来自 pkg/bot（编译期注册，含第三方进程内适配器），绑定信息来自引擎
+// （每个 bot 用哪个适配器、是否走外部 gRPC 进程）。
+func (p *Plugin) describeAdapters(catalog bot.AdapterCatalog, registered []bot.AdapterMetadata) string {
+	sort.Slice(registered, func(i, j int) bool { return registered[i].Name < registered[j].Name })
+
+	var b strings.Builder
+	if len(registered) == 0 {
+		b.WriteString("没有已注册的适配器")
+	} else {
+		fmt.Fprintf(&b, "已注册 %d 个适配器：", len(registered))
+		for _, m := range registered {
+			b.WriteString("\n- ")
+			b.WriteString(m.Name)
+			if m.Version != "" {
+				b.WriteString(" " + m.Version)
+			}
+			if len(m.Platforms) > 0 {
+				b.WriteString(" (" + strings.Join(m.Platforms, ",") + ")")
+			}
+			if len(m.Permissions) > 0 {
+				b.WriteString(" [" + joinPermissions(m.Permissions) + "]")
+			}
+			if m.Description != "" {
+				b.WriteString(" — " + m.Description)
+			}
+		}
+	}
+	if catalog == nil {
+		b.WriteString("\n绑定信息不可用")
+		return b.String()
+	}
+
+	infos := catalog.Adapters()
+	if len(infos) == 0 {
+		b.WriteString("\n没有已绑定的适配器实例")
+		return b.String()
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].BotID < infos[j].BotID })
+
+	fmt.Fprintf(&b, "\n已绑定 %d 个实例：", len(infos))
+	for _, info := range infos {
+		kind := "进程内"
+		if info.External {
+			kind = "外部 gRPC"
+		}
+		fmt.Fprintf(&b, "\n- %s → %s（%s）", info.BotID, info.Metadata.Name, kind)
+	}
+	return b.String()
+}
+
+// joinPermissions 把权限列表拼成逗号分隔文本。
+func joinPermissions(perms []bot.Permission) string {
+	parts := make([]string, 0, len(perms))
+	for _, p := range perms {
+		parts = append(parts, string(p))
+	}
+	return strings.Join(parts, ",")
 }
 
 func init() {

@@ -43,10 +43,15 @@ func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.Se
 	if target.BotID == "" {
 		target.BotID = botID
 	}
+	degraded := bot.Degrade(req.Message, ad.Capabilities())
+	if len(degraded.Segments) == 0 {
+		// 空消息或降级后全部段被丢弃：直接报错，绝不静默发送空消息。
+		return nil, fmt.Errorf("engine: 消息在按平台能力降级后没有可发送的段（bot %s, platform %s）", botID, ad.Name())
+	}
 	out := &bot.SendRequest{
 		BotID:   botID,
 		Target:  target,
-		Message: bot.Degrade(req.Message, ad.Capabilities()),
+		Message: degraded,
 		ReplyTo: req.ReplyTo,
 	}
 

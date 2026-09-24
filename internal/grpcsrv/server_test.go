@@ -14,6 +14,7 @@ import (
 	"net"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,11 +31,16 @@ import (
 )
 
 const (
-	tokenOK       = "token-ok"
-	tokenNoPerm   = "token-noperm"
-	pluginOK      = "demo"
-	pluginNoPerm  = "reader"
-	platformGroup = "mock"
+	tokenOK         = "token-ok"
+	tokenNoPerm     = "token-noperm"
+	pluginOK        = "demo"
+	pluginNoPerm    = "reader"
+	platformGroup   = "mock"
+	tokenPluginEvt  = "token-plugin-event"
+	tokenAdapter    = "token-adapter"
+	tokenAdapterDen = "token-adapter-denied"
+	adapterOK       = "myim"
+	adapterNoPerm   = "myim-reader"
 )
 
 // sent 记录一次 BotAPI.Send 的入参，供断言使用。
@@ -191,22 +197,39 @@ type testEnv struct {
 
 // newTestEnv 通过 bufconn 启动服务端并返回客户端，全部资源在测试结束时回收。
 func newTestEnv(t *testing.T, fake bot.BotAPI) *testEnv {
+	return newTestEnvWith(t, fake, nil)
+}
+
+// newTestEnvWith 与 newTestEnv 相同，但允许在默认 Options 之上覆盖字段。
+//
+// mutate 非 nil 时在默认令牌表与配置构造完成后调用，便于单个测试注入
+// EmitEvent 入口等参数，而不必复制整份夹具。
+func newTestEnvWith(t *testing.T, fake bot.BotAPI, mutate func(*Options)) *testEnv {
 	t.Helper()
 
 	logs := &sink{}
 	ln := bufconn.Listen(1 << 20)
-	srv, err := newServer(Options{
-		Bot:  fake,
+	opts := Options{
 		Addr: "bufconn",
+		Bot:  fake,
 		Tokens: map[string]TokenInfo{
-			tokenOK:     {Plugin: pluginOK, Permissions: []bot.Permission{bot.PermSendMessage, bot.PermStorage}},
-			tokenNoPerm: {Plugin: pluginNoPerm, Permissions: []bot.Permission{bot.PermReadUser}},
+			tokenOK:         {Name: pluginOK, Kind: TokenPlugin, Permissions: []bot.Permission{bot.PermSendMessage, bot.PermStorage}},
+			tokenNoPerm:     {Name: pluginNoPerm, Kind: TokenPlugin, Permissions: []bot.Permission{bot.PermReadUser}},
+			tokenPluginEvt:  {Name: pluginOK, Kind: TokenPlugin, Permissions: []bot.Permission{bot.PermReceiveEvent}},
+			tokenAdapter:    {Name: adapterOK, Kind: TokenAdapter, Permissions: []bot.Permission{bot.PermReceiveEvent}},
+			tokenAdapterDen: {Name: adapterNoPerm, Kind: TokenAdapter, Permissions: []bot.Permission{bot.PermReadUser}},
 		},
 		Configs: map[string]*bot.Config{
-			pluginOK: bot.NewConfig(map[string]any{"greeting": "hi", "retries": 3}),
+			pluginOK:  bot.NewConfig(map[string]any{"greeting": "hi", "retries": 3}),
+			adapterOK: bot.NewConfig(map[string]any{"api_base": "https://im.example.com"}),
 		},
-		Logger: slog.New(&captureHandler{sink: logs}),
-	}, ln)
+		Logger:    slog.New(&captureHandler{sink: logs}),
+		EmitEvent: func(context.Context, string, *bot.Event) error { return nil },
+	}
+	if mutate != nil {
+		mutate(&opts)
+	}
+	srv, err := newServer(opts, ln)
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -609,6 +632,214 @@ func TestLogBadFieldsDoesNotFail(t *testing.T) {
 	}
 }
 
+// collector 收集 EmitEvent 入口收到的事件，并发安全。
+type collector struct {
+	mu       sync.Mutex
+	adapters []string
+	events   []*bot.Event
+	err      error
+}
+
+func (c *collector) emit(_ context.Context, adapter string, ev *bot.Event) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.adapters = append(c.adapters, adapter)
+	c.events = append(c.events, ev)
+	return c.err
+}
+
+// one 返回唯一一次调用，(适配器名, 事件, 是否恰好一次)。
+func (c *collector) one() (string, *bot.Event, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.adapters) != 1 || len(c.events) != 1 {
+		return "", nil, false
+	}
+	return c.adapters[0], c.events[0], true
+}
+
+// emitEventReq 构造一份携带完整字段的事件投递请求，用于验证字段无损穿越。
+func emitEventReq(token string) *pluginpb.EmitEventRequest {
+	return &pluginpb.EmitEventRequest{
+		Token: token,
+		Event: &pluginpb.Event{
+			Id:         "evt-9",
+			Type:       string(bot.EventMessage),
+			Platform:   "myim",
+			BotId:      "myim-main",
+			TimeUnixMs: 1_790_000_000_000,
+			Message: &pluginpb.Message{
+				Id:   "m-9",
+				Kind: string(bot.MessageGroup),
+				Segments: []*pluginpb.Segment{
+					{Type: string(bot.SegText), DataJson: `{"text":"你好"}`},
+				},
+			},
+			Sender:  &pluginpb.User{Id: "u-9", Name: "小明"},
+			Channel: &pluginpb.Channel{Id: "c-9", Name: "测试群", Kind: string(bot.MessageGroup)},
+			RawJson: `{"seq":"9"}`,
+		},
+	}
+}
+
+func TestEmitEventDeliversToHook(t *testing.T) {
+	rec := &collector{}
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) { o.EmitEvent = rec.emit })
+
+	resp, err := env.client.EmitEvent(context.Background(), emitEventReq(tokenAdapter))
+	if err != nil {
+		t.Fatalf("EmitEvent: %v", err)
+	}
+	if !resp.GetOk() || resp.GetError() != "" {
+		t.Fatalf("响应 = %+v，期望 ok 且无错误", resp)
+	}
+
+	name, ev, ok := rec.one()
+	if !ok {
+		t.Fatalf("EmitEvent 入口调用次数 = %d，期望 1", len(rec.events))
+	}
+	// 适配器名取自身份，而不是事件里的 platform/bot_id。
+	if name != adapterOK {
+		t.Fatalf("适配器名 = %q，期望 %q", name, adapterOK)
+	}
+	want := EventFromProto(emitEventReq(tokenAdapter).GetEvent())
+	if !reflect.DeepEqual(ev, want) {
+		t.Fatalf("入口收到的事件:\n got = %#v\nwant = %#v", ev, want)
+	}
+	if ev.Platform != "myim" || ev.BotID != "myim-main" || ev.Time.UnixMilli() != 1_790_000_000_000 {
+		t.Fatalf("事件字段丢失: %#v", ev)
+	}
+}
+
+func TestEmitEventRequiresReceiveEventPermission(t *testing.T) {
+	rec := &collector{}
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) { o.EmitEvent = rec.emit })
+
+	_, err := env.client.EmitEvent(context.Background(), emitEventReq(tokenAdapterDen))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("code = %v，期望 PermissionDenied（err=%v）", status.Code(err), err)
+	}
+	if len(rec.events) != 0 {
+		t.Fatalf("权限不足时事件不得送达事件入口，实际 %d 次", len(rec.events))
+	}
+}
+
+func TestEmitEventRejectedForPluginToken(t *testing.T) {
+	rec := &collector{}
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) { o.EmitEvent = rec.emit })
+
+	// 插件令牌即使带 receive_event 权限也不得投递事件：事件上行只属于适配器。
+	_, err := env.client.EmitEvent(context.Background(), emitEventReq(tokenPluginEvt))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("code = %v，期望 PermissionDenied（err=%v）", status.Code(err), err)
+	}
+	if len(rec.events) != 0 {
+		t.Fatalf("插件令牌不得投递事件，实际 %d 次", len(rec.events))
+	}
+}
+
+func TestEmitEventWithoutHookFailsPrecondition(t *testing.T) {
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) { o.EmitEvent = nil })
+
+	_, err := env.client.EmitEvent(context.Background(), emitEventReq(tokenAdapter))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v，期望 FailedPrecondition（err=%v）", status.Code(err), err)
+	}
+}
+
+func TestEmitEventWithoutEventFailsInvalidArgument(t *testing.T) {
+	rec := &collector{}
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) { o.EmitEvent = rec.emit })
+
+	_, err := env.client.EmitEvent(context.Background(), &pluginpb.EmitEventRequest{Token: tokenAdapter})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v，期望 InvalidArgument（err=%v）", status.Code(err), err)
+	}
+	if len(rec.events) != 0 {
+		t.Fatalf("缺少事件时不应调用入口，实际 %d 次", len(rec.events))
+	}
+}
+
+func TestEmitEventReportsHookError(t *testing.T) {
+	rec := &collector{err: errors.New("事件总线已满")}
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) { o.EmitEvent = rec.emit })
+
+	resp, err := env.client.EmitEvent(context.Background(), emitEventReq(tokenAdapter))
+	if err != nil {
+		t.Fatalf("入队失败不应返回 RPC error，实际 %v", err)
+	}
+	if resp.GetOk() || resp.GetError() != "事件总线已满" {
+		t.Fatalf("响应 = %+v，期望 ok=false 且 error=事件总线已满", resp)
+	}
+}
+
+func TestEmitEventUnauthenticated(t *testing.T) {
+	rec := &collector{}
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) { o.EmitEvent = rec.emit })
+
+	for _, token := range []string{"", "unknown-token"} {
+		_, err := env.client.EmitEvent(context.Background(), emitEventReq(token))
+		if status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("token=%q code = %v，期望 Unauthenticated", token, status.Code(err))
+		}
+	}
+	if len(rec.events) != 0 {
+		t.Fatalf("未认证时不应调用入口，实际 %d 次", len(rec.events))
+	}
+}
+
+func TestEmitEventCancelledContextReportsContextError(t *testing.T) {
+	// 入口返回错误且 ctx 已被取消时，应按传输失败上报，而不是把取消当成业务失败。
+	// 直接调用服务实现，避免客户端提前因 ctx 取消而短路，从而真正覆盖该分支。
+	env := newTestEnvWith(t, &fakeBot{}, func(o *Options) {
+		o.EmitEvent = func(ctx context.Context, _ string, _ *bot.Event) error {
+			return ctx.Err()
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	svc := &botService{srv: env.server}
+	resp, err := svc.EmitEvent(ctx, emitEventReq(tokenAdapter))
+	if resp != nil {
+		t.Fatalf("取消时应返回错误响应，实际 %+v", resp)
+	}
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("code = %v，期望 Canceled（err=%v）", status.Code(err), err)
+	}
+}
+
+func TestAdapterConfigVisibleToAdapterToken(t *testing.T) {
+	env := newTestEnv(t, &fakeBot{})
+
+	// 适配器的进程级配置同样以适配器名为键，与插件共用同一读取路径。
+	resp, err := env.client.GetConfig(context.Background(), &pluginpb.GetConfigRequest{
+		Token: tokenAdapter, Key: "api_base",
+	})
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if !resp.GetFound() || resp.GetValueJson() != `"https://im.example.com"` {
+		t.Fatalf("响应 = %+v，期望命中适配器配置", resp)
+	}
+}
+
+func TestNewRejectsUnknownTokenKind(t *testing.T) {
+	_, err := newServer(Options{
+		Addr:   "bufconn",
+		Bot:    &fakeBot{},
+		Logger: slog.New(&captureHandler{sink: &sink{}}),
+		Tokens: map[string]TokenInfo{"tok": {Name: "x", Kind: "robot"}},
+	}, bufconn.Listen(1<<16))
+	if err == nil {
+		t.Fatal("未知令牌类别应返回错误")
+	}
+	// 错误必须点名 token 键，否则多令牌配置下无法定位。
+	if !strings.Contains(err.Error(), `"tok"`) {
+		t.Fatalf("错误信息未包含 token 键: %v", err)
+	}
+}
+
 func TestEventProtoRoundTrip(t *testing.T) {
 	ts := time.Date(2026, 9, 23, 10, 11, 12, 345*int(time.Millisecond), time.UTC)
 	orig := &bot.Event{
@@ -675,7 +906,7 @@ func TestServerTCPStartStop(t *testing.T) {
 	srv, err := New(Options{
 		Addr:   "127.0.0.1:0",
 		Bot:    fake,
-		Tokens: map[string]TokenInfo{tokenOK: {Plugin: pluginOK, Permissions: []bot.Permission{bot.PermAll}}},
+		Tokens: map[string]TokenInfo{tokenOK: {Name: pluginOK, Kind: TokenPlugin, Permissions: []bot.Permission{bot.PermAll}}},
 		Logger: slog.New(&captureHandler{sink: &sink{}}),
 	})
 	if err != nil {
@@ -804,7 +1035,7 @@ func TestTLSListenerAcceptsTrustedClient(t *testing.T) {
 		Addr:   "127.0.0.1:0",
 		Bot:    fake,
 		TLS:    serverTLS,
-		Tokens: map[string]TokenInfo{tokenOK: {Plugin: pluginOK, Permissions: []bot.Permission{bot.PermSendMessage}}},
+		Tokens: map[string]TokenInfo{tokenOK: {Name: pluginOK, Kind: TokenPlugin, Permissions: []bot.Permission{bot.PermSendMessage}}},
 		Logger: slog.New(&captureHandler{sink: &sink{}}),
 	})
 	if err != nil {

@@ -1,7 +1,10 @@
 // Command bot 是 kei 框架的入口程序。
 //
-// 职责：加载配置 -> 初始化日志/指标/存储 -> 构造适配器 -> 收集已启用的
-// 编译期插件与外部插件 -> 启动引擎 -> 收到信号后优雅退出。
+// 职责：加载配置 -> 初始化日志/指标/存储 -> 注册编译期适配器与插件（空导入）
+// -> 按配置装配适配器 -> 收集已启用的编译期插件与外部插件 -> 启动引擎 -> 收到
+// 信号后优雅退出。
+//
+// 所有平台细节都在 adapters/ 或第三方适配器包内，本文件不含任何平台名分支。
 package main
 
 import (
@@ -18,16 +21,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/RandomLemon/kei/adapters/feishu"
-	"github.com/RandomLemon/kei/adapters/mock"
-	"github.com/RandomLemon/kei/adapters/onebot"
+	"github.com/RandomLemon/kei/internal/adaptermgr"
 	"github.com/RandomLemon/kei/internal/config"
 	"github.com/RandomLemon/kei/internal/engine"
 	"github.com/RandomLemon/kei/internal/metrics"
 	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 
-	// 内置插件通过空导入注册到全局插件表，是否启用由配置决定。
+	// 内置适配器与插件通过空导入注册到各自的注册表，是否启用由配置决定。
+	// 第三方适配器（独立包或独立 module）以同样方式接入，无需改动本文件以外的代码。
+	_ "github.com/RandomLemon/kei/adapters/feishu"
+	_ "github.com/RandomLemon/kei/adapters/mock"
+	_ "github.com/RandomLemon/kei/adapters/onebot"
 	_ "github.com/RandomLemon/kei/plugins/echo"
 	_ "github.com/RandomLemon/kei/plugins/manage"
 	_ "github.com/RandomLemon/kei/plugins/weather"
@@ -76,18 +81,42 @@ func run(args []string) error {
 
 	httpClient := &http.Client{Timeout: httpTimeout}
 
-	bindings := make([]engine.AdapterBinding, 0, len(cfg.Bots))
-	for _, bc := range cfg.Bots {
-		ad, err := buildAdapter(bc, logger, httpClient)
-		if err != nil {
-			return fmt.Errorf("bot %s: %w", bc.Name, err)
+	clientTLS, err := clientTLSConfig(cfg.Grpc)
+	if err != nil {
+		return err
+	}
+
+	// 适配器一律经注册表装配：进程内适配器来自 pkg/bot 注册表，外部适配器由
+	// adapters 段声明并走 gRPC 通道；本文件不出现任何平台名分支。
+	bindings, err := adaptermgr.Build(ctx, cfg, adaptermgr.Deps{
+		Logger:     logger,
+		Storage:    store,
+		HTTPClient: httpClient,
+		TLS:        clientTLS,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := bindings.Close(); err != nil {
+			logger.Warn("adapter channel close failed", "error", err)
 		}
-		bindings = append(bindings, engine.AdapterBinding{BotID: bc.Name, Adapter: ad})
+	}()
+
+	list := bindings.List()
+	adapters := make([]engine.AdapterBinding, 0, len(list))
+	for _, b := range list {
+		adapters = append(adapters, engine.AdapterBinding{
+			BotID:    b.BotID,
+			Adapter:  b.Adapter,
+			Metadata: b.Info.Metadata,
+			External: b.Info.External,
+		})
 	}
 
 	plugins := enabledPlugins(cfg, logger)
 
-	external, err := setupExternal(cfg, logger, httpClient)
+	external, err := setupExternal(cfg, logger, httpClient, bindings)
 	if err != nil {
 		return err
 	}
@@ -99,7 +128,7 @@ func run(args []string) error {
 		Metrics:         registry,
 		Storage:         store,
 		HTTPClient:      httpClient,
-		Adapters:        bindings,
+		Adapters:        adapters,
 		Plugins:         plugins,
 		ExternalPlugins: external.hook,
 	})
@@ -110,7 +139,7 @@ func run(args []string) error {
 	logger.Info("starting kei",
 		"version", bot.Version,
 		"config", *configPath,
-		"bots", len(cfg.Bots),
+		"bots", len(adapters),
 		"plugins", len(plugins),
 	)
 	return eng.Run(ctx)
@@ -172,60 +201,6 @@ func serveMetrics(ctx context.Context, addr string, handler http.Handler, logger
 	return nil
 }
 
-// mockSettings 等常量定义各适配器接受的配置键，用于拼写检查。
-var adapterSettings = map[string][]string{
-	"mock":   {"platform", "listen_addr"},
-	"onebot": {"api_url", "listen_addr", "path", "secret", "access_token", "self_id"},
-	"feishu": {"app_id", "app_secret", "verification_token", "encrypt_key", "listen_addr", "path", "base_url"},
-}
-
-// buildAdapter 依据配置构造平台适配器。
-func buildAdapter(bc config.BotConfig, logger *slog.Logger, httpClient *http.Client) (bot.Adapter, error) {
-	st := func(key, def string) string { return settingString(bc, key, def) }
-	known, ok := adapterSettings[bc.Adapter]
-	if !ok {
-		return nil, fmt.Errorf("unknown adapter %q", bc.Adapter)
-	}
-	warnUnknownSettings(bc, known, logger)
-
-	switch bc.Adapter {
-	case "mock":
-		return mock.New(mock.Options{
-			Name:       bc.Name,
-			Platform:   st("platform", "mock"),
-			ListenAddr: st("listen_addr", ""),
-			Logger:     logger,
-		}), nil
-	case "onebot":
-		return onebot.New(onebot.Options{
-			Name:        bc.Name,
-			APIURL:      st("api_url", ""),
-			ListenAddr:  st("listen_addr", ""),
-			Path:        st("path", ""),
-			Secret:      st("secret", ""),
-			AccessToken: st("access_token", ""),
-			SelfID:      st("self_id", ""),
-			HTTPClient:  httpClient,
-			Logger:      logger,
-		})
-	case "feishu":
-		return feishu.New(feishu.Options{
-			Name:              bc.Name,
-			AppID:             st("app_id", ""),
-			AppSecret:         st("app_secret", ""),
-			VerificationToken: st("verification_token", ""),
-			EncryptKey:        st("encrypt_key", ""),
-			ListenAddr:        st("listen_addr", ""),
-			Path:              st("path", ""),
-			BaseURL:           st("base_url", ""),
-			HTTPClient:        httpClient,
-			Logger:            logger,
-		})
-	default:
-		return nil, fmt.Errorf("adapter %q is not implemented", bc.Adapter)
-	}
-}
-
 // enabledPlugins 返回配置中启用、且已经通过空导入注册的编译期插件。
 func enabledPlugins(cfg *config.Config, logger *slog.Logger) []bot.Plugin {
 	registered := bot.RegisteredPlugins()
@@ -255,30 +230,4 @@ func enabledPlugins(cfg *config.Config, logger *slog.Logger) []bot.Plugin {
 		}
 	}
 	return out
-}
-
-func settingString(bc config.BotConfig, key, def string) string {
-	v, ok := bc.Settings[key]
-	if !ok || v == nil {
-		return def
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return fmt.Sprint(v)
-}
-
-func warnUnknownSettings(bc config.BotConfig, known []string, logger *slog.Logger) {
-	for key := range bc.Settings {
-		found := false
-		for _, k := range known {
-			if k == key {
-				found = true
-				break
-			}
-		}
-		if !found {
-			logger.Warn("unknown adapter setting", "bot", bc.Name, "adapter", bc.Adapter, "key", key)
-		}
-	}
 }

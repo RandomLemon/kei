@@ -38,6 +38,8 @@ type Deps struct {
 	API func(name string, meta bot.Metadata) bot.BotAPI
 	// Catalog 返回已加载插件的元信息，供 PluginContext.Catalog 使用。
 	Catalog func() []bot.Metadata
+	// AdapterCatalog 返回已加载适配器的绑定信息，供 PluginContext.Adapters 使用。
+	AdapterCatalog func() []bot.AdapterInfo
 	// SetupTimeout/StartTimeout/StopTimeout 为各阶段超时，<=0 时用默认值。
 	SetupTimeout time.Duration
 	StartTimeout time.Duration
@@ -228,6 +230,9 @@ func (m *Manager) contextFor(meta bot.Metadata) bot.PluginContext {
 	if m.deps.Catalog != nil {
 		pc.Catalog = catalogFunc(m.deps.Catalog)
 	}
+	if m.deps.AdapterCatalog != nil {
+		pc.Adapters = adapterCatalogFunc(m.deps.AdapterCatalog)
+	}
 	return pc
 }
 
@@ -298,4 +303,11 @@ func (m *Manager) snapshot() []*entry {
 // catalogFunc 把函数适配为 bot.PluginCatalog。
 type catalogFunc func() []bot.Metadata
 
+// Adapters 返回已加载插件的元信息快照。
 func (f catalogFunc) Plugins() []bot.Metadata { return f() }
+
+// adapterCatalogFunc 把函数适配为 bot.AdapterCatalog。
+type adapterCatalogFunc func() []bot.AdapterInfo
+
+// Adapters 返回已加载适配器的绑定信息快照。
+func (f adapterCatalogFunc) Adapters() []bot.AdapterInfo { return f() }

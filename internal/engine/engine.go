@@ -50,6 +50,10 @@ type AdapterBinding struct {
 	BotID string
 	// Adapter 是该 bot 的适配器实例。
 	Adapter bot.Adapter
+	// Metadata 是适配器的注册元信息，用于管理命令展示；可为零值。
+	Metadata bot.AdapterMetadata
+	// External 表示该实例由外部 gRPC 适配器进程提供。
+	External bool
 }
 
 // Options 是引擎的构造参数。
@@ -114,9 +118,10 @@ type Engine struct {
 	plugins *pluginmgr.Manager
 	sink    *eventSink
 
-	mu        sync.RWMutex
-	adapters  map[string]bot.Adapter
-	platforms map[string][]string
+	mu           sync.RWMutex
+	adapters     map[string]bot.Adapter
+	platforms    map[string][]string
+	adapterInfos []bot.AdapterInfo
 
 	sendLimits  map[string]*ratelimit.Limiter
 	handleLimit *ratelimit.Limiter
@@ -126,10 +131,11 @@ type Engine struct {
 	running bool
 }
 
-// 确保 Engine 满足 BotAPI 与 PluginCatalog。
+// 确保 Engine 满足 BotAPI、PluginCatalog 与 AdapterCatalog。
 var (
-	_ bot.BotAPI        = (*Engine)(nil)
-	_ bot.PluginCatalog = (*Engine)(nil)
+	_ bot.BotAPI         = (*Engine)(nil)
+	_ bot.PluginCatalog  = (*Engine)(nil)
+	_ bot.AdapterCatalog = (*Engine)(nil)
 )
 
 // New 构造引擎并完成静态校验（配置、适配器绑定、插件重名）。
@@ -181,6 +187,11 @@ func New(opts Options) (*Engine, error) {
 		}
 		e.adapters[b.BotID] = b.Adapter
 		e.platforms[b.Adapter.Name()] = append(e.platforms[b.Adapter.Name()], b.BotID)
+		e.adapterInfos = append(e.adapterInfos, bot.AdapterInfo{
+			BotID:    b.BotID,
+			Metadata: b.Metadata,
+			External: b.External,
+		})
 
 		if rate := opts.Config.Limits.SendRate; rate > 0 {
 			e.sendLimits[b.BotID] = ratelimit.New(rate, opts.Config.Limits.SendBurst, 0)
@@ -227,12 +238,13 @@ func New(opts Options) (*Engine, error) {
 	}
 	var mgr *pluginmgr.Manager
 	mgr = pluginmgr.New(pluginmgr.Deps{
-		Storage:    e.store,
-		HTTPClient: e.httpClient,
-		Logger:     e.log,
-		Configs:    pluginConfigs,
-		API:        e.pluginAPI,
-		Catalog:    func() []bot.Metadata { return mgr.Plugins() },
+		Storage:        e.store,
+		HTTPClient:     e.httpClient,
+		Logger:         e.log,
+		Configs:        pluginConfigs,
+		API:            e.pluginAPI,
+		Catalog:        func() []bot.Metadata { return mgr.Plugins() },
+		AdapterCatalog: func() []bot.AdapterInfo { return e.Adapters() },
 	})
 	e.plugins = mgr
 
@@ -465,6 +477,30 @@ func (e *Engine) Adapter(botID string) (bot.Adapter, bool) {
 	defer e.mu.RUnlock()
 	ad, ok := e.adapters[botID]
 	return ad, ok
+}
+
+// Adapters 返回已加载适配器的绑定信息快照，实现 bot.AdapterCatalog。
+//
+// 返回值已深拷贝元信息切片，调用方修改不会影响引擎内部状态。
+func (e *Engine) Adapters() []bot.AdapterInfo {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]bot.AdapterInfo, 0, len(e.adapterInfos))
+	for _, info := range e.adapterInfos {
+		info.Metadata.Platforms = append([]string(nil), info.Metadata.Platforms...)
+		info.Metadata.Permissions = append([]bot.Permission(nil), info.Metadata.Permissions...)
+		info.Metadata.Options = append([]string(nil), info.Metadata.Options...)
+		out = append(out, info)
+	}
+	return out
+}
+
+// Emit 把外部适配器投递的事件写入事件总线。
+//
+// 这是外部适配器上行通道（BotService.EmitEvent）的落点，与 eventSink.Emit
+// 同语义：返回值只表示事件是否成功入队，不表示已被处理。
+func (e *Engine) Emit(ctx context.Context, ev *bot.Event) error {
+	return e.sink.Emit(ctx, ev)
 }
 
 // eventSink 是适配器投递事件的入口，负责埋点后写入事件总线。

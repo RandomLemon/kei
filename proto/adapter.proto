@@ -1,0 +1,153 @@
+// 外部适配器 gRPC 协议。
+//
+// 拓扑：核心进程只作为 gRPC **Server** 提供 BotService，外部适配器进程作为客户端
+// 主动连接核心（监听地址来自适配器配置 adapters.<name>.grpc_addr），并在自己一侧
+// 作为 **Server** 提供 AdapterService：
+//
+//   - BotService：核心实现，适配器调用，用于上行事件（EmitEvent）、读配置、写日志；
+//   - AdapterService：外部适配器进程实现，核心主动 dial 后调用，用于初始化、
+//     按 bot 实例启停、发送消息与关闭适配器。
+//
+// 事件方向与外部插件相反：插件的事件由核心 dial 后经 PluginService.HandleEvent
+// 推送，适配器的事件由平台推给适配器，再经 BotService.EmitEvent 送进核心。
+//
+// 本文件与 plugin.proto 同属 package plugin、共用 go_package，并复用其
+// Event/Message/Target/Empty/SendResponse 定义，避免同一业务结构出现两份契约。
+// 字段命名与 pkg/bot 的 Go 类型一一对应，JSON 载荷统一用「JSON 字符串」承载，
+// 以避免 proto 与业务结构体之间的强耦合（业务结构体可独立演进）。
+syntax = "proto3";
+
+package plugin;
+
+import "plugin.proto";
+
+option go_package = "github.com/RandomLemon/kei/proto/pluginpb";
+
+// AdapterInfo 是适配器的身份、能力声明与配置键名单。
+//
+// 双向使用：核心把配置中记录的身份与权限下发给适配器；适配器在
+// AdapterInitResponse 中回传自身实际的元信息，核心以回传值为准。
+message AdapterInfo {
+  // name 是适配器名，也是配置中 bots[].adapter 的取值。
+  string name = 1;
+  // version 是适配器版本，仅用于日志与展示。
+  string version = 2;
+  // author 是适配器作者，仅用于展示。
+  string author = 3;
+  // description 是适配器说明，仅用于展示。
+  string description = 4;
+  // platforms 是适配器支持的平台名列表。
+  repeated string platforms = 5;
+  // permissions 是核心授予该适配器的权限列表，例如 receive_event。
+  repeated string permissions = 6;
+  // options 是适配器接受的配置键名单；核心据此对未知配置键告警。
+  // 下发给外部适配器时通常为空（外部适配器的配置键由适配器自行声明），
+  // 适配器在 AdapterInitResponse 中回传自身实际的键名单。
+  repeated string options = 7;
+}
+
+// AdapterInitRequest 是核心连接适配器后的初始化参数。
+//
+// 每个字段都是「核心交给适配器」的信息：适配器名、版本等元信息由核心从配置中
+// 读取后下发，令牌、核心地址与进程级配置也由核心注入。一个适配器进程只 Init
+// 一次，随后按绑定的 bot 实例逐个 Start。
+message AdapterInitRequest {
+  // info 是核心记录的适配器元信息与授予的权限。
+  AdapterInfo info = 1;
+  // token 是核心分配给该适配器的认证令牌，后续 BotService 调用都需携带。
+  string token = 2;
+  // core_addr 是核心 BotService 的监听地址，适配器据此反向调用核心。
+  string core_addr = 3;
+  // config_json 是适配器的进程级配置，JSON object 字符串；无配置时为空串。
+  string config_json = 4;
+}
+
+// AdapterInitResponse 是适配器对初始化的应答。
+message AdapterInitResponse {
+  // ok 表示适配器是否初始化成功。
+  bool ok = 1;
+  // error 是失败原因，ok 为 true 时为空。
+  string error = 2;
+  // info 是适配器回传的实际元信息，核心以它覆盖配置中记录的值。
+  AdapterInfo info = 3;
+}
+
+// AdapterInstance 描述一个要与适配器绑定的 bot 实例，每个实例 Start 一次。
+//
+// 适配器必须按 bot_id 隔离实例状态，同一进程可服务多个 bot。
+message AdapterInstance {
+  // bot_id 是机器人实例标识，即配置中的 bots[].name。
+  string bot_id = 1;
+  // platform 是写入 Event.Platform 的平台名。
+  string platform = 2;
+  // config_json 是该实例的适配器私有配置，JSON object 字符串。
+  string config_json = 3;
+}
+
+// AdapterStartResponse 返回实例启动结果与能力声明。
+message AdapterStartResponse {
+  // ok 表示该实例是否启动成功。
+  bool ok = 1;
+  // error 是失败原因，ok 为 true 时为空。
+  string error = 2;
+  // capabilities 是该实例的能力声明，是核心执行消息段降级的唯一权威来源；
+  // 全零按「仅文本」处理并告警。
+  Capabilities capabilities = 3;
+  // platform 是该实例实际使用的平台名，优先于 AdapterInstance.platform。
+  string platform = 4;
+}
+
+// AdapterStopRequest 是核心停止一个 bot 实例的请求。
+message AdapterStopRequest {
+  // bot_id 是要停止的实例标识；Stop 必须幂等。
+  string bot_id = 1;
+}
+
+// Capabilities 声明平台支持的消息能力，对应 bot.Capabilities。
+message Capabilities {
+  // text 表示支持文本消息段。
+  bool text = 1;
+  // markdown 表示支持 Markdown 消息段。
+  bool markdown = 2;
+  // image 表示支持图片消息段。
+  bool image = 3;
+  // at 表示支持 @ 消息段。
+  bool at = 4;
+  // card 表示支持卡片消息段。
+  bool card = 5;
+  // file 表示支持文件消息段。
+  bool file = 6;
+  // reply 表示支持引用回复。
+  bool reply = 7;
+  // private 表示支持私聊会话。
+  bool private = 8;
+  // group 表示支持群聊会话。
+  bool group = 9;
+}
+
+// AdapterSendRequest 是核心请求适配器向平台发送消息，对应 bot.SendRequest。
+message AdapterSendRequest {
+  // bot_id 指定使用哪个机器人实例发送。
+  string bot_id = 1;
+  // target 是消息接收方。
+  Target target = 2;
+  // message 是待发送的统一消息。
+  Message message = 3;
+  // reply_to 非空时表示引用回复该消息 ID。
+  string reply_to = 4;
+}
+
+// AdapterService 由外部适配器实现，核心 dial 后调用。
+service AdapterService {
+  // Init 初始化适配器并下发生效配置与令牌，每个进程只调用一次。
+  rpc Init(AdapterInitRequest) returns (AdapterInitResponse);
+  // Start 启动一个 bot 实例的事件接收，返回该实例的能力声明；
+  // 必须已就绪才返回，保证返回后该实例即可产生事件。
+  rpc Start(AdapterInstance) returns (AdapterStartResponse);
+  // Stop 停止一个 bot 实例，释放该实例独占的资源，必须幂等。
+  rpc Stop(AdapterStopRequest) returns (Empty);
+  // Send 向平台发送消息，失败原因写在 SendResponse.error 中。
+  rpc Send(AdapterSendRequest) returns (SendResponse);
+  // Shutdown 通知适配器退出，适配器需停止全部实例、释放资源并尽快返回。
+  rpc Shutdown(Empty) returns (Empty);
+}

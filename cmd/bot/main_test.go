@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -17,7 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RandomLemon/kei/internal/adaptermgr"
 	"github.com/RandomLemon/kei/internal/config"
+	"github.com/RandomLemon/kei/internal/grpcsrv"
+	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
@@ -26,77 +30,74 @@ func testLogger() (*slog.Logger, *bytes.Buffer) {
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})), buf
 }
 
-func TestBuildAdapter(t *testing.T) {
+func TestAdaptermgrBuild(t *testing.T) {
 	logger, _ := testLogger()
 	httpClient := &http.Client{Timeout: time.Second}
 
 	tests := []struct {
-		name       string
-		cfg        config.BotConfig
-		wantErr    bool
-		wantPlatfo string
+		name     string
+		bot      config.BotConfig
+		wantErr  bool
+		platform string
 	}{
 		{
-			name:       "mock",
-			cfg:        config.BotConfig{Name: "mock-main", Adapter: "mock", Settings: map[string]any{"platform": "mock"}},
-			wantPlatfo: "mock",
+			name:     "mock",
+			bot:      config.BotConfig{Name: "mock-main", Adapter: "mock", Settings: map[string]any{"platform": "mock", "listen_addr": "127.0.0.1:0"}},
+			platform: "mock",
 		},
 		{
 			name: "onebot",
-			cfg: config.BotConfig{Name: "qq-main", Adapter: "onebot", Settings: map[string]any{
+			bot: config.BotConfig{Name: "qq-main", Adapter: "onebot", Settings: map[string]any{
 				"api_url": "http://127.0.0.1:3000", "listen_addr": "127.0.0.1:0",
 			}},
-			wantPlatfo: "onebot",
+			platform: "onebot",
 		},
 		{
 			name: "feishu",
-			cfg: config.BotConfig{Name: "feishu-main", Adapter: "feishu", Settings: map[string]any{
+			bot: config.BotConfig{Name: "feishu-main", Adapter: "feishu", Settings: map[string]any{
 				"app_id": "cli_x", "app_secret": "s", "verification_token": "t", "listen_addr": "127.0.0.1:0",
 			}},
-			wantPlatfo: "feishu",
+			platform: "feishu",
 		},
 		{
-			name:    "缺少必填项",
-			cfg:     config.BotConfig{Name: "qq-main", Adapter: "onebot"},
-			wantErr: true,
-		},
-		{
-			name:    "未实现的适配器",
-			cfg:     config.BotConfig{Name: "wecom-main", Adapter: "wecom"},
+			name:    "未注册的适配器",
+			bot:     config.BotConfig{Name: "wecom-main", Adapter: "wecom"},
 			wantErr: true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ad, err := buildAdapter(tc.cfg, logger, httpClient)
+			bindings, err := adaptermgr.Build(context.Background(), &config.Config{Bots: []config.BotConfig{tc.bot}}, adaptermgr.Deps{
+				Logger:     logger,
+				Storage:    storage.NewMemory(),
+				HTTPClient: httpClient,
+			})
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("期望错误，得到 %v", ad)
+					t.Fatalf("期望错误，得到 %+v", bindings.List())
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("buildAdapter: %v", err)
+				t.Fatalf("adaptermgr.Build: %v", err)
 			}
-			if ad.Name() != tc.wantPlatfo {
-				t.Fatalf("平台名 = %q, want %q", ad.Name(), tc.wantPlatfo)
+			t.Cleanup(func() { _ = bindings.Close() })
+
+			list := bindings.List()
+			if len(list) != 1 || list[0].BotID != tc.bot.Name {
+				t.Fatalf("绑定 = %+v", list)
+			}
+			if got := list[0].Adapter.Name(); got != tc.platform {
+				t.Fatalf("平台名 = %q, want %q", got, tc.platform)
+			}
+			if list[0].Info.Metadata.Name != tc.bot.Adapter {
+				t.Fatalf("元信息名 = %q, want %q", list[0].Info.Metadata.Name, tc.bot.Adapter)
+			}
+			if list[0].Info.External {
+				t.Fatal("进程内适配器不应标记为外部")
 			}
 		})
-	}
-}
-
-func TestBuildAdapterWarnsAboutUnknownSettings(t *testing.T) {
-	logger, buf := testLogger()
-	cfg := config.BotConfig{Name: "mock-main", Adapter: "mock", Settings: map[string]any{
-		"platform": "mock",
-		"typo_key": "x",
-	}}
-	if _, err := buildAdapter(cfg, logger, http.DefaultClient); err != nil {
-		t.Fatalf("buildAdapter: %v", err)
-	}
-	if !strings.Contains(buf.String(), "typo_key") {
-		t.Fatalf("未提示未知配置键: %s", buf.String())
 	}
 }
 
@@ -208,23 +209,69 @@ func TestExternalSpecsRequireToken(t *testing.T) {
 
 func TestSetupExternalWithoutPlugins(t *testing.T) {
 	logger, _ := testLogger()
-	setup, err := setupExternal(&config.Config{}, logger, http.DefaultClient)
+	bindings := emptyBindings(t)
+	setup, err := setupExternal(&config.Config{}, logger, http.DefaultClient, bindings)
 	if err != nil {
 		t.Fatalf("setupExternal: %v", err)
 	}
 	if setup.hook != nil {
-		t.Fatal("没有外部插件时不应提供装配钩子")
+		t.Fatal("没有外部插件与外部适配器时不应提供装配钩子")
 	}
 	setup.close() // 不得 panic
 }
 
 func TestSetupExternalRequiresGrpcAddr(t *testing.T) {
 	logger, _ := testLogger()
-	cfg := &config.Config{Plugins: map[string]config.PluginConfig{
-		"ext-a": {Enabled: true, Settings: map[string]any{"grpc_addr": "127.0.0.1:1", "token": "t"}},
-	}}
-	if _, err := setupExternal(cfg, logger, http.DefaultClient); err == nil {
-		t.Fatal("缺少 grpc.addr 应返回错误")
+	bindings := emptyBindings(t)
+
+	t.Run("外部插件", func(t *testing.T) {
+		cfg := &config.Config{Plugins: map[string]config.PluginConfig{
+			"ext-a": {Enabled: true, Settings: map[string]any{"grpc_addr": "127.0.0.1:1", "token": "t"}},
+		}}
+		if _, err := setupExternal(cfg, logger, http.DefaultClient, bindings); err == nil {
+			t.Fatal("缺少 grpc.addr 应返回错误")
+		}
+	})
+
+	t.Run("外部适配器", func(t *testing.T) {
+		cfg := &config.Config{Adapters: map[string]config.AdapterConfig{
+			"myim": {GrpcAddr: "127.0.0.1:1", Token: "t"},
+		}}
+		if _, err := setupExternal(cfg, logger, http.DefaultClient, bindings); err == nil {
+			t.Fatal("缺少 grpc.addr 应返回错误")
+		}
+	})
+}
+
+// emptyBindings 构造一个不含任何绑定的装配结果，供只校验外部通道的测试使用。
+func emptyBindings(t *testing.T) *adaptermgr.Bindings {
+	t.Helper()
+	bindings, err := adaptermgr.Build(context.Background(), &config.Config{}, adaptermgr.Deps{Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatalf("adaptermgr.Build: %v", err)
+	}
+	t.Cleanup(func() { _ = bindings.Close() })
+	return bindings
+}
+
+func TestBindTokenRejectsDuplicates(t *testing.T) {
+	tokens := map[string]grpcsrv.TokenInfo{}
+	configs := map[string]*bot.Config{}
+
+	if err := bindToken(tokens, configs, "same", "ext-a", grpcsrv.TokenPlugin, nil, nil); err != nil {
+		t.Fatalf("首次登记: %v", err)
+	}
+	if err := bindToken(tokens, configs, "same", "myim", grpcsrv.TokenAdapter, nil, nil); err == nil {
+		t.Fatal("重复 token 应报错")
+	}
+	if err := bindToken(tokens, configs, "other", "ext-a", grpcsrv.TokenAdapter, nil, nil); err == nil {
+		t.Fatal("插件与适配器同名应报错")
+	}
+	if err := bindToken(tokens, configs, "  ", "ext-b", grpcsrv.TokenPlugin, nil, nil); err == nil {
+		t.Fatal("空 token 应报错")
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("令牌表被污染: %+v", tokens)
 	}
 }
 
@@ -315,10 +362,10 @@ func TestExampleConfigLoads(t *testing.T) {
 		}
 	}
 	// README 里的 curl 联调流程依赖 mock bot 的 listen_addr 与 platform 设置。
-	if got := settingString(mockBot, "listen_addr", ""); got == "" {
+	if got, _ := mockBot.Settings["listen_addr"].(string); got == "" {
 		t.Fatal("示例配置的 mock bot 必须配置 listen_addr")
 	}
-	if got := settingString(mockBot, "platform", "mock"); got != "mock" {
+	if got, _ := mockBot.Settings["platform"].(string); got != "mock" {
 		t.Fatalf("mock bot 的 platform = %q, want mock", got)
 	}
 }

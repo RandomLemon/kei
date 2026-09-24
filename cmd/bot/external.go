@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RandomLemon/kei/internal/adaptermgr"
 	"github.com/RandomLemon/kei/internal/config"
+	"github.com/RandomLemon/kei/internal/grpcsrv"
 	"github.com/RandomLemon/kei/internal/pluginmgr/external"
-	"github.com/RandomLemon/kei/internal/pluginmgr/grpcsrv"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
@@ -37,20 +38,22 @@ type externalSetup struct {
 	close func()
 }
 
-// setupExternal 解析配置中的外部插件；没有配置时返回空装配。
+// setupExternal 解析配置中的外部插件与外部适配器；都没有配置时返回空装配。
 //
-// 外部插件通过 `plugins.<name>.grpc_addr` 声明：核心启动 BotService gRPC 服务
-// （供插件回调发送消息），并以客户端身份连接插件进程（调用其 HandleEvent）。
-func setupExternal(cfg *config.Config, logger *slog.Logger, httpClient *http.Client) (*externalSetup, error) {
+// 外部插件通过 `plugins.<name>.grpc_addr` 声明，外部适配器通过
+// `adapters.<name>.grpc_addr` 声明：核心启动 BotService gRPC 服务（供两者反向
+// 调用），并以客户端身份连接插件进程与适配器进程。外部适配器的事件经
+// grpcsrv.EmitEvent 进入事件总线，归属校验由 bindings.EmitFunc 完成。
+func setupExternal(cfg *config.Config, logger *slog.Logger, httpClient *http.Client, bindings *adaptermgr.Bindings) (*externalSetup, error) {
 	specs, err := externalSpecs(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if len(specs) == 0 {
+	if len(specs) == 0 && len(cfg.Adapters) == 0 {
 		return &externalSetup{close: func() {}}, nil
 	}
 	if cfg.Grpc.Addr == "" {
-		return nil, errors.New("config: grpc.addr is required when external plugins are enabled")
+		return nil, errors.New("config: grpc.addr is required when external plugins or adapters are enabled")
 	}
 
 	serverTLS, err := serverTLSConfig(cfg.Grpc)
@@ -68,20 +71,33 @@ func setupExternal(cfg *config.Config, logger *slog.Logger, httpClient *http.Cli
 	)
 
 	hook := func(api bot.BotAPI) ([]bot.Plugin, error) {
-		tokens := make(map[string]grpcsrv.TokenInfo, len(specs))
-		configs := make(map[string]*bot.Config, len(specs))
+		tokens := make(map[string]grpcsrv.TokenInfo, len(specs)+len(cfg.Adapters))
+		configs := make(map[string]*bot.Config, len(specs)+len(cfg.Adapters))
 		for _, s := range specs {
-			tokens[s.token] = grpcsrv.TokenInfo{Plugin: s.name, Permissions: s.permissions}
-			configs[s.name] = bot.NewConfig(s.settings)
+			if err := bindToken(tokens, configs, s.token, s.name, grpcsrv.TokenPlugin, s.permissions, s.settings); err != nil {
+				return nil, err
+			}
+		}
+		for _, name := range adapterNames(cfg) {
+			ac := cfg.Adapters[name]
+			if err := bindToken(tokens, configs, ac.Token, name, grpcsrv.TokenAdapter, adaptermgr.Permissions(ac.Permissions), ac.Settings); err != nil {
+				return nil, err
+			}
+		}
+
+		emit, err := bindings.EmitFunc(api)
+		if err != nil {
+			return nil, err
 		}
 
 		server, err = grpcsrv.New(grpcsrv.Options{
-			Addr:    cfg.Grpc.Addr,
-			Tokens:  tokens,
-			Bot:     api,
-			Configs: configs,
-			Logger:  logger,
-			TLS:     serverTLS,
+			Addr:      cfg.Grpc.Addr,
+			Tokens:    tokens,
+			Bot:       api,
+			Configs:   configs,
+			Logger:    logger,
+			TLS:       serverTLS,
+			EmitEvent: emit,
 		})
 		if err != nil {
 			return nil, err
@@ -89,7 +105,12 @@ func setupExternal(cfg *config.Config, logger *slog.Logger, httpClient *http.Cli
 		if err := server.Start(); err != nil {
 			return nil, err
 		}
-		logger.Info("bot service listening", "addr", server.Addr(), "tls", serverTLS != nil)
+		logger.Info("bot service listening",
+			"addr", server.Addr(),
+			"tls", serverTLS != nil,
+			"external_plugins", len(specs),
+			"external_adapters", len(cfg.Adapters),
+		)
 
 		out := make([]bot.Plugin, 0, len(specs))
 		for _, s := range specs {
@@ -132,6 +153,35 @@ func setupExternal(cfg *config.Config, logger *slog.Logger, httpClient *http.Cli
 		}
 	}
 	return &externalSetup{hook: hook, close: closer}, nil
+}
+
+// bindToken 登记一个外部进程（插件或适配器）的令牌与配置。
+//
+// 令牌重复或插件/适配器重名都会让启动失败：令牌是核心侧唯一的身份凭据，
+// 静默覆盖会让某个外部进程冒充另一个。
+func bindToken(tokens map[string]grpcsrv.TokenInfo, configs map[string]*bot.Config, token, name string, kind grpcsrv.TokenKind, perms []bot.Permission, settings map[string]any) error {
+	if strings.TrimSpace(token) == "" {
+		return fmt.Errorf("config: %s %s 需要非空 token", kind, name)
+	}
+	if _, dup := tokens[token]; dup {
+		return fmt.Errorf("config: token 重复（%s）", name)
+	}
+	if _, dup := configs[name]; dup {
+		return fmt.Errorf("config: 插件与适配器同名 %q", name)
+	}
+	tokens[token] = grpcsrv.TokenInfo{Name: name, Kind: kind, Permissions: perms}
+	configs[name] = bot.NewConfig(settings)
+	return nil
+}
+
+// adapterNames 返回 adapters 段声明的适配器名（排序，保证装配顺序确定）。
+func adapterNames(cfg *config.Config) []string {
+	out := make([]string, 0, len(cfg.Adapters))
+	for name := range cfg.Adapters {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // externalSpecs 从插件配置中提取外部插件描述，并按名字排序保证启动顺序确定。

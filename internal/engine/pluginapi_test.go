@@ -37,7 +37,9 @@ func newTestEngine(t *testing.T, opts Options) *Engine {
 func TestPluginAPIPermissionGates(t *testing.T) {
 	eng := newTestEngine(t, Options{})
 	ctx := context.Background()
-	msg := &bot.Message{Kind: bot.MessageGroup}
+	msg := &bot.Message{Kind: bot.MessageGroup, Segments: []bot.Segment{
+		{Type: bot.SegText, Data: map[string]any{bot.KeyText: "hi"}},
+	}}
 	target := bot.Target{Platform: "mock", ChannelID: "c1"}
 
 	t.Run("未声明 send_message 时主动发送被拒绝", func(t *testing.T) {
@@ -156,12 +158,15 @@ func TestSendLimiterIsApplied(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	target := bot.Target{Platform: "mock", BotID: "mock-main", ChannelID: "c1"}
+	msg := &bot.Message{Kind: bot.MessagePrivate, Segments: []bot.Segment{
+		{Type: bot.SegText, Data: map[string]any{bot.KeyText: "hi"}},
+	}}
 
-	if _, err := eng.Send(ctx, target, &bot.Message{}); err != nil {
+	if _, err := eng.Send(ctx, target, msg); err != nil {
 		t.Fatalf("首次发送应成功: %v", err)
 	}
 	// 令牌耗尽：等待期间 ctx 超时，发送应失败而不是无限阻塞。
-	if _, err := eng.Send(ctx, target, &bot.Message{}); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := eng.Send(ctx, target, msg); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("限流等待应受 ctx 约束, got %v", err)
 	}
 }

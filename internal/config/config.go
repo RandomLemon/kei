@@ -6,16 +6,18 @@
 // 名为 "feishu-main" 的 bot 的 Settings["app_id"]。未匹配任何已知路径的
 // KEI_* 变量会被忽略（不报错）。
 //
-// 顶层允许的键为 log、metrics、bots、plugins、grpc、limits、auth，
+// 顶层允许的键为 log、metrics、bots、plugins、adapters、grpc、limits、auth，
 // 其余顶层键一律报错。
 package config
 
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -25,6 +27,9 @@ const (
 	defaultLogLevel  = "info"
 	defaultLogFormat = "text"
 )
+
+// defaultAdapterPermission 是外部适配器未声明 permissions 时授予的默认权限。
+const defaultAdapterPermission = "receive_event"
 
 // adapterNamePattern 限制 adapter 名称的字符集。
 var adapterNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
@@ -45,6 +50,8 @@ type Config struct {
 	Bots []BotConfig `yaml:"bots"`
 	// Plugins 是插件名到插件配置的映射。
 	Plugins map[string]PluginConfig `yaml:"plugins"`
+	// Adapters 是外部适配器名到接入配置的映射；进程内适配器无需在此声明。
+	Adapters map[string]AdapterConfig `yaml:"adapters"`
 	// Grpc 是外部插件 gRPC 通道配置。
 	Grpc GrpcConfig `yaml:"grpc"`
 	// Limits 是限流配置。
@@ -200,6 +207,8 @@ func decode(data []byte) (*Config, error) {
 			cfg.Bots, err = decodeBots(val)
 		case "plugins":
 			cfg.Plugins, err = decodePlugins(val)
+		case "adapters":
+			cfg.Adapters, err = decodeAdapters(val)
 		default:
 			return nil, fmt.Errorf("config: 未知顶层键 %q", key)
 		}
@@ -325,6 +334,111 @@ func decodePlugin(name string, node *yaml.Node) (PluginConfig, error) {
 	}
 }
 
+// AdapterConfig 描述一个外部适配器的接入配置。
+//
+// 只有外部（独立进程）适配器需要在此声明；进程内注册的适配器——包括第三方
+// Go module——不出现在 adapters 段。
+type AdapterConfig struct {
+	// GrpcAddr 是适配器 AdapterService 的监听地址，必填。
+	GrpcAddr string
+	// Token 是适配器反向调用核心 BotService 的令牌，必填。
+	Token string
+	// Platform 是该适配器写入 Event.Platform 的平台名；适配器上报多个平台时必填。
+	Platform string
+	// Timeout 是单次 RPC 超时与启动就绪等待上限；<=0 时由调用方取默认值。
+	Timeout time.Duration
+	// Permissions 是核心授予该适配器的权限；缺省为 [receive_event]。
+	Permissions []string
+	// Settings 是 YAML 中除上述键外的其余键，作为进程级配置下发给适配器；
+	// 取值保证可被 encoding/json 编解码。
+	Settings map[string]any
+}
+
+// decodeAdapters 解析 adapters 映射：适配器名 -> 外部接入配置。
+func decodeAdapters(node *yaml.Node) (map[string]AdapterConfig, error) {
+	if isNull(node) {
+		return map[string]AdapterConfig{}, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil, errors.New("adapters 必须是映射")
+	}
+	out := make(map[string]AdapterConfig, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		name := node.Content[i].Value
+		ac, err := decodeAdapter(name, node.Content[i+1])
+		if err != nil {
+			return nil, err
+		}
+		out[name] = ac
+	}
+	return out, nil
+}
+
+// decodeAdapter 解析单个外部适配器条目，未声明的键进入 Settings。
+func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
+	if node.Kind != yaml.MappingNode {
+		return AdapterConfig{}, fmt.Errorf("adapters.%s: 必须是映射", name)
+	}
+	var ac AdapterConfig
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, val := node.Content[i].Value, node.Content[i+1]
+		var err error
+		switch key {
+		case "grpc_addr":
+			err = val.Decode(&ac.GrpcAddr)
+		case "token":
+			err = val.Decode(&ac.Token)
+		case "platform":
+			err = val.Decode(&ac.Platform)
+		case "timeout":
+			ac.Timeout, err = decodeDurationNode(val)
+		case "permissions":
+			ac.Permissions, err = decodeStringList(val)
+		default:
+			var v any
+			if err := val.Decode(&v); err != nil {
+				return AdapterConfig{}, fmt.Errorf("adapters.%s.%s: %w", name, key, err)
+			}
+			if ac.Settings == nil {
+				ac.Settings = make(map[string]any)
+			}
+			ac.Settings[key] = normalizeValue(v)
+			continue
+		}
+		if err != nil {
+			return AdapterConfig{}, fmt.Errorf("adapters.%s.%s: %w", name, key, err)
+		}
+	}
+	return ac, nil
+}
+
+// decodeDurationNode 解析时长：字符串按 time.ParseDuration，数字按秒。
+func decodeDurationNode(node *yaml.Node) (time.Duration, error) {
+	if isNull(node) {
+		return 0, nil
+	}
+	var raw any
+	if err := node.Decode(&raw); err != nil {
+		return 0, err
+	}
+	switch t := raw.(type) {
+	case string:
+		d, err := time.ParseDuration(strings.TrimSpace(t))
+		if err != nil {
+			return 0, fmt.Errorf("需要时长（如 10s），实际为 %q", t)
+		}
+		return d, nil
+	case int:
+		return time.Duration(t) * time.Second, nil
+	case int64:
+		return time.Duration(t) * time.Second, nil
+	case float64:
+		return time.Duration(t * float64(time.Second)), nil
+	default:
+		return 0, fmt.Errorf("需要时长（如 10s），实际为 %v", raw)
+	}
+}
+
 // decodeStringList 解析字符串序列。
 func decodeStringList(node *yaml.Node) ([]string, error) {
 	if isNull(node) {
@@ -409,6 +523,15 @@ func applyDefaults(c *Config) {
 	if c.Plugins == nil {
 		c.Plugins = map[string]PluginConfig{}
 	}
+	if c.Adapters == nil {
+		c.Adapters = map[string]AdapterConfig{}
+	}
+	for name, ac := range c.Adapters {
+		if len(ac.Permissions) == 0 {
+			ac.Permissions = []string{defaultAdapterPermission}
+		}
+		c.Adapters[name] = ac
+	}
 }
 
 // validate 校验配置，返回带字段路径的错误。
@@ -436,6 +559,41 @@ func (c *Config) validate() error {
 	for name := range c.Plugins {
 		if name == "" {
 			return errors.New("config: plugins: 插件名不能为空")
+		}
+	}
+	externalAdapters := 0
+	for name, ac := range c.Adapters {
+		if name == "" {
+			return errors.New("config: adapters: 适配器名不能为空")
+		}
+		if !adapterNamePattern.MatchString(name) {
+			return fmt.Errorf("config: adapters.%s: 适配器名只允许 [a-z0-9_-]", name)
+		}
+		if ac.GrpcAddr == "" {
+			return fmt.Errorf("config: adapters.%s.grpc_addr: 不能为空（进程内适配器无需在 adapters 段声明）", name)
+		}
+		if ac.Token == "" {
+			return fmt.Errorf("config: adapters.%s.token: 不能为空", name)
+		}
+		for _, p := range ac.Permissions {
+			if strings.TrimSpace(p) == "" {
+				return fmt.Errorf("config: adapters.%s.permissions: 权限名不能为空", name)
+			}
+		}
+		externalAdapters++
+	}
+	if externalAdapters > 0 && c.Grpc.Addr == "" {
+		return errors.New("config: grpc.addr: 存在外部适配器时必须配置核心 gRPC 监听地址")
+	}
+	if externalAdapters > 0 {
+		// 适配器进程用该地址反向调用核心（BotService.EmitEvent），因此必须是
+		// 可预先写死的固定地址；":0" 这类临时端口对它没有意义。
+		_, port, err := net.SplitHostPort(c.Grpc.Addr)
+		if err != nil {
+			return fmt.Errorf("config: grpc.addr: 外部适配器要求 host:port 形式，实际为 %q", c.Grpc.Addr)
+		}
+		if port == "0" {
+			return fmt.Errorf("config: grpc.addr: 外部适配器要求固定端口（不能是 %q）", c.Grpc.Addr)
 		}
 	}
 	if err := c.Log.validate(); err != nil {
