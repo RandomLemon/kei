@@ -7,7 +7,7 @@
 ## 1. 项目概述
 
 项目名称：`kei`  
-模块路径：`github.com/RandomLemon/kei`（实现时可替换为实际模块路径）
+模块路径：`github.com/RandomLemon/kei`
 
 目标：构建一个 Go 语言编写的 chatbot 框架，满足：
 
