@@ -26,7 +26,7 @@ func TestRegisterMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("适配器 %q 未注册", platformName)
 	}
-	if meta.Name != "onebot" || meta.Version != "v0.1.0" || meta.Author != "core" {
+	if meta.Name != "onebot" || meta.Version != "v0.2.0" || meta.Author != "core" {
 		t.Fatalf("元信息不符: %+v", meta)
 	}
 	if len(meta.Platforms) != 1 || meta.Platforms[0] != platformName {
@@ -38,7 +38,8 @@ func TestRegisterMetadata(t *testing.T) {
 	if len(meta.Description) == 0 {
 		t.Fatal("Description 不能为空")
 	}
-	if got, want := strings.Join(meta.Options, ","), "api_url,listen_addr,path,secret,access_token,self_id"; got != want {
+	want := "api_url,listen_addr,path,ws_path,ping_interval,secret,access_token,self_id"
+	if got := strings.Join(meta.Options, ","); got != want {
 		t.Fatalf("Options = %q, want %q", got, want)
 	}
 }
@@ -49,18 +50,32 @@ func TestFactoryBuildsAdapter(t *testing.T) {
 		t.Fatalf("适配器 %q 未注册", platformName)
 	}
 	ad, err := factory(testContext(map[string]any{
-		"api_url":      "http://127.0.0.1:3000",
-		"listen_addr":  "127.0.0.1:0",
-		"path":         "/onebot/event",
-		"secret":       "s",
-		"access_token": "t",
-		"self_id":      "10000",
+		"api_url":       "http://127.0.0.1:3000",
+		"listen_addr":   "127.0.0.1:0",
+		"path":          "/onebot/event",
+		"ws_path":       "/custom/ws",
+		"ping_interval": "5s",
+		"secret":        "s",
+		"access_token":  "t",
+		"self_id":       "10000",
 	}))
 	if err != nil {
 		t.Fatalf("工厂返回错误: %v", err)
 	}
 	if ad.Name() != platformName {
 		t.Fatalf("Name = %q, want %s", ad.Name(), platformName)
+	}
+
+	// 反向 WebSocket 的两个私有键必须真正落到实例上，而不是被静默忽略。
+	onebot, ok := ad.(*Adapter)
+	if !ok {
+		t.Fatalf("工厂返回 %T, 期望 *onebot.Adapter", ad)
+	}
+	if got := onebot.WSPath(); got != "/custom/ws" {
+		t.Errorf("WSPath() = %q, want /custom/ws", got)
+	}
+	if got := onebot.hub.pingInterval; got != 5*time.Second {
+		t.Errorf("心跳间隔 = %v, want 5s", got)
 	}
 }
 

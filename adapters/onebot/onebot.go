@@ -1,8 +1,12 @@
-// Package onebot 实现 OneBot v11 的 HTTP 双向适配器。
+// Package onebot 实现 OneBot v11 适配器，同时支持两种接入方式：
 //
-// 事件通过 OneBot 实现的 HTTP 上报（POST JSON）推送给本适配器，
-// 发送消息则通过 OneBot 的 HTTP API（POST {"action","params","echo"}）调用。
-// 不依赖任何第三方库，也不涉及 WebSocket 接入。
+//   - HTTP 双向：事件通过 OneBot 实现的 HTTP 上报（POST JSON）进入本适配器，
+//     发送通过 OneBot 的 HTTP API（POST {"action","params","echo"}）调用。
+//   - 反向 WebSocket：OneBot 实现主动连接本适配器的 WSPath，事件经连接上行，
+//     发送优先经同一连接下发（按 echo 匹配响应），连接不可用时回落 HTTP API。
+//
+// 两种方式可以同时启用，事件处理逻辑完全一致。不依赖任何第三方库：
+// 反向 WebSocket 所需的服务端协议（RFC 6455 子集）见 ws.go，连接管理见 reverse.go。
 package onebot
 
 import (
@@ -38,9 +42,11 @@ const (
 const (
 	// defaultPath 是事件上报的默认路径。
 	defaultPath = "/onebot/event"
+	// defaultWSPath 是反向 WebSocket 的默认接入路径。
+	defaultWSPath = "/onebot/ws"
 	// defaultTimeout 是默认 HTTP 客户端的超时时间。
 	defaultTimeout = 10 * time.Second
-	// shutdownTimeout 是 Start 退出时等待未完成请求的时限。
+	// shutdownTimeout 是 Start 退出时等待在途请求与反向 WebSocket 读循环退出的时限。
 	shutdownTimeout = 5 * time.Second
 	// maxBodyBytes 限制单个请求/响应体大小，避免异常实现打爆内存。
 	maxBodyBytes = 1 << 20
@@ -48,23 +54,34 @@ const (
 	errorBodyLimit = 256
 )
 
-// Options 是 OneBot HTTP 双向适配器的配置。
+// Options 是 OneBot HTTP 双向 / 反向 WebSocket 适配器的配置。
 type Options struct {
 	// Name 是 bot 名称，作为 bot.Event.BotID；必填。
 	Name string
-	// APIURL 是 OneBot HTTP API 根地址，如 http://127.0.0.1:3000；必填。
+	// APIURL 是 OneBot HTTP API 根地址，如 http://127.0.0.1:3000。
+	// 可为空：此时发送只走反向 WebSocket 连接，连接不可用时发送失败。
 	APIURL string
-	// ListenAddr 是事件上报的监听地址，如 127.0.0.1:8080；必填。
+	// ListenAddr 是事件入站的监听地址，如 127.0.0.1:8080；必填。
+	// HTTP 上报与反向 WebSocket 共用这个监听地址。
 	// 传 ":0" 时由系统分配端口，可通过 Addr 查询实际地址。
 	ListenAddr string
 	// Path 是上报路径，默认 "/onebot/event"，必须以 "/" 开头。
 	Path string
-	// Secret 是上报校验令牌，可选；非空时要求
+	// WSPath 是反向 WebSocket 的接入路径，默认 "/onebot/ws"，必须以 "/" 开头
+	// 且不能与 Path 相同。OneBot 实现把反向 WebSocket 地址配置为
+	// ws://<ListenAddr><WSPath>，可用 ?access_token= 或以 Authorization 头鉴权。
+	WSPath string
+	// PingInterval 是反向 WebSocket 的心跳间隔：为 0 时使用默认值 30s，
+	// 负值表示不发送心跳（此时无法发现半开连接）。
+	PingInterval time.Duration
+	// Secret 是入站校验令牌，可选；非空时要求 HTTP 上报与反向 WebSocket 的
 	// Authorization: Bearer <secret> 或 query 参数 access_token 与之匹配。
 	Secret string
 	// AccessToken 是调用 HTTP API 时附带的 Bearer 令牌，可选。
 	AccessToken string
-	// SelfID 是机器人自身 ID，可选；事件缺少 self_id 时用于生成事件 ID。
+	// SelfID 是机器人自身 ID，可选；事件缺少 self_id 时用于生成事件 ID，
+	// 非空时还要求反向 WebSocket 的 X-Self-ID 与之一致：不一致的连接直接拒绝，
+	// 以免别的账号的事件进入本 bot。
 	SelfID string
 	// HTTPClient 是调用 API 使用的客户端，为 nil 时使用 10s 超时的默认客户端。
 	HTTPClient *http.Client
@@ -72,21 +89,24 @@ type Options struct {
 	Logger *slog.Logger
 }
 
-// Adapter 是 OneBot v11 的 HTTP 双向适配器。
+// Adapter 是 OneBot v11 的 HTTP 双向 / 反向 WebSocket 适配器。
 //
 // 一个实例对应 `Options.Name` 指定的一个 bot：事件从 ListenAddr 上的 HTTP
-// 服务进入，发送请求发往 APIURL。Adapter 可安全地被多个 goroutine 并发调用。
+// 服务进入（HTTP 上报或反向 WebSocket），发送发往 APIURL 或反向 WebSocket 连接。
+// Adapter 可安全地被多个 goroutine 并发调用。
 type Adapter struct {
 	name        string
 	apiURL      string
 	listenAddr  string
 	path        string
+	wsPath      string
 	secret      string
 	accessToken string
 	selfID      string
 	client      *http.Client
 	log         *slog.Logger
 	caps        bot.Capabilities
+	hub         *wsHub
 
 	mu     sync.Mutex
 	srv    *http.Server
@@ -102,11 +122,10 @@ func New(opts Options) (*Adapter, error) {
 	if strings.TrimSpace(opts.Name) == "" {
 		return nil, errors.New("onebot: Options.Name 不能为空")
 	}
-	if strings.TrimSpace(opts.APIURL) == "" {
-		return nil, errors.New("onebot: Options.APIURL 不能为空")
-	}
-	if _, err := url.Parse(opts.APIURL); err != nil {
-		return nil, fmt.Errorf("onebot: Options.APIURL 非法: %w", err)
+	if apiURL := strings.TrimSpace(opts.APIURL); apiURL != "" {
+		if _, err := url.Parse(apiURL); err != nil {
+			return nil, fmt.Errorf("onebot: Options.APIURL 非法: %w", err)
+		}
 	}
 	if strings.TrimSpace(opts.ListenAddr) == "" {
 		return nil, errors.New("onebot: Options.ListenAddr 不能为空")
@@ -118,6 +137,17 @@ func New(opts Options) (*Adapter, error) {
 	}
 	if !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("onebot: Options.Path 必须以 / 开头，得到 %q", path)
+	}
+
+	wsPath := opts.WSPath
+	if wsPath == "" {
+		wsPath = defaultWSPath
+	}
+	if !strings.HasPrefix(wsPath, "/") {
+		return nil, fmt.Errorf("onebot: Options.WSPath 必须以 / 开头，得到 %q", wsPath)
+	}
+	if wsPath == path {
+		return nil, fmt.Errorf("onebot: Options.WSPath 不能与 Options.Path 相同，均为 %q", path)
 	}
 
 	client := opts.HTTPClient
@@ -134,11 +164,13 @@ func New(opts Options) (*Adapter, error) {
 		apiURL:      opts.APIURL,
 		listenAddr:  opts.ListenAddr,
 		path:        path,
+		wsPath:      wsPath,
 		secret:      opts.Secret,
 		accessToken: opts.AccessToken,
 		selfID:      opts.SelfID,
 		client:      client,
 		log:         logger,
+		hub:         newWSHub(opts.Name, opts.SelfID, opts.PingInterval, logger),
 		caps: bot.Capabilities{
 			Text:    true,
 			Image:   true,
@@ -150,6 +182,9 @@ func New(opts Options) (*Adapter, error) {
 		},
 	}, nil
 }
+
+// WSPath 返回反向 WebSocket 的实际接入路径。
+func (a *Adapter) WSPath() string { return a.wsPath }
 
 // Name 返回平台名，固定为 "onebot"。
 func (a *Adapter) Name() string { return platformName }
@@ -203,8 +238,20 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 	a.srv = server
 	a.addr = ln.Addr().String()
 	a.mu.Unlock()
+	a.hub.setSink(sink)
 
-	a.log.Info("onebot: 事件服务已启动", "name", a.name, "addr", a.addr, "path", a.path)
+	// 反向 WebSocket 是 hijacked 连接：http.Server.Shutdown 既不关闭也不等待它们，
+	// 必须在 Start 退出时显式收尾，否则连接与读循环会泄漏到核心进程之外。
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if herr := a.hub.shutdown(shutdownCtx); herr != nil {
+			a.log.Warn("onebot: 反向 WebSocket 收尾未完成", "name", a.name, "err", herr)
+		}
+	}()
+
+	a.log.Info("onebot: 事件服务已启动",
+		"name", a.name, "addr", a.addr, "path", a.path, "ws_path", a.wsPath)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -235,7 +282,7 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 	return nil
 }
 
-// Stop 关闭事件上报服务；可重复调用，重复调用返回 nil。
+// Stop 关闭事件上报服务与全部反向 WebSocket 连接；可重复调用，重复调用返回 nil。
 func (a *Adapter) Stop(ctx context.Context) error {
 	a.mu.Lock()
 	if a.closed {
@@ -246,34 +293,41 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	srv := a.srv
 	a.mu.Unlock()
 
+	// 反向 WebSocket 连接不受 http.Server 管理，必须单独关闭并等待读循环退出。
+	wsErr := a.hub.shutdown(ctx)
+
 	if srv == nil {
-		return nil
+		return wsErr
 	}
 
 	err := srv.Shutdown(ctx)
 	if err != nil && errors.Is(err, http.ErrServerClosed) {
-		return nil
+		err = nil
 	}
 	if err != nil {
 		return fmt.Errorf("onebot: 关闭事件服务失败: %w", err)
 	}
-	return nil
+	return wsErr
 }
 
-// routes 构造事件上报的路由。
+// routes 构造事件上报与反向 WebSocket 的路由。
 //
-// 只注册 Options.Path 指定的路径，其它路径返回 404，避免把任意请求都当作事件处理。
-// 路径模式匹配到子路径时（例如 /onebot/event/extra）回 404，而不是被宽松匹配吞掉。
+// 只注册 Options.Path 与 Options.WSPath 两个路径，其它路径返回 404，避免把任意
+// 请求都当作事件处理。路径模式匹配到子路径时（例如 /onebot/event/extra）回 404，
+// 而不是被宽松匹配吞掉。
 func (a *Adapter) routes(sink bot.EventSink) http.Handler {
 	mux := http.NewServeMux()
-	handler := a.eventHandler(sink)
-	mux.HandleFunc(a.path, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != a.path {
-			http.NotFound(w, r)
-			return
-		}
-		handler(w, r)
-	})
+	exact := func(pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != pattern {
+				http.NotFound(w, r)
+				return
+			}
+			h(w, r)
+		})
+	}
+	exact(a.path, a.eventHandler(sink))
+	exact(a.wsPath, a.wsHandler())
 	return mux
 }
 
@@ -351,7 +405,8 @@ func bearerToken(header string) string {
 // Send 把统一消息发送到目标会话。
 //
 // 目标类型为空时按 ChannelID/UserID 推断群聊或私聊；发送前用 bot.Degrade 按
-// 平台能力降级消息段，再转换为 OneBot array 格式调用 HTTP API。
+// 平台能力降级消息段。存在可承载 API 的反向 WebSocket 连接时优先经连接下发
+// （按 echo 匹配响应），否则回落到 HTTP API。
 func (a *Adapter) Send(ctx context.Context, req *bot.SendRequest) (*bot.SendResult, error) {
 	if req == nil {
 		return nil, errors.New("onebot: 发送请求不能为空")
@@ -373,6 +428,12 @@ func (a *Adapter) Send(ctx context.Context, req *bot.SendRequest) (*bot.SendResu
 	}
 	params["message"] = buildArray(bot.Degrade(req.Message, a.caps), a.log)
 
+	if session := a.hub.pick(); session != nil {
+		return a.hub.call(ctx, session, action, params)
+	}
+	if a.apiURL == "" {
+		return nil, errors.New("onebot: 没有可用的反向 WebSocket 连接，且未配置 api_url，无法发送")
+	}
 	return a.call(ctx, action, params)
 }
 
@@ -414,7 +475,7 @@ type apiRequest struct {
 	Echo string `json:"echo"`
 }
 
-// apiResponse 是 OneBot HTTP API 的响应体。
+// apiResponse 是 OneBot API 的响应体（HTTP 与反向 WebSocket 共用）。
 type apiResponse struct {
 	// Status 是执行状态，"ok" 表示成功。
 	Status string `json:"status"`
@@ -466,6 +527,20 @@ func (a *Adapter) call(ctx context.Context, action string, params map[string]any
 		return nil, fmt.Errorf("onebot: %s 返回 HTTP %d: %s", action, resp.StatusCode, truncate(string(respBody), errorBodyLimit))
 	}
 
+	res, err := decodeAPIResponse(action, respBody)
+	if err != nil {
+		return nil, err
+	}
+	a.log.Debug("onebot: 发送成功", "name", a.name, "action", action,
+		"transport", "http", "message_id", res.MessageID)
+	return res, nil
+}
+
+// decodeAPIResponse 解析一次 OneBot API 调用的响应体。
+//
+// HTTP 通道与反向 WebSocket 通道共用同一套成功判定：status 必须为 ok 且
+// retcode 必须为 0，否则把 wording/msg 作为错误信息返回。respBody 归返回值所有。
+func decodeAPIResponse(action string, respBody []byte) (*bot.SendResult, error) {
 	var out apiResponse
 	if err := decodeJSON(respBody, &out); err != nil {
 		return nil, fmt.Errorf("onebot: 解析 %s 响应失败: %w", action, err)
@@ -474,8 +549,6 @@ func (a *Adapter) call(ctx context.Context, action string, params map[string]any
 		return nil, fmt.Errorf("onebot: %s 失败: status=%s retcode=%d wording=%s",
 			action, out.Status, out.RetCode, firstNonEmpty(out.Wording, out.Msg))
 	}
-
-	a.log.Debug("onebot: 发送成功", "name", a.name, "action", action, "message_id", out.Data.MessageID.String())
 	return &bot.SendResult{MessageID: out.Data.MessageID.String(), Raw: json.RawMessage(respBody)}, nil
 }
 

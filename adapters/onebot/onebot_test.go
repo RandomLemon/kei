@@ -129,9 +129,6 @@ func startHarness(t *testing.T, opts Options) *testHarness {
 	if opts.Name == "" {
 		opts.Name = "bot1"
 	}
-	if opts.APIURL == "" {
-		opts.APIURL = "http://127.0.0.1:1"
-	}
 	opts.ListenAddr = "127.0.0.1:0"
 	if opts.Logger == nil {
 		opts.Logger = quietLogger()
@@ -206,11 +203,13 @@ func TestNewValidation(t *testing.T) {
 	base := Options{Name: "bot1", APIURL: "http://127.0.0.1:3000", ListenAddr: "127.0.0.1:0"}
 
 	cases := map[string]Options{
-		"缺少 Name":       {APIURL: base.APIURL, ListenAddr: base.ListenAddr},
-		"Name 仅空白":      {Name: "  ", APIURL: base.APIURL, ListenAddr: base.ListenAddr},
-		"缺少 APIURL":     {Name: base.Name, ListenAddr: base.ListenAddr},
-		"缺少 ListenAddr": {Name: base.Name, APIURL: base.APIURL},
-		"Path 不以斜杠开头":   {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, Path: "onebot/event"},
+		"缺少 Name":          {APIURL: base.APIURL, ListenAddr: base.ListenAddr},
+		"Name 仅空白":         {Name: "  ", APIURL: base.APIURL, ListenAddr: base.ListenAddr},
+		"缺少 ListenAddr":    {Name: base.Name, APIURL: base.APIURL},
+		"APIURL 非法":        {Name: base.Name, APIURL: "http://[::1:3000", ListenAddr: base.ListenAddr},
+		"Path 不以斜杠开头":      {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, Path: "onebot/event"},
+		"WSPath 不以斜杠开头":    {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, WSPath: "onebot/ws"},
+		"WSPath 与 Path 相同": {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, Path: "/onebot/event", WSPath: "/onebot/event"},
 	}
 	for name, opts := range cases {
 		if _, err := New(opts); err == nil {
@@ -231,8 +230,26 @@ func TestNewValidation(t *testing.T) {
 	if a.path != defaultPath {
 		t.Errorf("默认 Path = %q, 期望 %q", a.path, defaultPath)
 	}
-	if a.log == nil || a.client == nil {
-		t.Error("默认 Logger/HTTPClient 未填充")
+	if got := a.WSPath(); got != defaultWSPath {
+		t.Errorf("默认 WSPath = %q, 期望 %q", got, defaultWSPath)
+	}
+	if a.log == nil || a.client == nil || a.hub == nil {
+		t.Error("默认 Logger/HTTPClient/wsHub 未填充")
+	}
+	if got := a.hub.pingInterval; got != defaultPingInterval {
+		t.Errorf("默认心跳间隔 = %v, 期望 %v", got, defaultPingInterval)
+	}
+
+	// APIURL 可选：只跑反向 WebSocket 时不配置 HTTP API。
+	wsOnly, err := New(Options{Name: base.Name, ListenAddr: base.ListenAddr, WSPath: "/custom/ws", PingInterval: -time.Second})
+	if err != nil {
+		t.Fatalf("不配置 APIURL 时 New 失败: %v", err)
+	}
+	if got := wsOnly.WSPath(); got != "/custom/ws" {
+		t.Errorf("WSPath() = %q, 期望 %q", got, "/custom/ws")
+	}
+	if got := wsOnly.hub.pingInterval; got != -time.Second {
+		t.Errorf("负值心跳间隔应原样保留，得到 %v", got)
 	}
 }
 
