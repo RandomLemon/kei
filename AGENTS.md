@@ -116,8 +116,7 @@ chatbot/
 │   ├── wecom/
 │   └── mock/
 ├── plugins/
-│   ├── echo/
-│   └── weather/
+│   └── echo/
 ├── proto/
 │   ├── plugin.proto      # 外部插件协议 + BotService（含 EmitEvent）
 │   └── adapter.proto     # 外部适配器协议（同 package/go_package）
@@ -649,7 +648,6 @@ func init() {
 2. 插件通过 `init()` 注册，主程序通过空导入启用。
 3. 插件必须声明权限。
 4. 插件 Handler 必须可被 recover。
-5. 提供天气插件示例，展示多轮对话或外部 HTTP 调用。
 
 ---
 
@@ -897,13 +895,15 @@ bots:
     listen_addr: 127.0.0.1:19081   # 保留键，要求该适配器声明 net_listen
 
 plugins:
-  weather:
+  echo:
     enabled: true
-    api_key: xxx
 
-# 可选：外部适配器（独立进程）。声明 grpc_addr 即视为外部适配器。
+# 可选：适配器声明。声明 grpc_addr 即视为外部适配器；只写 enabled 可禁用进程内适配器。
 adapters:
+  feishu:                          # 示例：禁用内置适配器（进程内声明只允许 enabled 键）
+    enabled: false
   myim:
+    enabled: true                  # 缺省 true；false 表示不加载该适配器及其 bots[] 实例
     grpc_addr: 127.0.0.1:50071     # 外部适配器 AdapterService 监听地址
     token: change-me               # 适配器反向调用核心的令牌，必填
     timeout: 10s                   # 单次 RPC 超时与启动就绪等待上限
@@ -917,13 +917,16 @@ adapters:
 2. 支持环境变量覆盖。
 3. 支持插件独立配置；适配器配置分两层：实例级（`bots[]` 条目上的私有键）与进程级（`adapters.<name>`，仅外部适配器）。
 4. 配置加载失败必须返回明确错误。
-5. `bots[].adapter` 必须能解析为「已注册的进程内适配器」或「`adapters:` 段声明的外部适配器」，否则启动失败，并列出所有已注册适配器名。
-6. 声明了 `grpc_addr` 即走外部 gRPC 通道：此时要求 `grpc.addr` 非空、`token` 非空，否则启动失败（与外部插件规则一致）。
-7. 存在外部适配器时 `grpc.addr` 必须是固定的 `host:port`（不能是 `:0`）：适配器进程用它反向调用核心，临时端口无法预先告知。
-8. `permissions` 缺省为 `[receive_event]`；实际授予 = 适配器声明的权限 ∩ 此处声明的权限，未授予权限对应的核心 API 一律拒绝。
-9. 保留键 `listen_addr` 只允许出现在声明了 `net_listen` 的适配器实例上，否则启动失败。
-10. 适配器不认识的私有键必须告警（不报错），以支持第三方适配器独立演进；进程内适配器的键集来自 `AdapterMetadata.Options`，外部适配器来自 `AdapterInitResponse.info.options`。
-11. 外部适配器与外部插件共用 `grpc` 段的 TLS/mTLS 配置（`cert_file`/`key_file`/`ca_file`）。
+5. `adapters.<name>.enabled` 控制适配器是否启用，缺省为 **true**（与插件相反：适配器不需要声明即可用，声明只用于启用/禁用或接入外部进程）。环境变量 `KEI_ADAPTERS_<NAME>_ENABLED` 可覆盖。
+6. `enabled: false` 的适配器不建立任何通道、其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn 日志），也不做通道字段与权限校验；核心仍可只运行插件。
+7. `bots[].adapter` 必须能解析为「已注册的进程内适配器」或「声明了 `grpc_addr` 的外部适配器」，否则启动失败，并列出所有已注册适配器名；被禁用的适配器跳过该检查。
+8. 声明了 `grpc_addr` 即走外部 gRPC 通道：此时要求 `grpc.addr` 非空、`token` 非空，否则启动失败（与外部插件规则一致）。
+9. 没有 `grpc_addr` 的声明只允许 `enabled` 键：实例配置写在 `bots[]` 条目上，通道配置写 `grpc_addr`，其余键一律报错，避免静默失效的配置。
+10. 存在启用的外部适配器时 `grpc.addr` 必须是固定的 `host:port`（不能是 `:0`）：适配器进程用它反向调用核心，临时端口无法预先告知。
+11. `permissions` 缺省为 `[receive_event]`；实际授予 = 适配器声明的权限 ∩ 此处声明的权限，未授予权限对应的核心 API 一律拒绝。
+12. 保留键 `listen_addr` 只允许出现在声明了 `net_listen` 的适配器实例上，否则启动失败。
+13. 适配器不认识的私有键必须告警（不报错），以支持第三方适配器独立演进；进程内适配器的键集来自 `AdapterMetadata.Options`，外部适配器来自 `AdapterInitResponse.info.options`。
+14. 外部适配器与外部插件共用 `grpc` 段的 TLS/mTLS 配置（`cert_file`/`key_file`/`ca_file`）。
 
 ---
 
@@ -974,7 +977,7 @@ adapters:
 - [ ] 在 `cmd/bot/main.go` 中实现优雅启动和关闭。
 - [ ] 支持多 bot、多 adapter 配置；`bots[].adapter` 经注册表解析。
 - [ ] 支持插件启用/禁用。
-- [ ] 支持 `adapters:` 段声明外部适配器；未知适配器名、重复注册名、缺 `Name`/`Platforms` 必须启动报错。
+- [ ] 支持 `adapters.<name>.enabled` 启用/禁用适配器（缺省启用，禁用则跳过其 bot）；支持 `adapters:` 段声明外部适配器；未知适配器名、重复注册名、缺 `Name`/`Platforms` 必须启动报错。
 - [ ] 验收：`go run ./cmd/bot -config configs/config.yaml` 可启动并优雅退出。
 
 ### 阶段 6：外部插件 gRPC
@@ -1043,6 +1046,7 @@ adapters:
    - 适配器注册表：未知名字报错并列出已注册名、重复注册名报错、缺 `Name`/`Platforms` 报错
    - 工厂多实例隔离：同平台两个 bot 的实例状态互不影响
    - 权限裁剪：未声明 `storage`/`network` 时注入拒绝式 Storage / nil HTTPClient，未声明 `net_listen` 时 `listen_addr` 导致启动失败
+   - 适配器启用开关：`enabled: false` 时不建立外部通道（地址不可达也不 dial）、其 bot 被跳过、其他 bot 不受影响；禁用条目不参与校验
 5. 适配器测试使用 `httptest` 或 Mock WebSocket；Capabilities 降级用表驱动测试覆盖 6.4 的每条规则。
 6. gRPC 插件测试使用 bufconn。
 7. 外部适配器用 bufconn 测试：`Init`/`Start`/`Stop`/`Send`、`EmitEvent` 入队、token 错误被拒、缺 `receive_event` 被拒、适配器崩溃后核心继续服务其他 bot。

@@ -169,6 +169,8 @@ func applyPluginEnv(c *Config, rest, value string) {
 //
 // 只有配置中已存在的适配器名才会被命中，未知适配器名一律忽略。
 // 同时命中多个适配器时取名字规范化后最长者，长度相同时全部应用。
+// 支持 enabled（控制启用状态）与 grpc_addr/token/platform/permissions/timeout，
+// 其余键写入该适配器的进程级配置。
 func applyAdapterEnv(c *Config, rest, value string) error {
 	best, tail := -1, ""
 	var names []string
@@ -193,6 +195,10 @@ func applyAdapterEnv(c *Config, rest, value string) error {
 	for _, name := range names {
 		ac := c.Adapters[name]
 		switch tail {
+		case "enabled":
+			if enabled, ok := envBool(value); ok {
+				ac.Enabled = &enabled
+			}
 		case "grpc_addr":
 			ac.GrpcAddr = value
 		case "token":

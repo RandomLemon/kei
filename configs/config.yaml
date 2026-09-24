@@ -33,12 +33,17 @@ grpc:
   key_file: ""
   ca_file: ""
 
-# 外部适配器（独立进程）：声明 grpc_addr 即视为外部适配器，由 bots[].adapter 引用。
-# 进程内适配器（内置 adapters/ 或第三方 Go module）无需在此声明。
-# 可用 KEI_ADAPTERS_MYIM_TOKEN 之类的环境变量覆盖各字段。
+# 适配器声明（可选）：用 enabled 控制启用（缺省 true）；声明 grpc_addr 即视为外部适配器，
+# 只写 enabled 则用于禁用进程内适配器。可用 KEI_ADAPTERS_MYIM_ENABLED / KEI_ADAPTERS_MYIM_TOKEN 覆盖。
+# 被禁用的适配器不会建立通道，其 bots[] 条目也会跳过（日志会记警告）。
 adapters:
-  # 示例（适配器进程见 cmd/example-adapter，需要 grpc.addr 非空）：
+  # 示例一：临时停用内置平台（不需要删掉下面的 feishu bot）
+  # feishu:
+  #   enabled: false
+
+  # 示例二：外部适配器进程（适配器进程见 cmd/example-adapter，需要 grpc.addr 非空）
   # myim:
+  #   enabled: true                # 缺省 true
   #   grpc_addr: 127.0.0.1:50071   # 适配器 AdapterService 监听地址
   #   token: change-me             # 适配器反向调用核心的令牌
   #   platform: myim               # 适配器上报多个平台时必填
@@ -60,6 +65,7 @@ bots:
   # 并把 verification_token / encrypt_key 填成开放平台上的值。
   # app_secret 建议用 KEI_BOTS_FEISHU_MAIN_APP_SECRET 覆盖而不是写在文件里。
   - name: feishu-main
+    enabled: false
     adapter: feishu
     app_id: cli_xxx
     app_secret: xxx
@@ -83,19 +89,9 @@ plugins:
   echo:
     enabled: true
 
-  weather:
-    enabled: true
-    # 默认使用免密钥的 open-meteo；换供应商时覆盖下面几项。
-    # geocode_url: https://geocoding-api.open-meteo.com/v1/search
-    # forecast_url: https://api.open-meteo.com/v1/forecast
-    # api_key: xxx
-    # api_key_header: Authorization
-    # api_key_prefix: "Bearer "
-    # timeout: 8s
-
   manage:
     enabled: true
-    # plugins_admin_only: true   # /plugins 改为仅管理员可用（需配置 auth.admin_users）
+    plugins_admin_only: true   # /plugins 改为仅管理员可用（需配置 auth.admin_users）
 
   # 外部插件示例（需要 grpc.addr 非空，插件进程见 cmd/example-plugin）：
   # external-echo:

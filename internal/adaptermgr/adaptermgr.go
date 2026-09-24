@@ -110,6 +110,7 @@ func (b *Bindings) EmitFunc(api bot.BotAPI) (func(context.Context, string, *bot.
 // Validate 校验适配器注册表与配置的一致性，返回可行动的启动错误。
 //
 // 只做静态检查，不建立任何连接；外部适配器上报的元信息在 Build 阶段校验。
+// 被 enabled: false 禁用的适配器不参与校验：其 bots[] 条目在 Build 阶段跳过。
 func Validate(cfg *config.Config) error {
 	if err := ValidateRegistry(); err != nil {
 		return err
@@ -119,9 +120,12 @@ func Validate(cfg *config.Config) error {
 
 	for i := range cfg.Bots {
 		bc := &cfg.Bots[i]
+		if !cfg.AdapterEnabled(bc.Adapter) {
+			continue
+		}
 		meta, _, ok := bot.LookupAdapter(bc.Adapter)
 		if !ok {
-			if _, external := cfg.Adapters[bc.Adapter]; external {
+			if isExternalAdapter(cfg, bc.Adapter) {
 				continue
 			}
 			return fmt.Errorf("config: bots[%d].adapter: 未知适配器 %q（已注册: %s；adapters 段已声明: %s）",
@@ -132,6 +136,15 @@ func Validate(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// isExternalAdapter 判断名为 name 的适配器是否声明为外部进程（grpc_addr 非空）。
+//
+// 只有 grpc_addr 才能标记外部通道：adapters 段里没有 grpc_addr 的条目只是
+// 「进程内适配器声明」（一般用于 enabled: false）。
+func isExternalAdapter(cfg *config.Config, name string) bool {
+	ac, ok := cfg.Adapters[name]
+	return ok && ac.GrpcAddr != ""
 }
 
 // ValidateRegistry 校验进程内适配器注册表。
@@ -197,8 +210,14 @@ func Build(ctx context.Context, cfg *config.Config, deps Deps) (*Bindings, error
 	}()
 
 	for _, bc := range cfg.Bots {
-		ac, isExternal := cfg.Adapters[bc.Adapter]
-		if !isExternal {
+		if !cfg.AdapterEnabled(bc.Adapter) {
+			// 适配器被显式禁用：不建立通道，也不启动它的任何 bot 实例。
+			deps.Logger.Warn("适配器已禁用，跳过 bot", "adapter", bc.Adapter, "bot", bc.Name)
+			continue
+		}
+
+		ac, declared := cfg.Adapters[bc.Adapter]
+		if !declared || ac.GrpcAddr == "" {
 			bind, err := buildInProcess(bc, deps)
 			if err != nil {
 				return nil, err
@@ -245,8 +264,19 @@ func Build(ctx context.Context, cfg *config.Config, deps Deps) (*Bindings, error
 	}
 
 	for _, name := range declaredNames(cfg) {
+		ac := cfg.Adapters[name]
+		if !ac.IsEnabled() {
+			b.log.Info("适配器已禁用", "adapter", name)
+			continue
+		}
+		if ac.GrpcAddr == "" {
+			if _, _, ok := bot.LookupAdapter(name); !ok {
+				b.log.Warn("适配器已在 adapters 段声明但未注册（是否漏了空导入？）", "adapter", name)
+			}
+			continue
+		}
 		if _, ok := clients[name]; !ok {
-			b.log.Warn("适配器已在 adapters 段声明但没有 bot 引用", "adapter", name)
+			b.log.Warn("外部适配器已在 adapters 段声明但没有 bot 引用", "adapter", name)
 		}
 	}
 	assembled = true

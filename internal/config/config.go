@@ -334,24 +334,48 @@ func decodePlugin(name string, node *yaml.Node) (PluginConfig, error) {
 	}
 }
 
-// AdapterConfig 描述一个外部适配器的接入配置。
+// AdapterConfig 描述一个适配器的声明。
 //
-// 只有外部（独立进程）适配器需要在此声明；进程内注册的适配器——包括第三方
-// Go module——不出现在 adapters 段。
+// 声明是可选的：进程内适配器只靠 bots[].adapter 引用即可工作，此处主要用于
+// 显式启用/禁用，或（声明了 grpc_addr 时）接入外部进程。
 type AdapterConfig struct {
-	// GrpcAddr 是适配器 AdapterService 的监听地址，必填。
+	// Enabled 控制是否加载该适配器；nil（未写 enabled）视为启用。
+	//
+	// 只有显式的 enabled: false 才会禁用：该适配器不建立通道、其 bots[] 条目
+	// 一并跳过（记日志）。与插件相反，适配器缺省是启用的——声明本身不是启用的前提。
+	Enabled *bool
+	// GrpcAddr 是适配器 AdapterService 的监听地址；非空表示该适配器是外部进程。
 	GrpcAddr string
-	// Token 是适配器反向调用核心 BotService 的令牌，必填。
+	// Token 是适配器反向调用核心 BotService 的令牌，外部适配器必填。
 	Token string
 	// Platform 是该适配器写入 Event.Platform 的平台名；适配器上报多个平台时必填。
 	Platform string
 	// Timeout 是单次 RPC 超时与启动就绪等待上限；<=0 时由调用方取默认值。
 	Timeout time.Duration
-	// Permissions 是核心授予该适配器的权限；缺省为 [receive_event]。
+	// Permissions 是核心授予该适配器的权限；外部适配器缺省为 [receive_event]。
 	Permissions []string
-	// Settings 是 YAML 中除上述键外的其余键，作为进程级配置下发给适配器；
+	// Settings 是 YAML 中除上述键外的其余键，作为进程级配置下发给外部适配器；
 	// 取值保证可被 encoding/json 编解码。
 	Settings map[string]any
+}
+
+// IsEnabled 判断该声明是否启用：未显式写 enabled 时视为启用。
+func (a AdapterConfig) IsEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
+}
+
+// AdapterEnabled 判断名为 name 的适配器是否启用。
+//
+// 未在 adapters 段声明时视为启用：进程内适配器无需声明即可通过 bots[].adapter 使用。
+func (c *Config) AdapterEnabled(name string) bool {
+	if c == nil {
+		return true
+	}
+	ac, ok := c.Adapters[name]
+	if !ok {
+		return true
+	}
+	return ac.IsEnabled()
 }
 
 // decodeAdapters 解析 adapters 映射：适配器名 -> 外部接入配置。
@@ -384,6 +408,13 @@ func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
 		key, val := node.Content[i].Value, node.Content[i+1]
 		var err error
 		switch key {
+		case "enabled":
+			enabled, ok := decodeBool(val)
+			if !ok {
+				return AdapterConfig{}, fmt.Errorf("adapters.%s.enabled: 需要布尔值", name)
+			}
+			ac.Enabled = &enabled
+			continue
 		case "grpc_addr":
 			err = val.Decode(&ac.GrpcAddr)
 		case "token":
@@ -527,7 +558,7 @@ func applyDefaults(c *Config) {
 		c.Adapters = map[string]AdapterConfig{}
 	}
 	for name, ac := range c.Adapters {
-		if len(ac.Permissions) == 0 {
+		if ac.GrpcAddr != "" && len(ac.Permissions) == 0 {
 			ac.Permissions = []string{defaultAdapterPermission}
 		}
 		c.Adapters[name] = ac
@@ -569,8 +600,17 @@ func (c *Config) validate() error {
 		if !adapterNamePattern.MatchString(name) {
 			return fmt.Errorf("config: adapters.%s: 适配器名只允许 [a-z0-9_-]", name)
 		}
+		if !ac.IsEnabled() {
+			// 禁用条目只保留 enabled：允许残留或事后补齐的键，不做通道校验。
+			continue
+		}
 		if ac.GrpcAddr == "" {
-			return fmt.Errorf("config: adapters.%s.grpc_addr: 不能为空（进程内适配器无需在 adapters 段声明）", name)
+			// 进程内声明：只允许 enabled，其余键都是外部通道或实例级配置。
+			if ac.Token != "" || ac.Platform != "" || ac.Timeout != 0 ||
+				len(ac.Permissions) > 0 || len(ac.Settings) > 0 {
+				return fmt.Errorf("config: adapters.%s: 未声明 grpc_addr 时只允许 enabled 键（适配器实例配置写在 bots[] 条目上）", name)
+			}
+			continue
 		}
 		if ac.Token == "" {
 			return fmt.Errorf("config: adapters.%s.token: 不能为空", name)

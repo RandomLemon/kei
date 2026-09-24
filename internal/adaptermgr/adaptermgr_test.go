@@ -272,6 +272,131 @@ func (plainAPI) Reply(context.Context, *bot.Event, *bot.Message) (*bot.SendResul
 func (plainAPI) Logger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 func (plainAPI) Storage() bot.Storage { return storage.Denied() }
 
+// TestBuildSkipsDisabledAdapter 覆盖 enabled: false 的装配语义：
+// 不建立通道（外部适配器即便地址不可达也不会被 dial）、其 bot 一并跳过，
+// 其他 bot 不受影响。
+func TestBuildSkipsDisabledAdapter(t *testing.T) {
+	const inproc = "test-enabled-inproc"
+	registerTestAdapter(t, bot.AdapterMetadata{Name: inproc, Platforms: []string{"recording"}})
+
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// go.mod 的 go 指令低于 1.26，这里用临时变量取地址。
+	disabled := false
+	cfg := &config.Config{
+		Bots: []config.BotConfig{
+			{Name: "inproc-bot", Adapter: inproc},
+			{Name: "ext-bot", Adapter: "test-enabled-ext"},
+		},
+		Adapters: map[string]config.AdapterConfig{
+			"test-enabled-ext": {
+				Enabled:  &disabled,
+				GrpcAddr: "127.0.0.1:1", // 不可达：若被 dial，会阻塞到超时并报错
+				Token:    "t",
+			},
+		},
+	}
+
+	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	if err != nil {
+		t.Fatalf("禁用的外部适配器不应被 dial: %v", err)
+	}
+	t.Cleanup(func() { _ = bindings.Close() })
+
+	list := bindings.List()
+	if len(list) != 1 || list[0].BotID != "inproc-bot" {
+		t.Fatalf("绑定 = %+v", list)
+	}
+	if got := buf.String(); !strings.Contains(got, "ext-bot") || !strings.Contains(got, "已禁用") {
+		t.Fatalf("应记录被跳过的 bot 与禁用状态: %s", got)
+	}
+	if _, _, ok := bot.LookupAdapter("test-enabled-ext"); ok {
+		t.Fatal("测试前提不成立：该名字不应在注册表中")
+	}
+}
+
+// TestBuildSkipsDisabledInProcessAdapter 覆盖进程内适配器被禁用的情况：
+// adapters 段只写 enabled 也能禁用（不需要 grpc_addr）。
+func TestBuildSkipsDisabledInProcessAdapter(t *testing.T) {
+	const name = "test-disabled-inproc"
+	registerTestAdapter(t, bot.AdapterMetadata{Name: name, Platforms: []string{"recording"}})
+
+	logger := slog.New(slog.DiscardHandler)
+	disabled, enabled := false, true
+	cfg := &config.Config{
+		Bots:     []config.BotConfig{{Name: "b1", Adapter: name}},
+		Adapters: map[string]config.AdapterConfig{name: {Enabled: &disabled}},
+	}
+
+	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = bindings.Close() })
+	if got := bindings.List(); len(got) != 0 {
+		t.Fatalf("禁用的进程内适配器不应产生绑定: %+v", got)
+	}
+
+	// 启用后立即可用，说明禁用只是跳过而非破坏配置。
+	cfg.Adapters[name] = config.AdapterConfig{Enabled: &enabled}
+	bindings, err = Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	if err != nil {
+		t.Fatalf("启用后 Build: %v", err)
+	}
+	t.Cleanup(func() { _ = bindings.Close() })
+	if got := bindings.List(); len(got) != 1 || got[0].BotID != "b1" {
+		t.Fatalf("启用后绑定 = %+v", got)
+	}
+}
+
+// TestValidateSkipsDisabledUnknownAdapter 覆盖「禁用即不校验」：
+// 禁用条目即使名字不存在也不报错，启用后必须报错。
+func TestValidateSkipsDisabledUnknownAdapter(t *testing.T) {
+	disabled, enabled := false, true
+	cfg := &config.Config{
+		Bots:     []config.BotConfig{{Name: "ghost-bot", Adapter: "test-ghost-adapter"}},
+		Adapters: map[string]config.AdapterConfig{"test-ghost-adapter": {Enabled: &disabled}},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("禁用的未知适配器不应报错: %v", err)
+	}
+	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil))
+	if err != nil {
+		t.Fatalf("禁用的未知适配器不应阻塞装配: %v", err)
+	}
+	t.Cleanup(func() { _ = bindings.Close() })
+
+	cfg.Adapters["test-ghost-adapter"] = config.AdapterConfig{Enabled: &enabled}
+	err = Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "test-ghost-adapter") {
+		t.Fatalf("启用后的未知适配器应报错: %v", err)
+	}
+}
+
+// TestBuildWarnsUnregisteredDeclaration 覆盖进程内声明拼错名字的情况。
+func TestBuildWarnsUnregisteredDeclaration(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	const botAdapter = "test-decl-bot-adapter"
+	registerTestAdapter(t, bot.AdapterMetadata{Name: botAdapter, Platforms: []string{"recording"}})
+
+	enabled := true
+	cfg := &config.Config{
+		Bots:     []config.BotConfig{{Name: "b1", Adapter: botAdapter}},
+		Adapters: map[string]config.AdapterConfig{"test-unregistered-decl": {Enabled: &enabled}},
+	}
+	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = bindings.Close() })
+	if !strings.Contains(buf.String(), "未注册") {
+		t.Fatalf("未注册的声明应告警: %s", buf.String())
+	}
+}
+
 func TestEmitFuncChecksOwnership(t *testing.T) {
 	bindings := &Bindings{
 		log:      slog.New(slog.DiscardHandler),

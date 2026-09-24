@@ -58,7 +58,6 @@ adapters/mock/           本地测试适配器（HTTP 控制面注入事件、�
 adapters/onebot/         OneBot v11（HTTP 上报 + HTTP API）
 adapters/feishu/         飞书开放平台（事件订阅回调 + 消息发送）
 plugins/echo/            示例插件：/echo
-plugins/weather/         示例插件：外部 HTTP 调用 + 多轮对话
 plugins/manage/          管理命令：/ping、/version、/plugins、/adapters、/admin
 proto/plugin.proto       外部插件 gRPC 协议 + BotService（含生成代码 proto/pluginpb）
 proto/adapter.proto      外部适配器 gRPC 协议（同 package，复用 plugin.proto 消息）
@@ -96,7 +95,7 @@ nix develop --command go test -race ./...
 ## 快速开始
 
 ```bash
-# 1) 启动（示例配置默认只跑 mock 适配器 + echo/weather/manage 插件）
+# 1) 启动（示例配置默认只跑 mock 适配器 + echo/manage 插件）
 nix develop --command go run ./cmd/bot -config configs/config.yaml
 
 # 2) 另开一个终端：注入一条命令事件
@@ -133,7 +132,10 @@ log:     { level: info, format: text }     # text | json
 metrics: { addr: 127.0.0.1:19090 }         # 空表示不暴露
 limits:  { handler_rate: 0, send_rate: 0 } # 0 表示不限流
 auth:    { admin_users: [] }               # 配合 bot.WithAdmin() 规则
-grpc:    { addr: "", cert_file: "", key_file: "", ca_file: "" }  # 外部插件通道
+grpc:    { addr: "", cert_file: "", key_file: "", ca_file: "" }  # 外部插件/适配器通道
+adapters:                                        # 可选：启用/禁用、外部适配器声明
+  feishu:  { enabled: false }                    # 示例：禁用内置适配器（其 bot 一并跳过）
+  myim:    { enabled: true, grpc_addr: 127.0.0.1:50071, token: change-me }  # 示例：外部适配器
 bots:
   - name: mock-main
     adapter: mock
@@ -141,7 +143,7 @@ bots:
     listen_addr: 127.0.0.1:18080
 plugins:
   echo:    { enabled: true }
-  weather: { enabled: true }
+  manage:  { enabled: true }
 ```
 
 要点：
@@ -151,6 +153,9 @@ plugins:
 - `bots[].plugins` 是该 bot 的插件白名单；只要有一个 bot 配置了非空白名单，规则就会按
   「哪些 bot 允许它」收窄（未配置白名单的 bot 允许全部）。
 - `plugins.<name>` 未列出 = 不启用；想启用必须写 `enabled: true`。
+- `adapters.<name>.enabled` 控制适配器开关，**缺省 true**（与插件相反）：写
+  `enabled: false` 即不加载该适配器，其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn）。
+  声明 `grpc_addr` 表示该适配器是外部进程，外部条目还要求 `token`。
 
 ### 环境变量覆盖
 
@@ -339,6 +344,13 @@ bots:
 
 `/adapters` 会列出已注册适配器与每个 bot 的绑定关系（含进程内/外部 gRPC 标记）。
 
+临时停用某个平台不用删配置，加一行即可（其 `bots[]` 条目一并跳过）：
+
+```yaml
+adapters:
+  feishu: { enabled: false }   # 缺省为 true；也可用 KEI_ADAPTERS_FEISHU_ENABLED=false
+```
+
 独立 module 形式（推荐给第三方）：
 
 ```text
@@ -367,6 +379,7 @@ grpc:
   addr: 127.0.0.1:19070            # 核心 BotService 监听地址
 adapters:
   example:
+    enabled: true                  # 缺省 true；false 则不 dial、并跳过 example-main
     grpc_addr: 127.0.0.1:19071     # 适配器 AdapterService 地址
     token: change-me               # 必填
     platform: example              # 适配器上报多个平台时必填

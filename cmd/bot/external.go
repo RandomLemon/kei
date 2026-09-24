@@ -49,7 +49,10 @@ func setupExternal(cfg *config.Config, logger *slog.Logger, httpClient *http.Cli
 	if err != nil {
 		return nil, err
 	}
-	if len(specs) == 0 && len(cfg.Adapters) == 0 {
+	// 只有「启用的外部适配器」才需要 gRPC 通道：adapters 段里仅写 enabled 的
+	// 进程内声明（含 enabled: false）与通道无关，不能因为它要求 grpc.addr。
+	externalAdapters := externalAdapterNames(cfg)
+	if len(specs) == 0 && len(externalAdapters) == 0 {
 		return &externalSetup{close: func() {}}, nil
 	}
 	if cfg.Grpc.Addr == "" {
@@ -71,14 +74,14 @@ func setupExternal(cfg *config.Config, logger *slog.Logger, httpClient *http.Cli
 	)
 
 	hook := func(api bot.BotAPI) ([]bot.Plugin, error) {
-		tokens := make(map[string]grpcsrv.TokenInfo, len(specs)+len(cfg.Adapters))
-		configs := make(map[string]*bot.Config, len(specs)+len(cfg.Adapters))
+		tokens := make(map[string]grpcsrv.TokenInfo, len(specs)+len(externalAdapters))
+		configs := make(map[string]*bot.Config, len(specs)+len(externalAdapters))
 		for _, s := range specs {
 			if err := bindToken(tokens, configs, s.token, s.name, grpcsrv.TokenPlugin, s.permissions, s.settings); err != nil {
 				return nil, err
 			}
 		}
-		for _, name := range adapterNames(cfg) {
+		for _, name := range externalAdapters {
 			ac := cfg.Adapters[name]
 			if err := bindToken(tokens, configs, ac.Token, name, grpcsrv.TokenAdapter, adaptermgr.Permissions(ac.Permissions), ac.Settings); err != nil {
 				return nil, err
@@ -174,10 +177,16 @@ func bindToken(tokens map[string]grpcsrv.TokenInfo, configs map[string]*bot.Conf
 	return nil
 }
 
-// adapterNames 返回 adapters 段声明的适配器名（排序，保证装配顺序确定）。
-func adapterNames(cfg *config.Config) []string {
+// externalAdapterNames 返回「启用的外部适配器」名字（排序，保证装配顺序确定）。
+//
+// 判定外部通道的唯一依据是 grpc_addr 非空；仅有 enabled 的进程内声明不在此列，
+// 被 enabled: false 禁用的适配器同样不在此列（既不需要通道，也不该拿到令牌）。
+func externalAdapterNames(cfg *config.Config) []string {
 	out := make([]string, 0, len(cfg.Adapters))
-	for name := range cfg.Adapters {
+	for name, ac := range cfg.Adapters {
+		if ac.GrpcAddr == "" || !ac.IsEnabled() {
+			continue
+		}
 		out = append(out, name)
 	}
 	sort.Strings(out)

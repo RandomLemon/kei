@@ -35,7 +35,6 @@ import (
 	_ "github.com/RandomLemon/kei/adapters/onebot"
 	_ "github.com/RandomLemon/kei/plugins/echo"
 	_ "github.com/RandomLemon/kei/plugins/manage"
-	_ "github.com/RandomLemon/kei/plugins/weather"
 )
 
 const httpTimeout = 15 * time.Second
@@ -104,6 +103,9 @@ func run(args []string) error {
 	}()
 
 	list := bindings.List()
+	if len(list) == 0 {
+		logger.Warn("没有启用的适配器，核心将只运行插件")
+	}
 	adapters := make([]engine.AdapterBinding, 0, len(list))
 	for _, b := range list {
 		adapters = append(adapters, engine.AdapterBinding{

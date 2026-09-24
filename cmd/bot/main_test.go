@@ -105,7 +105,7 @@ func TestEnabledPlugins(t *testing.T) {
 	logger, buf := testLogger()
 	cfg := &config.Config{Plugins: map[string]config.PluginConfig{
 		"echo":       {Enabled: true},
-		"weather":    {Enabled: false},
+		"disabled-x": {Enabled: false},
 		"not-loaded": {Enabled: true},
 		"external-x": {Enabled: true, Settings: map[string]any{"grpc_addr": "127.0.0.1:1"}},
 		"manage":     {Enabled: true},
@@ -118,11 +118,11 @@ func TestEnabledPlugins(t *testing.T) {
 		names = append(names, p.Metadata().Name)
 	}
 	got := strings.Join(names, ",")
-	// 只有已注册且启用的内置插件被加载；weather 被显式禁用，未注册与外部插件都不加载。
+	// 只有已注册且启用的内置插件被加载；被禁用、未注册与外部插件都不加载。
 	if !strings.Contains(got, "echo") || !strings.Contains(got, "manage") {
 		t.Fatalf("已启用插件 = %v", names)
 	}
-	if strings.Contains(got, "weather") || strings.Contains(got, "not-loaded") {
+	if strings.Contains(got, "disabled-x") || strings.Contains(got, "not-loaded") {
 		t.Fatalf("不应加载被禁用/未注册的插件: %v", names)
 	}
 	if !strings.Contains(buf.String(), "not registered") {
@@ -275,6 +275,30 @@ func TestBindTokenRejectsDuplicates(t *testing.T) {
 	}
 }
 
+// TestSetupExternalIgnoresNonChannelAdapters 覆盖「禁用或不走外部通道的适配器声明
+// 不应要求 grpc.addr、也不占用令牌」。
+func TestSetupExternalIgnoresNonChannelAdapters(t *testing.T) {
+	logger, _ := testLogger()
+	bindings := emptyBindings(t)
+	disabled := false
+
+	cfg := &config.Config{
+		Adapters: map[string]config.AdapterConfig{
+			"feishu": {Enabled: &disabled},                                     // 进程内声明
+			"myim":   {Enabled: &disabled, GrpcAddr: "127.0.0.1:1", Token: ""}, // 禁用的外部适配器
+		},
+		Bots: []config.BotConfig{{Name: "mock-main", Adapter: "mock"}},
+	}
+	setup, err := setupExternal(cfg, logger, http.DefaultClient, bindings)
+	if err != nil {
+		t.Fatalf("禁用/进程内声明不应要求 grpc.addr: %v", err)
+	}
+	if setup.hook != nil {
+		t.Fatal("没有启用的外部适配器时不应提供装配钩子")
+	}
+	setup.close()
+}
+
 func TestTLSConfigs(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath := writeSelfSignedCert(t, dir)
@@ -348,7 +372,7 @@ func TestExampleConfigLoads(t *testing.T) {
 			t.Fatalf("示例配置缺少 %s 适配器示例: %v", want, adapters)
 		}
 	}
-	for _, name := range []string{"echo", "weather", "manage"} {
+	for _, name := range []string{"echo", "manage"} {
 		if pc := cfg.Plugin(name); !pc.Enabled {
 			t.Fatalf("示例配置应启用插件 %s", name)
 		}

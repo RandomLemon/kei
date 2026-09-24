@@ -769,6 +769,101 @@ adapters:
 	}
 }
 
+func TestAdaptersEnabled(t *testing.T) {
+	t.Run("缺省启用", func(t *testing.T) {
+		cfg := mustLoadBytes(t, adaptersYAML)
+		if !cfg.AdapterEnabled("myim") {
+			t.Fatal("未写 enabled 时应启用")
+		}
+		if !cfg.AdapterEnabled("never-declared") {
+			t.Fatal("未声明的适配器应视为启用")
+		}
+	})
+
+	t.Run("显式禁用外部适配器", func(t *testing.T) {
+		cfg := mustLoadBytes(t, `
+bots:
+  - name: myim-main
+    adapter: myim
+adapters:
+  myim:
+    enabled: false
+`)
+		if cfg.AdapterEnabled("myim") {
+			t.Fatal("enabled: false 应禁用")
+		}
+		if cfg.Adapters["myim"].GrpcAddr != "" {
+			t.Fatalf("禁用条目不应要求 grpc_addr: %+v", cfg.Adapters["myim"])
+		}
+	})
+
+	t.Run("禁用后不校验通道字段", func(t *testing.T) {
+		cfg := mustLoadBytes(t, `
+bots:
+  - name: myim-main
+    adapter: myim
+adapters:
+  myim:
+    enabled: false
+    grpc_addr: "127.0.0.1:50071"
+    token: ""
+`)
+		if cfg.AdapterEnabled("myim") {
+			t.Fatal("应保持禁用")
+		}
+	})
+
+	t.Run("进程内声明只允许 enabled", func(t *testing.T) {
+		cfg := mustLoadBytes(t, `
+bots:
+  - name: mock-main
+    adapter: mock
+adapters:
+  mock:
+    enabled: false
+`)
+		if cfg.AdapterEnabled("mock") {
+			t.Fatal("进程内适配器也应可禁用")
+		}
+		if len(cfg.Adapters["mock"].Permissions) != 0 {
+			t.Fatalf("进程内声明不应被填充默认权限: %v", cfg.Adapters["mock"].Permissions)
+		}
+	})
+
+	t.Run("环境变量覆盖", func(t *testing.T) {
+		cfg := mustLoadBytes(t, adaptersYAML, "KEI_ADAPTERS_MYIM_ENABLED=false")
+		if cfg.AdapterEnabled("myim") {
+			t.Fatal("环境变量应能禁用适配器")
+		}
+
+		cfg = mustLoadBytes(t, `
+bots:
+  - name: myim-main
+    adapter: myim
+adapters:
+  myim:
+    enabled: false
+`, "KEI_ADAPTERS_MYIM_ENABLED=true")
+		if !cfg.AdapterEnabled("myim") {
+			t.Fatal("环境变量应能重新启用适配器")
+		}
+	})
+
+	t.Run("enabled 非布尔报错", func(t *testing.T) {
+		_, err := LoadBytes([]byte(`
+bots:
+  - name: myim-main
+    adapter: myim
+adapters:
+  myim:
+    enabled: 也许
+`), nil)
+		if err == nil || !strings.Contains(err.Error(), "adapters.myim.enabled") {
+			t.Fatalf("错误 = %v", err)
+		}
+	})
+}
+
 func TestAdaptersEnvOverride(t *testing.T) {
 	cfg := mustLoadBytes(t, adaptersYAML, []string{
 		"KEI_ADAPTERS_MYIM_TOKEN=env-token",
@@ -799,9 +894,9 @@ func TestAdaptersValidateErrors(t *testing.T) {
 		want string
 	}{
 		{
-			name: "缺少 grpc_addr",
+			name: "无 grpc_addr 时只允许 enabled",
 			yaml: "bots:\n  - name: a\n    adapter: myim\nadapters:\n  myim:\n    token: t\n",
-			want: "adapters.myim.grpc_addr",
+			want: "只允许 enabled",
 		},
 		{
 			name: "缺少 token",
