@@ -119,12 +119,36 @@ func TestEmptyRegistry(t *testing.T) {
 	for _, name := range []string{
 		metricEventsPublished, metricEventsDropped, metricEventsHandled,
 		metricEventHandling, metricMessagesSent, metricMessageSend, metricRulesMatched,
+		metricAdapterReconnect, metricAdapterDisabled,
 	} {
 		if !strings.Contains(got, "# HELP "+name+" ") {
 			t.Errorf("缺少 HELP 头: %s", name)
 		}
 		if !strings.Contains(got, "# TYPE "+name+" ") {
 			t.Errorf("缺少 TYPE 头: %s", name)
+		}
+	}
+}
+
+// TestAdapterMetrics 验证外部适配器重连与停用计数器的标签与累加。
+func TestAdapterMetrics(t *testing.T) {
+	r := New()
+	r.AdapterReconnectFailed("myim")
+	r.AdapterReconnectFailed("myim")
+	r.AdapterDisabled("myim")
+	r.AdapterReconnected("myim")
+	r.AdapterReconnectFailed("other")
+
+	got, _ := body(t, r)
+	wants := []string{
+		`kei_adapter_reconnects_total{adapter="myim",result="error"} 2`,
+		`kei_adapter_reconnects_total{adapter="myim",result="ok"} 1`,
+		`kei_adapter_reconnects_total{adapter="other",result="error"} 1`,
+		`kei_adapter_disabled_total{adapter="myim"} 1`,
+	}
+	for _, w := range wants {
+		if !strings.Contains(got, w+"\n") {
+			t.Errorf("输出缺少行 %q\n输出:\n%s", w, got)
 		}
 	}
 }

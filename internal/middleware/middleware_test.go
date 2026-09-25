@@ -602,8 +602,10 @@ func TestAuth(t *testing.T) {
 
 // fakeRecorder 记录 Metrics 中间件的上报内容。
 type fakeRecorder struct {
-	calls int
-	got   struct {
+	calls        int
+	matchedCalls int
+	gotMatch     struct{ plugin, rule string }
+	got          struct {
 		plugin, rule string
 		d            time.Duration
 		err          error
@@ -625,8 +627,20 @@ func (f *fakeRecorder) EventDropped(string, string) {}
 // MessageSent 实现 metrics.Recorder（本包不使用，留空）。
 func (f *fakeRecorder) MessageSent(string, time.Duration, error) {}
 
-// RuleMatched 实现 metrics.Recorder（本包不使用，留空）。
-func (f *fakeRecorder) RuleMatched(string, string) {}
+// RuleMatched 实现 metrics.Recorder。
+func (f *fakeRecorder) RuleMatched(plugin, rule string) {
+	f.matchedCalls++
+	f.gotMatch.plugin, f.gotMatch.rule = plugin, rule
+}
+
+// AdapterReconnected 实现 metrics.Recorder（本包不使用，留空）。
+func (f *fakeRecorder) AdapterReconnected(string) {}
+
+// AdapterReconnectFailed 实现 metrics.Recorder（本包不使用，留空）。
+func (f *fakeRecorder) AdapterReconnectFailed(string) {}
+
+// AdapterDisabled 实现 metrics.Recorder（本包不使用，留空）。
+func (f *fakeRecorder) AdapterDisabled(string) {}
 
 // TestMetricsMiddleware 验证指标中间件上报插件、规则、耗时与错误。
 func TestMetricsMiddleware(t *testing.T) {
@@ -644,6 +658,9 @@ func TestMetricsMiddleware(t *testing.T) {
 	}
 	if rec.calls != 1 {
 		t.Fatalf("上报次数不符: got %d, want 1", rec.calls)
+	}
+	if rec.matchedCalls != 1 || rec.gotMatch.plugin != "weather" || rec.gotMatch.rule != "today" {
+		t.Fatalf("规则命中上报不符: calls=%d %+v", rec.matchedCalls, rec.gotMatch)
 	}
 	if rec.got.plugin != "weather" || rec.got.rule != "today" {
 		t.Fatalf("上报标签不符: %+v", rec.got)
@@ -716,6 +733,10 @@ func TestCombinedChain(t *testing.T) {
 	}
 	if rec.calls != 2 {
 		t.Fatalf("指标应记录两次调用: got %d", rec.calls)
+	}
+	// 两条路径都进入了链：限流在 Metrics 内层，因此第二次同样算作命中。
+	if rec.matchedCalls != 2 {
+		t.Fatalf("规则命中应记录两次: got %d", rec.matchedCalls)
 	}
 }
 

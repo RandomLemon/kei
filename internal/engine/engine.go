@@ -412,20 +412,30 @@ func (e *Engine) shutdown(wg *sync.WaitGroup) {
 // 只有存在非空白名单时才生效：规则只在「允许它的 bot」上命中，任何 bot 都
 // 不允许的规则会被标记为匹配不到任何事件（BotIDs 为空切片）。必须在适配器
 // 启动、事件开始处理之前调用。
+//
+// 被 enabled: false 停用的实例不参与：它们不会收到事件，也不应影响
+// 「是否收窄」的判断——否则停用唯一配置了白名单的实例会误伤其他实例。
 func (e *Engine) applyBotPluginFilter() error {
+	enabled := make([]string, 0, len(e.cfg.Bots))
 	restricted := false
 	for _, b := range e.cfg.Bots {
+		if !b.IsEnabled() {
+			continue
+		}
+		enabled = append(enabled, b.Name)
 		if len(b.Plugins) > 0 {
 			restricted = true
-			break
 		}
 	}
 	if !restricted {
 		return nil
 	}
 	err := e.router.UpdateRules(func(rule *bot.Rule) {
-		ids := make([]string, 0, len(e.cfg.Bots))
+		ids := make([]string, 0, len(enabled))
 		for _, b := range e.cfg.Bots {
+			if !b.IsEnabled() {
+				continue
+			}
 			if len(b.Plugins) == 0 || contains(b.Plugins, rule.Plugin) {
 				ids = append(ids, b.Name)
 			}
@@ -436,7 +446,7 @@ func (e *Engine) applyBotPluginFilter() error {
 	if err != nil {
 		return fmt.Errorf("engine: apply per-bot plugin whitelist: %w", err)
 	}
-	e.log.Info("applied per-bot plugin whitelist", "bots", len(e.cfg.Bots))
+	e.log.Info("applied per-bot plugin whitelist", "bots", len(enabled))
 	return nil
 }
 

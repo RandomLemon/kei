@@ -36,6 +36,7 @@ grpc:
 # 适配器声明（可选）：用 enabled 控制启用（缺省 true）；声明 grpc_addr 即视为外部适配器，
 # 只写 enabled 则用于禁用进程内适配器。可用 KEI_ADAPTERS_MYIM_ENABLED / KEI_ADAPTERS_MYIM_TOKEN 覆盖。
 # 被禁用的适配器不会建立通道，其 bots[] 条目也会跳过（日志会记警告）。
+# bots[] 条目上的 enabled 是实例级开关（缺省 true），只跳过该 bot，可用 KEI_BOTS_<NAME>_ENABLED 覆盖。
 adapters:
   # 示例一：临时停用内置平台（不需要删掉下面的 feishu bot）
   # feishu:
@@ -64,6 +65,8 @@ bots:
   # 飞书：在开放平台把事件订阅地址配置为 https://<你的域名>/feishu/event，
   # 并把 verification_token / encrypt_key 填成开放平台上的值。
   # app_secret 建议用 KEI_BOTS_FEISHU_MAIN_APP_SECRET 覆盖而不是写在文件里。
+  # enabled: false 只停用这一个实例（缺省启用），其监听端口与适配器装配一并跳过；
+  # 要停用整个平台用 adapters.feishu.enabled: false。
   - name: feishu-main
     enabled: false
     adapter: feishu

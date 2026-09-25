@@ -110,11 +110,22 @@ type BotConfig struct {
 	Name string
 	// Adapter 是平台适配器名，只允许 [a-z0-9_-]。
 	Adapter string
-	// Settings 是 YAML 中除 name/adapter/plugins 外的其余键；
+	// Enabled 控制是否装配该实例；nil（未写 enabled）视为启用。
+	//
+	// 只有显式的 enabled: false 才跳过：该实例不建立通道、不接收事件、不参与
+	// 适配器校验（记 warn 日志），因此可以临时停用某个账号而不删掉它的配置。
+	// 与适配器同向：缺省启用，声明本身不是启用的前提。
+	Enabled *bool
+	// Settings 是 YAML 中除 name/adapter/enabled/plugins 外的其余键；
 	// 取值保证可被 encoding/json 编解码。
 	Settings map[string]any
 	// Plugins 是该实例启用的插件名，为空表示全部启用。
 	Plugins []string
+}
+
+// IsEnabled 判断该实例是否启用：未显式写 enabled 时视为启用。
+func (b BotConfig) IsEnabled() bool {
+	return b.Enabled == nil || *b.Enabled
 }
 
 // PluginConfig 是单个插件的配置。
@@ -238,7 +249,7 @@ func decodeBots(node *yaml.Node) ([]BotConfig, error) {
 	return bots, nil
 }
 
-// decodeBot 解析单个 bot 条目，未声明的键进入 Settings。
+// decodeBot 解析单个 bot 条目；name/adapter/enabled/plugins 之外的键进入 Settings。
 func decodeBot(index int, node *yaml.Node) (BotConfig, error) {
 	if node.Kind != yaml.MappingNode {
 		return BotConfig{}, fmt.Errorf("bots[%d]: 必须是映射", index)
@@ -261,6 +272,12 @@ func decodeBot(index int, node *yaml.Node) (BotConfig, error) {
 				return BotConfig{}, fmt.Errorf("bots[%d].plugins: %w", index, err)
 			}
 			bot.Plugins = list
+		case "enabled":
+			var enabled bool
+			if err := val.Decode(&enabled); err != nil {
+				return BotConfig{}, fmt.Errorf("bots[%d].enabled: %w", index, err)
+			}
+			bot.Enabled = &enabled
 		default:
 			var v any
 			if err := val.Decode(&v); err != nil {

@@ -390,7 +390,22 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Fatal("示例配置的 mock bot 必须配置 listen_addr")
 	}
 	if got, _ := mockBot.Settings["platform"].(string); got != "mock" {
-		t.Fatalf("mock bot 的 platform = %q, want mock", got)
+		t.Fatalf("mock bot 的 platform = %q, want mock", mockBot.Settings["platform"])
+	}
+
+	// 示例配置用实例级 enabled: false 停用飞书 bot：快速开始依赖「只跑 mock」，
+	// 该开关必须真的生效（而不是像早期那样落入 Settings 静默失效）。
+	var feishuBot config.BotConfig
+	for _, b := range cfg.Bots {
+		if b.Adapter == "feishu" {
+			feishuBot = b
+		}
+	}
+	if feishuBot.IsEnabled() {
+		t.Fatal("示例配置的飞书 bot 应通过 enabled: false 停用")
+	}
+	if _, ok := feishuBot.Settings["enabled"]; ok {
+		t.Fatalf("enabled 不应落入 Settings: %+v", feishuBot.Settings)
 	}
 }
 

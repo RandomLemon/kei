@@ -120,6 +120,10 @@ func applyBotEnv(c *Config, botNames []string, rest, value string) {
 			bot.Adapter = value
 		case "plugins":
 			bot.Plugins = splitList(value)
+		case "enabled":
+			if enabled, ok := envBool(value); ok {
+				bot.Enabled = &enabled
+			}
 		default:
 			setSetting(&bot.Settings, tail, value)
 		}

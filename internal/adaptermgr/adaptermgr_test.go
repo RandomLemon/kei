@@ -453,3 +453,85 @@ func TestBindingsCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("Close 调用次数 = %d, want 1", c.n)
 	}
 }
+
+func TestBuildSkipsDisabledBot(t *testing.T) {
+	const (
+		adapter = "test-bot-enabled"
+		meta    = "test-bot-enabled-ghost"
+	)
+	ad := registerTestAdapter(t, bot.AdapterMetadata{
+		Name: adapter, Platforms: []string{"recording"}, Options: []string{"listen_addr"},
+	})
+
+	// go.mod 的 go 指令低于 1.26，这里用临时变量取地址。
+	disabled := false
+	cfg := &config.Config{Bots: []config.BotConfig{
+		{Name: "live-bot", Adapter: adapter},
+		{Name: "off-bot", Adapter: adapter, Enabled: &disabled},
+	}}
+
+	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil))
+	if err != nil {
+		t.Fatalf("停用的实例不应阻塞装配: %v", err)
+	}
+	t.Cleanup(func() { _ = bindings.Close() })
+
+	list := bindings.List()
+	if len(list) != 1 || list[0].BotID != "live-bot" {
+		t.Fatalf("停用的实例不应出现在绑定中: %+v", list)
+	}
+	if ad.ac.BotID != "live-bot" {
+		t.Fatalf("工厂只应为启用的实例调用: %+v", ad.ac)
+	}
+
+	// 停用的实例不参与适配器校验：未知适配器也不应报错。
+	cfg.Bots = append(cfg.Bots, config.BotConfig{Name: "ghost-bot", Adapter: meta, Enabled: &disabled})
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("停用实例的适配器不应参与校验: %v", err)
+	}
+}
+
+func TestValidateDisabledBotSkipsReservedOption(t *testing.T) {
+	const adapter = "test-bot-enabled-reserved"
+	registerTestAdapter(t, bot.AdapterMetadata{
+		Name: adapter, Platforms: []string{"recording"}, Permissions: []bot.Permission{bot.PermNetwork},
+	})
+
+	// 未声明 net_listen：启用时报错，停用后跳过。
+	botCfg := config.BotConfig{
+		Name: "off-bot", Adapter: adapter,
+		Settings: map[string]any{bot.OptListenAddr: "127.0.0.1:0"},
+	}
+	cfg := &config.Config{Bots: []config.BotConfig{botCfg}}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("启用时配置保留键应报错")
+	}
+
+	disabled := false
+	cfg.Bots[0].Enabled = &disabled
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("停用实例不应触发保留键校验: %v", err)
+	}
+	if _, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil)); err != nil {
+		t.Fatalf("停用实例应可装配（产出为空）: %v", err)
+	}
+}
+
+func TestValidateRegistrationRejects(t *testing.T) {
+	if err := validateRegistrationRejects(nil); err != nil {
+		t.Fatalf("无被拒注册时不应报错: %v", err)
+	}
+
+	err := validateRegistrationRejects([]bot.AdapterRegistrationError{
+		{Name: "", Reason: "注册名为空"},
+		{Name: "half", Reason: "工厂为 nil"},
+	})
+	if err == nil {
+		t.Fatal("存在被拒注册时应报错")
+	}
+	for _, want := range []string{"<空名>", "注册名为空", "half", "工厂为 nil"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误 = %v, 期望包含 %q", err, want)
+		}
+	}
+}

@@ -23,6 +23,7 @@ import (
 
 	"github.com/RandomLemon/kei/internal/adaptermgr/external"
 	"github.com/RandomLemon/kei/internal/config"
+	"github.com/RandomLemon/kei/internal/metrics"
 	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
@@ -37,6 +38,8 @@ type Deps struct {
 	HTTPClient *http.Client
 	// TLS 是连接外部适配器时的客户端 TLS；nil 表示明文。
 	TLS *tls.Config
+	// Recorder 是外部适配器通道的指标记录器，nil 时不上报。
+	Recorder metrics.Recorder
 }
 
 // Binding 是一个已完成装配的适配器绑定。
@@ -110,7 +113,7 @@ func (b *Bindings) EmitFunc(api bot.BotAPI) (func(context.Context, string, *bot.
 // Validate 校验适配器注册表与配置的一致性，返回可行动的启动错误。
 //
 // 只做静态检查，不建立任何连接；外部适配器上报的元信息在 Build 阶段校验。
-// 被 enabled: false 禁用的适配器不参与校验：其 bots[] 条目在 Build 阶段跳过。
+// 被 enabled: false 禁用的适配器与 bot 实例都不参与校验：它们在 Build 阶段被跳过。
 func Validate(cfg *config.Config) error {
 	if err := ValidateRegistry(); err != nil {
 		return err
@@ -120,7 +123,7 @@ func Validate(cfg *config.Config) error {
 
 	for i := range cfg.Bots {
 		bc := &cfg.Bots[i]
-		if !cfg.AdapterEnabled(bc.Adapter) {
+		if !bc.IsEnabled() || !cfg.AdapterEnabled(bc.Adapter) {
 			continue
 		}
 		meta, _, ok := bot.LookupAdapter(bc.Adapter)
@@ -149,9 +152,30 @@ func isExternalAdapter(cfg *config.Config, name string) bool {
 
 // ValidateRegistry 校验进程内适配器注册表。
 //
-// 报错条件：注册名重复、元信息缺 Platforms、声明了仅插件可用的 PermAll。
+// 报错条件：存在被拒绝的注册（空注册名或 nil 工厂）、注册名重复、
+// 元信息缺 Platforms、声明了仅插件可用的 PermAll。
 func ValidateRegistry() error {
-	return validateRegistryOf(bot.RegisteredAdapters())
+	if err := validateRegistryOf(bot.RegisteredAdapters()); err != nil {
+		return err
+	}
+	return validateRegistrationRejects(bot.AdapterRegistrationErrors())
+}
+
+// validateRegistrationRejects 是「被拒绝的注册」校验的纯函数形式。
+func validateRegistrationRejects(rejects []bot.AdapterRegistrationError) error {
+	if len(rejects) == 0 {
+		return nil
+	}
+	msgs := make([]string, 0, len(rejects))
+	for _, r := range rejects {
+		name := r.Name
+		if name == "" {
+			name = "<空名>"
+		}
+		msgs = append(msgs, fmt.Sprintf("%s（%s）", name, r.Reason))
+	}
+	return fmt.Errorf("adaptermgr: 适配器注册被拒绝: %s；RegisterAdapter 要求 Name 非空且 factory 非 nil",
+		strings.Join(msgs, ", "))
 }
 
 // validateRegistryOf 是注册表校验的纯函数形式，便于单测直接覆盖规则。
@@ -210,6 +234,11 @@ func Build(ctx context.Context, cfg *config.Config, deps Deps) (*Bindings, error
 	}()
 
 	for _, bc := range cfg.Bots {
+		if !bc.IsEnabled() {
+			// 实例被显式停用：不建通道、不装配，也不记未知键告警。
+			deps.Logger.Info("bot 已禁用，跳过", "bot", bc.Name, "adapter", bc.Adapter)
+			continue
+		}
 		if !cfg.AdapterEnabled(bc.Adapter) {
 			// 适配器被显式禁用：不建立通道，也不启动它的任何 bot 实例。
 			deps.Logger.Warn("适配器已禁用，跳过 bot", "adapter", bc.Adapter, "bot", bc.Name)
@@ -239,7 +268,7 @@ func Build(ctx context.Context, cfg *config.Config, deps Deps) (*Bindings, error
 				Platform:    ac.Platform,
 				Settings:    ac.Settings,
 				TLS:         deps.TLS,
-			}, external.Deps{Logger: deps.Logger})
+			}, external.Deps{Logger: deps.Logger, Recorder: deps.Recorder})
 			if err != nil {
 				return nil, fmt.Errorf("adaptermgr: 外部适配器 %s: %w", bc.Adapter, err)
 			}

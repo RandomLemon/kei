@@ -598,3 +598,163 @@ func TestSupervisorReconnectsAfterAdapterCrash(t *testing.T) {
 type nopSink struct{}
 
 func (nopSink) Emit(context.Context, *bot.Event) error { return nil }
+
+// fakeRecorder 记录外部适配器通道上报的指标，用于验证重连路径确实上报。
+type fakeRecorder struct {
+	mu         sync.Mutex
+	reconnects int
+	failures   int
+	disabled   int
+}
+
+func (f *fakeRecorder) EventHandled(string, string, time.Duration, error) {}
+func (f *fakeRecorder) EventPublished(string)                             {}
+func (f *fakeRecorder) EventDropped(string, string)                       {}
+func (f *fakeRecorder) MessageSent(string, time.Duration, error)          {}
+func (f *fakeRecorder) RuleMatched(string, string)                        {}
+
+func (f *fakeRecorder) AdapterReconnected(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reconnects++
+}
+
+func (f *fakeRecorder) AdapterReconnectFailed(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failures++
+}
+
+func (f *fakeRecorder) AdapterDisabled(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.disabled++
+}
+
+func (f *fakeRecorder) counts() (reconnects, failures, disabled int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reconnects, f.failures, f.disabled
+}
+
+// TestSupervisorReportsAdapterMetrics 验证断连重连路径上报指标：
+// 重连失败与成功分别计数，且未启用指标（Deps.Recorder 为 nil）时不 panic。
+func TestSupervisorReportsAdapterMetrics(t *testing.T) {
+	svc := &fakeService{}
+
+	var (
+		lnMu     sync.Mutex
+		listener *bufconn.Listener
+		servers  []*grpc.Server
+	)
+	setListener := func(l *bufconn.Listener) {
+		lnMu.Lock()
+		listener = l
+		lnMu.Unlock()
+	}
+	dialer := func(context.Context, string) (net.Conn, error) {
+		lnMu.Lock()
+		ln := listener
+		lnMu.Unlock()
+		if ln == nil {
+			return nil, errors.New("适配器进程未运行")
+		}
+		return ln.Dial()
+	}
+	serve := func() (*bufconn.Listener, *grpc.Server) {
+		ln := bufconn.Listen(1 << 20)
+		srv := grpc.NewServer()
+		pluginpb.RegisterAdapterServiceServer(srv, svc)
+		go func() { _ = srv.Serve(ln) }()
+		lnMu.Lock()
+		servers = append(servers, srv)
+		lnMu.Unlock()
+		setListener(ln)
+		return ln, srv
+	}
+
+	_, firstSrv := serve()
+	t.Cleanup(func() {
+		lnMu.Lock()
+		defer lnMu.Unlock()
+		for _, srv := range servers {
+			srv.Stop()
+		}
+	})
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	rec := &fakeRecorder{}
+	client, err := newWithConn(context.Background(), conn, Config{
+		Name: "myim", Addr: "bufnet", CoreAddr: "127.0.0.1:19070", Token: "t",
+		Permissions: []bot.Permission{bot.PermReceiveEvent},
+		Timeout:     time.Second,
+	}, Deps{Recorder: rec})
+	if err != nil {
+		t.Fatalf("newWithConn: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	inst, err := client.Instance("myim-main", bot.NewConfig(nil))
+	if err != nil {
+		t.Fatalf("Instance: %v", err)
+	}
+	if err := inst.(*instance).start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.startSupervisor(ctx)
+
+	// 进程崩溃：巡检应记录重连失败。
+	firstSrv.Stop()
+	setListener(nil)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, failures, _ := rec.counts(); failures > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			_, failures, _ := rec.counts()
+			t.Fatalf("未上报重连失败: failures=%d", failures)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 进程恢复：巡检应记录一次重连成功。
+	serve()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if reconnects, _, _ := rec.counts(); reconnects > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			reconnects, failures, disabled := rec.counts()
+			t.Fatalf("未上报重连成功: reconnects=%d failures=%d disabled=%d", reconnects, failures, disabled)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, _, disabled := rec.counts(); disabled != 0 {
+		t.Fatalf("重连成功不应记录停用: disabled=%d", disabled)
+	}
+}
+
+// TestSupervisorWithoutRecorderDoesNotPanic 验证未启用指标时巡检路径安全。
+func TestSupervisorWithoutRecorderDoesNotPanic(t *testing.T) {
+	svc := &fakeService{}
+	client := newTestClient(t, svc, nil) // Deps{} → Recorder 为 nil
+	if client.rec == nil {
+		t.Fatal("应回退到 nil 安全的空实现")
+	}
+	// 空实现必须可调用（方法对 nil 接收者安全）。
+	client.rec.AdapterReconnectFailed("myim")
+	client.rec.AdapterReconnected("myim")
+	client.rec.AdapterDisabled("myim")
+}

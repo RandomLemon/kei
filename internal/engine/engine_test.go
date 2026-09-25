@@ -531,3 +531,64 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// TestDisabledBotExcludedFromPluginWhitelist 验证 enabled: false 的实例不参与
+// 插件白名单收窄，也不会把允许它的事件错误地限制掉。
+func TestDisabledBotExcludedFromPluginWhitelist(t *testing.T) {
+	ads := map[string]*mock.Adapter{"mock-a": newMock("mock-a"), "mock-b": newMock("mock-b")}
+	disabled := false
+	cfg := mockConfig(
+		config.BotConfig{Name: "mock-a", Adapter: "mock", Plugins: []string{"p"}},
+		// 唯一配置了白名单的实例被停用：mock-a 未配白名单，应视为允许全部插件。
+		config.BotConfig{Name: "mock-b", Adapter: "mock", Plugins: []string{"other"}, Enabled: &disabled},
+	)
+	plugin := newTestPlugin("p")
+	startEngine(t, cfg, []bot.Plugin{plugin}, ads)
+
+	if _, err := ads["mock-a"].InjectText(context.Background(), "from-a"); err != nil {
+		t.Fatalf("InjectText: %v", err)
+	}
+	if !ads["mock-a"].WaitSent(1, 3*time.Second) {
+		t.Fatal("mock-a 未配白名单，插件应可回复")
+	}
+	if got := plugin.handledTexts(); len(got) != 1 || got[0] != "from-a" {
+		t.Fatalf("Handler 处理日志 = %v", got)
+	}
+}
+
+// TestDisabledBotWhitelistNarrowing 验证启用实例的白名单仍照常收窄规则范围。
+func TestDisabledBotWhitelistNarrowing(t *testing.T) {
+	ads := map[string]*mock.Adapter{"mock-a": newMock("mock-a"), "mock-b": newMock("mock-b")}
+	disabled := false
+	cfg := mockConfig(
+		config.BotConfig{Name: "mock-a", Adapter: "mock", Plugins: []string{"p"}},
+		config.BotConfig{Name: "mock-b", Adapter: "mock", Plugins: []string{"other"}},
+		config.BotConfig{Name: "mock-c", Adapter: "mock", Plugins: []string{"p"}, Enabled: &disabled},
+	)
+	plugin := newTestPlugin("p")
+	h := startEngine(t, cfg, []bot.Plugin{plugin}, ads)
+
+	// 规则适用范围必须排除被停用的 mock-c（它不可能收到事件）。
+	for _, rule := range h.eng.Router().Rules() {
+		for _, id := range rule.BotIDs {
+			if id == "mock-c" {
+				t.Fatalf("停用实例不应出现在规则白名单: %+v", rule.BotIDs)
+			}
+		}
+	}
+
+	// 白名单仍照常生效：mock-b 不允许插件 p。
+	if _, err := ads["mock-a"].InjectText(context.Background(), "from-a"); err != nil {
+		t.Fatalf("InjectText: %v", err)
+	}
+	if _, err := ads["mock-b"].InjectText(context.Background(), "from-b"); err != nil {
+		t.Fatalf("InjectText: %v", err)
+	}
+	if !ads["mock-a"].WaitSent(1, 3*time.Second) {
+		t.Fatal("白名单内的 bot 应收到回复")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := len(ads["mock-b"].Sent()); got != 0 {
+		t.Fatalf("白名单外的 bot 不应收到回复, 回复数 = %d", got)
+	}
+}

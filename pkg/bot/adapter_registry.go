@@ -26,7 +26,7 @@ type AdapterContext struct {
 	// BotID 是实例名（配置中的 bots[].name）。适配器必须把它写入
 	// Event.BotID 与 SendRequest.BotID。
 	BotID string
-	// Config 是该实例的适配器私有配置（bots[] 条目中除 name/adapter/plugins
+	// Config 是该实例的适配器私有配置（bots[] 条目中除 name/adapter/enabled/plugins
 	// 外的键），支持 "a.b.c" 多级键读取。
 	Config *Config
 	// Logger 不为 nil；适配器日志必须使用它，并带上 bot/adapter 字段。
@@ -90,6 +90,17 @@ type AdapterCatalog interface {
 	Adapters() []AdapterInfo
 }
 
+// AdapterRegistrationError 描述一次未能进入注册表的适配器注册。
+//
+// RegisterAdapter 的签名不返回错误（公开 SDK 必须保持稳定），被拒绝的注册
+// 记录在这里，由启动校验（internal/adaptermgr）报出，避免静默失效。
+type AdapterRegistrationError struct {
+	// Name 是注册时给出的名字；名称为空时该字段为空串。
+	Name string
+	// Reason 是注册被拒绝的原因。
+	Reason string
+}
+
 // adapterRegistration 是注册表中的一项。
 type adapterRegistration struct {
 	meta    AdapterMetadata
@@ -99,20 +110,44 @@ type adapterRegistration struct {
 var (
 	adapterMu       sync.RWMutex
 	adapterRegistry []adapterRegistration
+	adapterReject   []AdapterRegistrationError
 )
 
 // RegisterAdapter 注册编译期适配器工厂，通常由适配器包在 init() 中调用。
 //
-// 与 RegisterPlugin 一样只记录，不构造实例；Name 为空或 factory 为 nil 的
-// 注册被忽略。同名重复注册不是「后者覆盖前者」：必须在启动校验阶段报错
-// （见 internal/adaptermgr）。
+// 与 RegisterPlugin 一样只记录，不构造实例。注册名（meta.Name）为空或
+// factory 为 nil 时无法成为可用适配器：该次注册被拒绝、不入表，而是记入
+// AdapterRegistrationErrors，由启动校验报错终止启动（见 internal/adaptermgr）。
+// 同名重复注册不是「后者覆盖前者」：必须在启动校验阶段报错。
 func RegisterAdapter(meta AdapterMetadata, factory AdapterFactory) {
-	if meta.Name == "" || factory == nil {
+	switch {
+	case meta.Name == "":
+		recordAdapterReject(meta.Name, "注册名为空")
+		return
+	case factory == nil:
+		recordAdapterReject(meta.Name, "工厂为 nil")
 		return
 	}
 	adapterMu.Lock()
 	defer adapterMu.Unlock()
 	adapterRegistry = append(adapterRegistry, adapterRegistration{meta: meta.clone(), factory: factory})
+}
+
+// recordAdapterReject 记录一次被拒绝的注册。
+func recordAdapterReject(name, reason string) {
+	adapterMu.Lock()
+	defer adapterMu.Unlock()
+	adapterReject = append(adapterReject, AdapterRegistrationError{Name: name, Reason: reason})
+}
+
+// AdapterRegistrationErrors 返回被拒绝的注册快照（按注册顺序）。
+//
+// 非空表示有适配器包调用了 RegisterAdapter 但没有提供可用的名字或工厂；
+// 启动校验会据此报错，而不是让该适配器在运行时表现为「未注册」。
+func AdapterRegistrationErrors() []AdapterRegistrationError {
+	adapterMu.RLock()
+	defer adapterMu.RUnlock()
+	return append([]AdapterRegistrationError(nil), adapterReject...)
 }
 
 // RegisteredAdapters 返回按注册顺序排列的元信息快照。

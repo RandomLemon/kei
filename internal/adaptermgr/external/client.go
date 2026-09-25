@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/RandomLemon/kei/internal/metrics"
 	"github.com/RandomLemon/kei/pkg/bot"
 	"github.com/RandomLemon/kei/proto/pluginpb"
 )
@@ -71,6 +72,8 @@ type Config struct {
 type Deps struct {
 	// Logger 是日志器，nil 时使用 slog.Default()。
 	Logger *slog.Logger
+	// Recorder 是连接巡检的指标记录器，nil 时不上报（等价关闭指标）。
+	Recorder metrics.Recorder
 }
 
 // Client 是一个外部适配器进程的连接与身份，可服务多个 bot 实例。
@@ -86,6 +89,7 @@ type Client struct {
 	explicit      string // 配置指定的平台名，可为空
 	settings      map[string]any
 	log           *slog.Logger
+	rec           metrics.Recorder
 	conn          *grpc.ClientConn
 	svc           pluginpb.AdapterServiceClient
 	superviseOnce sync.Once
@@ -133,6 +137,12 @@ func newWithConn(ctx context.Context, conn *grpc.ClientConn, cfg Config, deps De
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// 未启用指标时用 (*metrics.Registry)(nil) 作空实现：其方法对 nil 接收者安全，
+	// 避免在巡检路径上反复判空。
+	rec := deps.Recorder
+	if rec == nil {
+		rec = (*metrics.Registry)(nil)
+	}
 	settingsJSON, err := encodeSettings(cfg.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("adaptermgr/external: 适配器 %s: %w", cfg.Name, err)
@@ -148,6 +158,7 @@ func newWithConn(ctx context.Context, conn *grpc.ClientConn, cfg Config, deps De
 		explicit:  cfg.Platform,
 		settings:  cfg.Settings,
 		log:       logger.With("adapter", cfg.Name),
+		rec:       rec,
 		conn:      conn,
 		svc:       pluginpb.NewAdapterServiceClient(conn),
 		instances: make(map[string]*instance),
@@ -349,8 +360,10 @@ func (c *Client) supervise(ctx context.Context) {
 
 		if err := c.reconnect(ctx); err != nil {
 			attempts++
+			c.rec.AdapterReconnectFailed(c.name)
 			if attempts >= reconnectMaxAttempts {
 				c.setDisabled(true)
+				c.rec.AdapterDisabled(c.name)
 				c.log.Error("外部适配器重连失败达上限，停用其实例",
 					"attempts", attempts, "error", err)
 			} else {
@@ -366,6 +379,7 @@ func (c *Client) supervise(ctx context.Context) {
 		}
 		attempts, backoff = 0, reconnectInitialBackoff
 		c.setDisabled(false)
+		c.rec.AdapterReconnected(c.name)
 		c.log.Info("外部适配器已重连")
 	}
 }

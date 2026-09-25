@@ -28,28 +28,38 @@ type Recorder interface {
 	MessageSent(platform string, d time.Duration, err error)
 	// RuleMatched 记录一次规则命中。
 	RuleMatched(plugin, rule string)
+	// AdapterReconnected 记录一次外部适配器重连成功。
+	AdapterReconnected(name string)
+	// AdapterReconnectFailed 记录一次外部适配器重连失败。
+	AdapterReconnectFailed(name string)
+	// AdapterDisabled 记录一次外部适配器实例被停用（重连失败达上限）。
+	AdapterDisabled(name string)
 }
 
 // 指标名。
 const (
-	metricEventsPublished = "kei_events_published_total"
-	metricEventsDropped   = "kei_events_dropped_total"
-	metricEventsHandled   = "kei_events_handled_total"
-	metricEventHandling   = "kei_event_handling_seconds"
-	metricMessagesSent    = "kei_messages_sent_total"
-	metricMessageSend     = "kei_message_send_seconds"
-	metricRulesMatched    = "kei_rules_matched_total"
+	metricEventsPublished  = "kei_events_published_total"
+	metricEventsDropped    = "kei_events_dropped_total"
+	metricEventsHandled    = "kei_events_handled_total"
+	metricEventHandling    = "kei_event_handling_seconds"
+	metricMessagesSent     = "kei_messages_sent_total"
+	metricMessageSend      = "kei_message_send_seconds"
+	metricRulesMatched     = "kei_rules_matched_total"
+	metricAdapterReconnect = "kei_adapter_reconnects_total"
+	metricAdapterDisabled  = "kei_adapter_disabled_total"
 )
 
 // 指标帮助文本。
 const (
-	helpEventsPublished = "已发布的事件总数"
-	helpEventsDropped   = "被丢弃的事件总数"
-	helpEventsHandled   = "已处理的事件总数"
-	helpEventHandling   = "事件处理耗时（秒）"
-	helpMessagesSent    = "已发送的消息总数"
-	helpMessageSend     = "消息发送耗时（秒）"
-	helpRulesMatched    = "规则命中总数"
+	helpEventsPublished  = "已发布的事件总数"
+	helpEventsDropped    = "被丢弃的事件总数"
+	helpEventsHandled    = "已处理的事件总数"
+	helpEventHandling    = "事件处理耗时（秒）"
+	helpMessagesSent     = "已发送的消息总数"
+	helpMessageSend      = "消息发送耗时（秒）"
+	helpRulesMatched     = "规则命中总数"
+	helpAdapterReconnect = "外部适配器重连次数（result 为 ok 或 error）"
+	helpAdapterDisabled  = "被停用的外部适配器实例数（重连失败达上限）"
 )
 
 // 结果标签取值。

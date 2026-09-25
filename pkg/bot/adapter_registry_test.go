@@ -16,14 +16,26 @@ func (nilAdapter) Send(ctx context.Context, req *SendRequest) (*SendResult, erro
 }
 func (nilAdapter) Capabilities() Capabilities { return Capabilities{Text: true} }
 
-func TestRegisterAdapterIgnoresInvalid(t *testing.T) {
-	before := len(RegisteredAdapters())
+func TestRegisterAdapterRejectsInvalid(t *testing.T) {
+	beforeMeta := len(RegisteredAdapters())
+	beforeRejects := len(AdapterRegistrationErrors())
 
 	RegisterAdapter(AdapterMetadata{}, func(AdapterContext) (Adapter, error) { return nil, nil })
 	RegisterAdapter(AdapterMetadata{Name: "adapter-with-nil-factory"}, nil)
 
-	if got := len(RegisteredAdapters()); got != before {
-		t.Fatalf("非法注册不应入表: %d -> %d", before, got)
+	// 非法注册不入表，但必须被记录：否则只能在运行时表现为「未注册」。
+	if got := len(RegisteredAdapters()); got != beforeMeta {
+		t.Fatalf("非法注册不应入表: %d -> %d", beforeMeta, got)
+	}
+	rejects := AdapterRegistrationErrors()
+	if len(rejects) != beforeRejects+2 {
+		t.Fatalf("非法注册应被记录: %d -> %d", beforeRejects, len(rejects))
+	}
+	if got := rejects[beforeRejects]; got.Name != "" || got.Reason != "注册名为空" {
+		t.Fatalf("空注册名的记录不符: %+v", got)
+	}
+	if got := rejects[beforeRejects+1]; got.Name != "adapter-with-nil-factory" || got.Reason != "工厂为 nil" {
+		t.Fatalf("nil 工厂的记录不符: %+v", got)
 	}
 }
 

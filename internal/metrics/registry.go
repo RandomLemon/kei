@@ -16,13 +16,15 @@ import (
 type Registry struct {
 	mu sync.RWMutex
 
-	published map[string]*counter
-	dropped   map[droppedKey]*counter
-	handled   map[handledKey]*counter
-	handling  map[pluginRuleKey]*histogram
-	sent      map[platformResultKey]*counter
-	sending   map[string]*histogram
-	matched   map[pluginRuleKey]*counter
+	published        map[string]*counter
+	dropped          map[droppedKey]*counter
+	handled          map[handledKey]*counter
+	handling         map[pluginRuleKey]*histogram
+	sent             map[platformResultKey]*counter
+	sending          map[string]*histogram
+	matched          map[pluginRuleKey]*counter
+	adapterReconnect map[adapterResultKey]*counter
+	adapterDisabled  map[string]*counter
 }
 
 // droppedKey 是丢弃计数的标签组合。
@@ -40,6 +42,9 @@ type handledKey struct {
 // platformResultKey 是平台与结果两标签的组合。
 type platformResultKey struct{ platform, result string }
 
+// adapterResultKey 是外部适配器名与结果两标签的组合。
+type adapterResultKey struct{ adapter, result string }
+
 // New 构造指标注册表。
 func New() *Registry {
 	return &Registry{
@@ -50,6 +55,9 @@ func New() *Registry {
 		sent:      make(map[platformResultKey]*counter),
 		sending:   make(map[string]*histogram),
 		matched:   make(map[pluginRuleKey]*counter),
+
+		adapterReconnect: make(map[adapterResultKey]*counter),
+		adapterDisabled:  make(map[string]*counter),
 	}
 }
 
@@ -93,6 +101,30 @@ func (r *Registry) RuleMatched(plugin, rule string) {
 		return
 	}
 	counterFor(&r.mu, r.matched, pluginRuleKey{plugin, rule}).inc()
+}
+
+// AdapterReconnected 记录一次外部适配器重连成功。
+func (r *Registry) AdapterReconnected(name string) {
+	if r == nil {
+		return
+	}
+	counterFor(&r.mu, r.adapterReconnect, adapterResultKey{name, resultOK}).inc()
+}
+
+// AdapterReconnectFailed 记录一次外部适配器重连失败。
+func (r *Registry) AdapterReconnectFailed(name string) {
+	if r == nil {
+		return
+	}
+	counterFor(&r.mu, r.adapterReconnect, adapterResultKey{name, resultError}).inc()
+}
+
+// AdapterDisabled 记录一次外部适配器实例被停用（重连失败达上限）。
+func (r *Registry) AdapterDisabled(name string) {
+	if r == nil {
+		return
+	}
+	counterFor(&r.mu, r.adapterDisabled, name).inc()
 }
 
 // resultOf 把错误映射为结果标签值。
@@ -159,9 +191,10 @@ func (r *Registry) render(b *strings.Builder) {
 		return
 	}
 	r.mu.RLock()
-	published, dropped, handled, handling, sent, sending, matched :=
+	published, dropped, handled, handling, sent, sending, matched, reconnects, disabled :=
 		copyMap(r.published), copyMap(r.dropped), copyMap(r.handled), copyMap(r.handling),
-		copyMap(r.sent), copyMap(r.sending), copyMap(r.matched)
+		copyMap(r.sent), copyMap(r.sending), copyMap(r.matched),
+		copyMap(r.adapterReconnect), copyMap(r.adapterDisabled)
 	r.mu.RUnlock()
 
 	writeFamily(b, metricEventsPublished, helpEventsPublished, typeCounter, func() {
@@ -208,6 +241,18 @@ func (r *Registry) render(b *strings.Builder) {
 			writeLine(b, metricRulesMatched,
 				sortLabels([]label{{"plugin", k.plugin}, {"rule", k.rule}}),
 				formatUint(matched[k].value()))
+		}
+	})
+	writeFamily(b, metricAdapterReconnect, helpAdapterReconnect, typeCounter, func() {
+		for _, k := range sortedKeys(reconnects, func(k adapterResultKey) string { return k.adapter + "\x00" + k.result }) {
+			writeLine(b, metricAdapterReconnect,
+				sortLabels([]label{{"adapter", k.adapter}, {"result", k.result}}),
+				formatUint(reconnects[k].value()))
+		}
+	})
+	writeFamily(b, metricAdapterDisabled, helpAdapterDisabled, typeCounter, func() {
+		for _, k := range sortedKeys(disabled, func(k string) string { return k }) {
+			writeLine(b, metricAdapterDisabled, []label{{"adapter", k}}, formatUint(disabled[k].value()))
 		}
 	})
 }

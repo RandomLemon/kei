@@ -92,6 +92,7 @@ func run(args []string) error {
 		Storage:    store,
 		HTTPClient: httpClient,
 		TLS:        clientTLS,
+		Recorder:   registry,
 	})
 	if err != nil {
 		return err

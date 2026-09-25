@@ -5,7 +5,7 @@
 ## Advantages
 
 - 高性能：依托于 `Go` 的高性能，`kei` 可以实现更快的处理速度、更低的内存占用、更少的环境依赖。
-- 易开发：文档齐全，`README.md` 和 `AGENTS.md` 应有尽有。
+- 易开发：文档齐全——用户指南见本文件，设计与实现说明见 [`docs/`](docs/README.md)，硬性规则与结构概览见 [`AGENTS.md`](AGENTS.md)。
 - 可闭源：编译式运行，可以仅发布二进制，不过我们还是希望您可以开源。
 
 ## Architecture
@@ -69,6 +69,7 @@ plugins/manage/          管理命令：/ping、/version、/plugins、/adapters�
 proto/plugin.proto       外部插件 gRPC 协议 + BotService（含生成代码 proto/pluginpb）
 proto/adapter.proto      外部适配器 gRPC 协议（同 package，复用 plugin.proto 消息）
 configs/config.yaml      示例配置
+docs/                    设计文档集（架构/领域模型/适配器/插件/引擎/gRPC/配置/测试/阶段现状）
 ```
 
 ## 环境准备（Nix + direnv）
@@ -156,6 +157,10 @@ plugins:
 要点：
 
 - `bots[].adapter` 决定使用哪个适配器，其余键按适配器要求传入（拼错会打 warn 日志）。
+- `bots[].enabled` 是实例级开关，**缺省 true**：写 `enabled: false` 只跳过该实例
+  （不装配、不监听、不接收事件），可用于临时停用某个账号；也可用
+  `KEI_BOTS_<BOTNAME>_ENABLED=false` 覆盖（bot 名规范化后比较，`feishu-main` 即
+  `KEI_BOTS_FEISHU_MAIN_ENABLED`）。
 - 同一个平台可以配置多个 bot（例如两个飞书应用），此时发送必须显式指定 `Target.BotID`。
 - `bots[].plugins` 是该 bot 的插件白名单；只要有一个 bot 配置了非空白名单，规则就会按
   「哪些 bot 允许它」收窄（未配置白名单的 bot 允许全部）。
@@ -394,9 +399,19 @@ adapters:
 
 ```text
 kei-adapter-myim/
-├── go.mod      # require github.com/RandomLemon/kei
+├── go.mod      # module github.com/example/kei-adapter-myim；require github.com/RandomLemon/kei
 ├── myim.go     # 实现 bot.Adapter
-└── register.go # init() 中 RegisterAdapter
+├── register.go # init() 中 RegisterAdapter
+└── README.md
+```
+
+仓库内提供了可运行的完整示例 [`examples/kei-adapter-myim/`](examples/kei-adapter-myim/)：它是一个独立
+`go.mod` 的 module，只依赖 `pkg/bot`（不 import `internal/`），在 `init()` 中注册 `myim`
+适配器。在仓库内它以 `replace github.com/RandomLemon/kei => ../..` 指向本地根 module；
+真实第三方仓库把它换成版本号即可。运行示例自己的测试：
+
+```bash
+cd examples/kei-adapter-myim && go test ./...
 ```
 
 想用其他语言写适配器（独立进程 + gRPC）见下一节。
@@ -511,6 +526,8 @@ curl -sS 127.0.0.1:18080/sent | jq '.[-1].Request.Message.Segments[0].Data.text'
   | `kei_messages_sent_total` | `platform`, `result` |
   | `kei_message_send_seconds`（直方图） | `platform` |
   | `kei_rules_matched_total` | `plugin`, `rule` |
+  | `kei_adapter_reconnects_total` | `adapter`, `result`（`ok`/`error`） |
+  | `kei_adapter_disabled_total` | `adapter`（重连失败达上限后停用） |
 
 - 日志用 `log/slog`，字段化输出（`plugin`/`rule`/`event_id`/`duration_ms`/`error`），
   `log.format: json` 可切换为 JSON。

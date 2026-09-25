@@ -138,6 +138,9 @@ func isDenied(err error) bool {
 //
 // plugin/rule 取自 bot.RouteFrom，缺失时使用 DefaultLabel；rec 为 nil 时透传。
 // next 返回的错误原样透传，不会改变调用链行为。
+//
+// 进入该中间件即表示所在规则已匹配当前事件（路由器只为命中的规则构造处理链），
+// 因此在此上报 RuleMatched；规则随后是否被拒绝由 EventHandled 的 result 反映。
 func Metrics(rec metrics.Recorder) bot.Middleware {
 	if rec == nil {
 		return passthrough
@@ -145,6 +148,7 @@ func Metrics(rec metrics.Recorder) bot.Middleware {
 	return func(next bot.Handler) bot.Handler {
 		return func(ctx context.Context, e *bot.Event, r bot.Reply) error {
 			plugin, rule := pluginName(ctx), ruleID(ctx)
+			rec.RuleMatched(plugin, rule)
 			start := time.Now()
 			err := next(ctx, e, r)
 			rec.EventHandled(plugin, rule, time.Since(start), err)

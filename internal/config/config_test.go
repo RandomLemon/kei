@@ -936,3 +936,74 @@ func TestAdaptersValidateErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestBotEnabled 验证实例级 enabled 开关的解码、缺省值与语义。
+func TestBotEnabled(t *testing.T) {
+	t.Run("缺省启用且不进入 Settings", func(t *testing.T) {
+		cfg := mustLoadBytes(t, `
+bots:
+  - name: mock-main
+    adapter: mock
+`)
+		if !cfg.Bots[0].IsEnabled() {
+			t.Fatal("未写 enabled 时应启用")
+		}
+		if _, ok := cfg.Bots[0].Settings["enabled"]; ok {
+			t.Fatalf("enabled 是核心保留键，不应落入 Settings: %+v", cfg.Bots[0].Settings)
+		}
+	})
+
+	t.Run("显式禁用", func(t *testing.T) {
+		cfg := mustLoadBytes(t, `
+bots:
+  - name: mock-main
+    adapter: mock
+    enabled: false
+  - name: qq-main
+    adapter: onebot
+    enabled: true
+`)
+		if cfg.Bots[0].IsEnabled() {
+			t.Fatal("enabled: false 应停用实例")
+		}
+		if !cfg.Bots[1].IsEnabled() {
+			t.Fatal("enabled: true 应启用实例")
+		}
+		if _, ok := cfg.Bots[0].Settings["enabled"]; ok {
+			t.Fatalf("enabled 不应落入 Settings: %+v", cfg.Bots[0].Settings)
+		}
+	})
+
+	t.Run("环境变量覆盖", func(t *testing.T) {
+		cfg := mustLoadBytes(t, `
+bots:
+  - name: mock-main
+    adapter: mock
+`, "KEI_BOTS_MOCK_MAIN_ENABLED=false")
+		if cfg.Bots[0].IsEnabled() {
+			t.Fatal("环境变量应能停用实例")
+		}
+
+		cfg = mustLoadBytes(t, `
+bots:
+  - name: mock-main
+    adapter: mock
+    enabled: false
+`, "KEI_BOTS_MOCK_MAIN_ENABLED=true")
+		if !cfg.Bots[0].IsEnabled() {
+			t.Fatal("环境变量应能重新启用实例")
+		}
+	})
+
+	t.Run("enabled 非布尔报错", func(t *testing.T) {
+		_, err := LoadBytes([]byte(`
+bots:
+  - name: mock-main
+    adapter: mock
+    enabled: 也许
+`), nil)
+		if err == nil || !strings.Contains(err.Error(), "bots[0].enabled") {
+			t.Fatalf("错误 = %v", err)
+		}
+	})
+}
