@@ -55,28 +55,28 @@
 - [x] 已完成：编写集成测试：注入 `/echo hello`，断言回复 `hello`。
   - 证据：`internal/engine/engine_test.go:172`（TestEchoIntegrationRoundTrip，注入 `/echo hello` 后断言发送内容为 `hello`、目标为 `mock-main`/`mock`/`mock-group`）。
 - [x] 已完成：验收：`go test -race ./...` 通过。
-  - 证据：全仓 38 个测试文件共 395 个顶层 `Test*`（根 module 384 个 + `examples/kei-adapter-myim` 11 个）；执行结果属质量门，见 `docs/testing.md`。
+  - 证据：全仓 40 个测试文件共 405 个顶层 `Test*`（根 module 394 个 + `examples/kei-adapter-myim` 11 个）；执行结果属质量门，见 `docs/testing.md`。
 
 交付物：`adapters/mock/`、`plugins/echo/`、`cmd/bot/main.go`、`internal/engine/engine_test.go`。
 
 ### 阶段 4：飞书 Adapter 或 OneBot Adapter
 
 - [x] 已完成：选择飞书或 OneBot 之一实现 Adapter，并在包内 `init()` 中 `RegisterAdapter`。
-  - 证据：两者**都已实现**（超出「之一」）：`adapters/feishu/register.go:19`、`adapters/onebot/register.go:19` 各自在 `init()` 中注册工厂（`adapters/feishu` 36 个测试、`adapters/onebot` 30 个测试）。
+  - 证据：两者**都已实现**（超出「之一」）：`adapters/feishu/register.go:19`、`adapters/onebot/register.go:19` 各自在 `init()` 中注册工厂（`adapters/feishu` 36 个测试、`adapters/onebot` 40 个测试）。
 - [x] 已完成：飞书：实现事件订阅 HTTP 回调、challenge 校验、签名校验、快速 ACK、异步事件投递。
   - 证据：`adapters/feishu/feishu.go:323`（handleEvent：校验 → ACK → 异步投递）、`:353-360`（`url_verification` 用 body 内 token 校验后回写 challenge）、`:342`（签名失败返回 401）、`:375`（快速 ACK）、`:210`/`:269`（异步投递 worker 与 `wg` 回收）、`adapters/feishu/crypto.go`（AES 解密）。
 - [x] 已完成：OneBot：实现 WebSocket 或 HTTP 接入，解析事件，调用发送 API。
-  - 证据：`adapters/onebot/onebot.go:121`（New）、`:187`（WSPath）、`adapters/onebot/ws.go`（自建 WebSocket 服务端，握手校验、鉴权、分片重组、心跳）、`adapters/onebot/reverse.go`（反向连接会话）、`adapters/onebot/event.go`（事件解析）、`adapters/onebot/message.go`（消息互转）。
+  - 证据：`adapters/onebot/onebot.go:225`（New，按 `mode` 归一拓扑）、`:64`（parseMode）、`:385`（Start，按拓扑只监听/拨号所需的入口）、`adapters/onebot/ws.go`（自建 WebSocket，服务端与客户端双向：握手校验、鉴权、分片重组、心跳、掩码方向、`dialWebSocket`）、`adapters/onebot/reverse.go`（反向连接会话）、`adapters/onebot/forward.go`（正向连接与 1s→30s 退避重连）、`adapters/onebot/event.go`（事件解析）、`adapters/onebot/message.go`（消息互转）。
 - [x] 已完成：实现消息段与平台消息互转，如实声明 Capabilities 与 Permissions。
-  - 证据：`adapters/feishu/event.go:161`（convert）、`:227`（parseContent）、`adapters/feishu/feishu.go:160`（Capabilities）、`adapters/onebot/onebot.go:197`（Capabilities，能力值在 `:174` 构造）；权限声明见 `adapters/feishu/register.go:25`、`adapters/onebot/register.go:25`（均为 `network` + `net_listen`）。
+  - 证据：`adapters/feishu/event.go:161`（convert）、`:227`（parseContent）、`adapters/feishu/feishu.go:160`（Capabilities）、`adapters/onebot/onebot.go:367`（Capabilities，能力值在 `:307` 构造）；权限声明见 `adapters/feishu/register.go:25`、`adapters/onebot/register.go:25`（均为 `network` + `net_listen`）。
 - [x] 已完成：实现 Capabilities 降级（复用 `bot.Degrade`）。
-  - 证据：`pkg/bot/degrade.go:13`（Degrade）；调用点 `adapters/feishu/send.go:111`、`adapters/onebot/onebot.go:429`、`internal/engine/send.go:46`。
+  - 证据：`pkg/bot/degrade.go:13`（Degrade）；调用点 `adapters/feishu/send.go:111`、`adapters/onebot/onebot.go:644`、`internal/engine/send.go:46`。
 - [x] 已完成：编写适配器单元测试。
-  - 证据：`adapters/feishu/feishu_test.go`、`crypto.go` 相关测试、`register_test.go`（共 36 个）；`adapters/onebot/onebot_test.go`、`ws.go` 相关、`reverse_test.go`、`register_test.go`（共 30 个）；均基于 `httptest` 与自建 WebSocket，无真实平台依赖。
+  - 证据：`adapters/feishu/feishu_test.go`、`crypto.go` 相关测试、`register_test.go`（共 36 个）；`adapters/onebot/onebot_test.go`、`mode_test.go`、`ws.go` 相关、`reverse_test.go`、`forward_test.go`、`register_test.go`（共 40 个）；均基于 `httptest` 与测试内自建 WebSocket 客户端/服务端，无真实平台依赖。
 - [x] 已完成：验收：可本地 Mock 平台请求，事件进入 Engine 并触发插件回复；新增平台未改动 `cmd/` 与 `internal/`。
   - 证据：`cmd/bot/thirdparty_adapter_test.go:72`（TestThirdPartyAdapterEndToEnd）在不修改核心代码的前提下只注册第三方适配器并跑通「事件 → echo 回复」；独立 module 形态另有 `examples/kei-adapter-myim/`。
 
-交付物：`adapters/feishu/`（`feishu.go`、`event.go`、`send.go`、`crypto.go`、`register.go`）、`adapters/onebot/`（`onebot.go`、`event.go`、`message.go`、`ws.go`、`reverse.go`、`register.go`）。
+交付物：`adapters/feishu/`（`feishu.go`、`event.go`、`send.go`、`crypto.go`、`register.go`）、`adapters/onebot/`（`onebot.go`、`event.go`、`message.go`、`ws.go`、`reverse.go`、`forward.go`、`register.go`）。
 
 ### 阶段 5：配置与生命周期
 
@@ -176,7 +176,7 @@
 6. `adapters/mock` Mock 适配器（经注册表接入）。**存在**：`adapters/mock/`（`register.go:15` 注册工厂、`mock.go` 实现、HTTP 控制面 `POST /inject` 与 `GET /sent`）；测试 13 个。
 7. 至少一个真实平台适配器（飞书或 OneBot），经注册表接入。**存在且超额**：`adapters/feishu/`（`register.go:19`）与 `adapters/onebot/`（`register.go:19`）均已实现并注册。
 8. 第三方适配器示例：只依赖 `pkg/bot` 的独立 module 注册示例 + `cmd/example-adapter` 外部 gRPC 适配器示例。**存在**：`examples/kei-adapter-myim/`（独立 module，只依赖 `pkg/bot`，11 个测试，不新增 `go.work`、不改根 module 任何文件）+ `cmd/example-adapter/`（外部 gRPC 适配器示例 + 4 个集成测试）。
-9. 测试用例。**存在**：38 个测试文件、395 个顶层 `Test*`（`adapters/feishu` 36、`internal/grpcsrv` 34、`adapters/onebot` 30、`internal/router` 27、`internal/config` 25、`internal/engine` 24、`internal/eventbus` 23、`internal/middleware` 22、`cmd/example-plugin` 21、`internal/pluginmgr/external` 20、`internal/adaptermgr` 18、`pkg/bot` 16、`adapters/mock` 13、`cmd/bot` 12、`internal/adaptermgr/external` 10、`internal/metrics` 9、`internal/ratelimit` 7、`internal/dedup` 7、`internal/storage` 6、`internal/pluginmgr` 6、`plugins/manage` 5、`cmd/example-adapter` 4、`plugins/echo` 3、`pkg/message` 3、`internal/reply` 3；另 `examples/kei-adapter-myim` 11 个，属独立 module，不计入根 module 的 384 个）。
+9. 测试用例。**存在**：40 个测试文件、405 个顶层 `Test*`（`adapters/onebot` 40、`adapters/feishu` 36、`internal/grpcsrv` 34、`internal/router` 27、`internal/config` 25、`internal/engine` 24、`internal/eventbus` 23、`internal/middleware` 22、`cmd/example-plugin` 21、`internal/pluginmgr/external` 20、`internal/adaptermgr` 18、`pkg/bot` 16、`adapters/mock` 13、`cmd/bot` 12、`internal/adaptermgr/external` 10、`internal/metrics` 9、`internal/ratelimit` 7、`internal/dedup` 7、`internal/storage` 6、`internal/pluginmgr` 6、`plugins/manage` 5、`cmd/example-adapter` 4、`plugins/echo` 3、`pkg/message` 3、`internal/reply` 3；另 `examples/kei-adapter-myim` 11 个，属独立 module，不计入根 module 的 394 个）。
 10. `proto/plugin.proto`、`proto/adapter.proto` 与外部插件/适配器示例（非 Go 语言实现可选）。**存在**：两份 proto 与生成代码 `proto/pluginpb/`；外部插件示例 `cmd/example-plugin/`（Go）、外部适配器示例 `cmd/example-adapter/`（Go）与 `examples/kei-adapter-myim/`（Go 独立 module）。非 Go 语言示例未提供，属该条明确可选项。
 
 ## 相关文档

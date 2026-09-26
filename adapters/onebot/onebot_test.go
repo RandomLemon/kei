@@ -200,16 +200,15 @@ func postJSON(t *testing.T, url, body string, mutate func(*http.Request)) *http.
 }
 
 func TestNewValidation(t *testing.T) {
-	base := Options{Name: "bot1", APIURL: "http://127.0.0.1:3000", ListenAddr: "127.0.0.1:0"}
+	base := Options{Name: "bot1", Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:3000", ListenAddr: "127.0.0.1:0"}
 
 	cases := map[string]Options{
-		"缺少 Name":          {APIURL: base.APIURL, ListenAddr: base.ListenAddr},
-		"Name 仅空白":         {Name: "  ", APIURL: base.APIURL, ListenAddr: base.ListenAddr},
-		"缺少 ListenAddr":    {Name: base.Name, APIURL: base.APIURL},
-		"APIURL 非法":        {Name: base.Name, APIURL: "http://[::1:3000", ListenAddr: base.ListenAddr},
-		"Path 不以斜杠开头":      {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, Path: "onebot/event"},
-		"WSPath 不以斜杠开头":    {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, WSPath: "onebot/ws"},
-		"WSPath 与 Path 相同": {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, Path: "/onebot/event", WSPath: "/onebot/event"},
+		"缺少 Name":       {APIURL: base.APIURL, ListenAddr: base.ListenAddr},
+		"Name 仅空白":      {Name: "  ", APIURL: base.APIURL, ListenAddr: base.ListenAddr},
+		"缺少 ListenAddr": {Name: base.Name, APIURL: base.APIURL},
+		"APIURL 非法":     {Name: base.Name, APIURL: "http://[::1:3000", ListenAddr: base.ListenAddr},
+		"Path 不以斜杠开头":   {Name: base.Name, Mode: modeForwardHTTP, APIURL: base.APIURL, ListenAddr: base.ListenAddr, Path: "onebot/event"},
+		"WSPath 不以斜杠开头": {Name: base.Name, APIURL: base.APIURL, ListenAddr: base.ListenAddr, WSPath: "onebot/ws"},
 	}
 	for name, opts := range cases {
 		if _, err := New(opts); err == nil {
@@ -278,7 +277,7 @@ func TestCapabilities(t *testing.T) {
 }
 
 func TestGroupMessageArrayEvent(t *testing.T) {
-	h := startHarness(t, Options{})
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:1"})
 
 	resp := postJSON(t, h.base+defaultPath, groupArrayEvent, nil)
 	if resp.StatusCode != http.StatusNoContent {
@@ -361,7 +360,7 @@ func checkSegment(t *testing.T, seg bot.Segment, wantType bot.SegmentType, wantD
 }
 
 func TestPrivateCQStringEvent(t *testing.T) {
-	h := startHarness(t, Options{})
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:1"})
 
 	resp := postJSON(t, h.base+defaultPath, privateCQEvent, nil)
 	if resp.StatusCode != http.StatusNoContent {
@@ -389,7 +388,7 @@ func TestPrivateCQStringEvent(t *testing.T) {
 }
 
 func TestEventTypesAndDeterministicIDs(t *testing.T) {
-	h := startHarness(t, Options{SelfID: "10000"})
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:1", SelfID: "10000"})
 
 	cases := []struct {
 		name  string
@@ -469,7 +468,7 @@ func TestEventTypesAndDeterministicIDs(t *testing.T) {
 }
 
 func TestAuthMethodAndMalformedRequest(t *testing.T) {
-	h := startHarness(t, Options{Secret: "s3cr3t"})
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:1", Secret: "s3cr3t"})
 	url := h.base + defaultPath
 
 	t.Run("GET 不被接受", func(t *testing.T) {
@@ -573,7 +572,7 @@ func TestAuthMethodAndMalformedRequest(t *testing.T) {
 }
 
 func TestResponseBeforeEmit(t *testing.T) {
-	opts := Options{Name: "bot1", APIURL: "http://127.0.0.1:1", ListenAddr: "127.0.0.1:0", Logger: quietLogger()}
+	opts := Options{Name: "bot1", Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:1", ListenAddr: "127.0.0.1:0", Logger: quietLogger()}
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New 失败: %v", err)
@@ -695,7 +694,7 @@ func messageParams(t *testing.T, call *apiCall) []onebotSegment {
 
 func TestSendGroupWithDegrade(t *testing.T) {
 	api, call := newFakeAPI(t, `{"status":"ok","retcode":0,"data":{"message_id":123}}`, http.StatusOK)
-	h := startHarness(t, Options{APIURL: api.URL, AccessToken: "tok"})
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL, AccessToken: "tok"})
 
 	msg := &bot.Message{Kind: bot.MessageGroup, Segments: []bot.Segment{
 		message.Markdown("# 标题"),
@@ -765,7 +764,7 @@ func TestSendGroupWithDegrade(t *testing.T) {
 func TestSendPrivateAndTargetInference(t *testing.T) {
 	t.Run("空 Kind 由 UserID 推断私聊", func(t *testing.T) {
 		api, call := newFakeAPI(t, `{"status":"ok","retcode":0,"data":{"message_id":"abc"}}`, http.StatusOK)
-		h := startHarness(t, Options{APIURL: api.URL})
+		h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL})
 
 		res, err := h.adapter.Send(context.Background(), &bot.SendRequest{
 			Target:  bot.Target{UserID: "20001"},
@@ -793,7 +792,7 @@ func TestSendPrivateAndTargetInference(t *testing.T) {
 
 	t.Run("显式 Kind 优先于 ChannelID", func(t *testing.T) {
 		api, call := newFakeAPI(t, `{"status":"ok","retcode":0,"data":{}}`, http.StatusOK)
-		h := startHarness(t, Options{APIURL: api.URL})
+		h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL})
 
 		_, err := h.adapter.Send(context.Background(), &bot.SendRequest{
 			Target:  bot.Target{Kind: bot.MessagePrivate, ChannelID: "30001", UserID: "20001"},
@@ -809,7 +808,7 @@ func TestSendPrivateAndTargetInference(t *testing.T) {
 
 	t.Run("发送失败仍带 context", func(t *testing.T) {
 		api, _ := newFakeAPI(t, `{"status":"ok","retcode":0,"data":{}}`, http.StatusOK)
-		h := startHarness(t, Options{APIURL: api.URL, HTTPClient: &http.Client{Timeout: time.Second}})
+		h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL, HTTPClient: &http.Client{Timeout: time.Second}})
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -860,7 +859,7 @@ func TestSendErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			api, _ := newFakeAPI(t, tc.respBody, tc.status)
-			h := startHarness(t, Options{APIURL: api.URL})
+			h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL})
 
 			_, err := h.adapter.Send(context.Background(), &bot.SendRequest{
 				Target:  bot.Target{Kind: bot.MessageGroup, ChannelID: "30001"},
@@ -877,7 +876,7 @@ func TestSendErrors(t *testing.T) {
 
 	t.Run("wording 出现在错误信息中", func(t *testing.T) {
 		api, _ := newFakeAPI(t, `{"status":"failed","retcode":100,"wording":"参数错误"}`, http.StatusOK)
-		h := startHarness(t, Options{APIURL: api.URL})
+		h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL})
 		_, err := h.adapter.Send(context.Background(), &bot.SendRequest{
 			Target:  bot.Target{Kind: bot.MessageGroup, ChannelID: "30001"},
 			Message: body,
@@ -889,7 +888,7 @@ func TestSendErrors(t *testing.T) {
 
 	t.Run("非法目标", func(t *testing.T) {
 		api, _ := newFakeAPI(t, `{"status":"ok","retcode":0}`, http.StatusOK)
-		h := startHarness(t, Options{APIURL: api.URL})
+		h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL})
 
 		requests := map[string]*bot.SendRequest{
 			"无目标":   {Message: body},
@@ -915,7 +914,7 @@ func TestSendErrors(t *testing.T) {
 		apiURL := "http://" + ln.Addr().String()
 		_ = ln.Close()
 
-		h := startHarness(t, Options{APIURL: apiURL})
+		h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: apiURL})
 		if _, err := h.adapter.Send(context.Background(), &bot.SendRequest{
 			Target:  bot.Target{Kind: bot.MessageGroup, ChannelID: "30001"},
 			Message: body,
@@ -928,6 +927,7 @@ func TestSendErrors(t *testing.T) {
 func TestCustomPathAndStop(t *testing.T) {
 	opts := Options{
 		Name:       "bot1",
+		Mode:       modeForwardHTTP,
 		APIURL:     "http://127.0.0.1:1",
 		ListenAddr: "127.0.0.1:0",
 		Path:       "/custom/event",

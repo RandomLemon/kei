@@ -236,10 +236,12 @@ bots:
     path: /feishu/event
   - name: qq-main
     adapter: onebot
-    api_url: http://127.0.0.1:3000
+    mode: reverse_ws         # forward_http / reverse_http / forward_ws / reverse_ws，缺省 reverse_ws
+    api_url: http://127.0.0.1:3000   # HTTP API；forward_http/reverse_http 下必填
+    ws_url: ""               # 正向 WebSocket 地址，如 ws://127.0.0.1:6700；forward_ws 下必填
     listen_addr: 127.0.0.1:18082
-    path: /onebot/event
-    ws_path: /onebot/ws
+    path: /onebot/event      # HTTP 上报路径（forward_http 下生效）
+    ws_path: /onebot/ws      # 反向 WebSocket 路径（reverse_ws 下生效）
     ping_interval: 30s
     secret: ""
     access_token: ""

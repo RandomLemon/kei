@@ -117,7 +117,7 @@ kei/
 │   └── reply/                    # bot.Reply 默认构建器：链式累积消息段，Send 时一次发送
 ├── adapters/                     # 内置适配器；第三方适配器不放在这里（见 4.1）
 │   ├── mock/                     # 本地测试适配器：HTTP 控制面注入事件、观察发送
-│   ├── onebot/                   # OneBot v11：HTTP 上报 + HTTP API + 反向 WebSocket
+│   ├── onebot/                   # OneBot v11：按 mode 选 HTTP 上报 + HTTP API / 反向 WebSocket / 正向 WebSocket
 │   └── feishu/                   # 飞书开放平台：事件订阅回调 + 消息发送
 ├── plugins/
 │   ├── echo/                     # 示例插件：/echo

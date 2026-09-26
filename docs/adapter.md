@@ -421,7 +421,7 @@ bots:
 4. 必须声明 `Capabilities` 与 `Permissions`，声明必须与实现一致；错报能力会导致发送失败或内容丢失。**已实现**：内置适配器的能力位与权限见 6.7，并与发送路径逐一对齐（例如 OneBot 不声明 `Markdown`/`Card`）。
 5. 工厂必须支持同平台多实例：状态只能挂在实例上，`New` 每次返回互相隔离的实例。**已实现**：三个内置适配器的可变状态都在 `Adapter` 结构体上；`adaptermgr` 对每个 bot 调一次工厂，外部适配器代理的实例状态也按 `bot_id` 隔离。
 6. `Event.ID` 必须稳定且平台内唯一（用于去重），`Event.Platform` 必须属于 `AdapterMetadata.Platforms`，`Event.BotID` 必须等于 `AdapterContext.BotID`。**已实现（含以下边界）**：核心只在装配期用 warn 日志提示不一致——若 `adapter.Name()` 非空但不在 `meta.Platforms` 中，记 `适配器返回的平台名未在元信息中声明`，但不再报错；`adapter.Name()` 为空则装配失败。事件被投递后，去重由事件总线按 `Event.ID` + TTL 完成（`internal/eventbus` 与 `internal/dedup`），未知段类型等字段不做校验。外部适配器路径另有一层归属校验：`Bindings.EmitFunc` 拒绝未配置的适配器名与不属于该适配器的 `Event.BotID`。
-7. `Start` 返回前必须完成监听/连接；`Stop` 必须幂等并等待已接收事件投递完毕；适配器内部 goroutine 必须有退出机制，不得泄漏。**已实现**：OneBot `Start` 先 `net.Listen` 再进入 `Serve`，飞书 `Start` 同样先监听、退出前 `Shutdown` + 等 worker（`wg.Wait`）、并给队列剩余事件 5s 排空预算；OneBot 在退出时显式收尾 hijacked 的反向 WebSocket 连接。
+7. `Start` 返回前必须完成监听/连接；`Stop` 必须幂等并等待已接收事件投递完毕；适配器内部 goroutine 必须有退出机制，不得泄漏。**已实现**：OneBot `Start` 只在当前 `mode` 需要监听时（`forward_http`/`reverse_http`/`reverse_ws`）先 `net.Listen` 再进入 `Serve`，`forward_ws` 不监听端口而是主动拨号；飞书 `Start` 同样先监听、退出前 `Shutdown` + 等 worker（`wg.Wait`）、并给队列剩余事件 5s 排空预算；OneBot 在退出时显式收尾 hijacked 的反向 WebSocket 连接并取消正向重连循环。
 8. 平台回调必须快速 ACK：先 ACK 平台，再异步投递到核心；`EventSink.Emit` 返回只表示已入队。入队失败必须记录日志与指标，不得静默丢弃。**已实现（日志层面）**：飞书校验通过后先回 `200 {"code":0}` 再入队（队列容量 1024、2 个 worker，满时丢弃并记 warn `飞书事件队列已满，丢弃事件`）；OneBot 上报先回 `204` 再 `Emit`，失败记 warn `onebot: 投递事件失败`。**指标缺口**：上述丢弃与投递失败都没有对应指标，只有日志。
 9. 配置与密钥只能经 `AdapterContext.Config` 读取，不得直接读环境变量或文件。**已实现**：`adapters/` 下没有 `os.Getenv`/`os.ReadFile`/`os.Open` 调用；环境变量覆盖由配置加载层统一完成。
 10. 重复投递同一事件必须安全（核心按 `Event.ID` 去重），但适配器不得依赖去重来掩盖自身的重复投递。**已实现**：事件总线在 `Publish` 时用 TTL + 容量上限的去重集合丢弃重复 ID；内置适配器生成稳定 ID（飞书优先 `header.event_id`、缺失时用平台名 + bot 名 + 纳秒时间 + 自增序号兜底；OneBot 消息事件优先 `message_id`，其余类型用 `self_id`/`post_type`/时间/子类型确定性拼接）。
@@ -444,10 +444,14 @@ bots:
 
 #### onebot
 
-- 注册名/平台：`onebot`（`adapters/onebot/register.go` 的 `platformName`）；版本 `v0.2.0`，作者 `core`。
-- 权限：`[network, net_listen]`；配置键（`Options`）：`api_url`、`listen_addr`、`path`、`ws_path`、`ping_interval`、`secret`、`access_token`、`self_id`。
-- 接入方式：同一个 `listen_addr` 上同时提供两种入站通道，可同时启用。HTTP 上报走 `path`（默认 `/onebot/event`，必须以 `/` 开头），校验 `Authorization: Bearer <secret>` 或 `?access_token=<secret>`（`secret` 为空时不校验），解析成功后立即回 `204` 再投递。反向 WebSocket 走 `ws_path`（默认 `/onebot/ws`，同样必须以 `/` 开头且不得与 `path` 相同），由 OneBot 实现主动连入；`X-Client-Role` 未知或缺失时按 `universal` 处理，`self_id` 与请求头 `X-Self-ID` 都非空且不一致时拒绝连接（403；任一为空则放行），心跳间隔默认 30s，负值表示不发心跳。两个路径之外的请求返回 404。
-- 发送：优先经可承载 API 的反向 WebSocket 连接下发（按 `echo` 匹配响应），没有可用连接时回落到 `api_url` 的 HTTP API；`api_url` 为空且无连接时返回错误。目标类型为空时按 `ChannelID`/`UserID` 推断群聊或私聊，群聊用 `send_group_msg`、私聊用 `send_private_msg`。
+- 注册名/平台：`onebot`（`adapters/onebot/register.go` 的 `platformName`）；版本 `v0.3.0`，作者 `core`。
+- 权限：`[network, net_listen]`；配置键（`Options`）：`mode`、`api_url`、`ws_url`、`listen_addr`、`path`、`ws_path`、`ping_interval`、`secret`、`access_token`、`self_id`。
+- 接入方式：`mode` 四选一，一次只启用一种，缺省 `reverse_ws`（大小写与首尾空白不敏感）。归一后的三种拓扑：
+  - `forward_http` / `reverse_http`（同义，HTTP 双向）：本进程在 `listen_addr` 上监听 `path`（默认 `/onebot/event`，必须以 `/` 开头）接收 HTTP 上报，校验 `Authorization: Bearer <secret>` 或 `?access_token=<secret>`（`secret` 为空时不校验），解析成功后立即回 `204` 再投递；`listen_addr` 与 `api_url` 都必填。
+  - `reverse_ws`（缺省）：本进程在 `listen_addr` 上监听 `ws_path`（默认 `/onebot/ws`，必须以 `/` 开头）由 OneBot 实现主动连入；`X-Client-Role` 未知或缺失时按 `universal` 处理，`self_id` 与请求头 `X-Self-ID` 都非空且不一致时拒绝连接（403；任一为空则放行）；`listen_addr` 必填。
+  - `forward_ws`：本适配器主动连接 `ws_url`（`ws://` 或 `wss://`，必填）并完成 RFC 6455 客户端握手（`Sec-WebSocket-Accept` 校验、出站帧带掩码），事件与发送共用这条连接，不监听任何端口，断线后按 1s→30s 指数退避自动重连，`AccessToken` 非空时以 `Authorization: Bearer <access_token>` 随握手请求发出。
+  - 各 mode 只注册实际启用的入口，其它路径返回 404。与所选 mode 无关的键不报错，而是忽略并记一条 warn（`onebot: 配置键在当前 mode 下不生效，已忽略`），因此同一份配置可以保留全部方式的键、只切换 `mode`：`forward_http` 忽略 `ws_url`/`ws_path`/`ping_interval`；`reverse_ws` 忽略 `path`/`ws_url`；`forward_ws` 忽略 `listen_addr`/`path`/`ws_path`/`secret`。心跳间隔（`ping_interval`）对正向与反向 WebSocket 都生效，默认 30s，负值表示不发心跳。
+- 发送：优先经可承载 API 的 WebSocket 连接（正向或反向）下发（按 `echo` 匹配响应），没有可用连接时回落到 `api_url` 的 HTTP API；回落规则与 `mode` 无关，只要 `api_url` 非空它就是可用通道，`api_url` 为空且无连接时返回错误。目标类型为空时按 `ChannelID`/`UserID` 推断群聊或私聊，群聊用 `send_group_msg`、私聊用 `send_private_msg`。
 - 能力：`Text`/`Image`/`At`/`File`/`Reply`/`Private`/`Group` 为 true；`Markdown`、`Card` 为 false；表情段由 `Text` 支撑，因此 Markdown/卡片会在发送前被 `bot.Degrade` 转成文本。
 - 工厂：`newFromContext` 在 `ac.HTTPClient == nil`（即未授予 `network`）时直接失败，不回落到默认客户端。
 

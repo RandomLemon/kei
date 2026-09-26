@@ -77,17 +77,24 @@ bots:
     listen_addr: 127.0.0.1:18081
     path: /feishu/event
 
-  # OneBot v11：HTTP 上报 + HTTP API + 反向 WebSocket，三种通道按需启用。
-  #   - HTTP 上报：OneBot 实现把事件上报到 http://127.0.0.1:18082/onebot/event
-  #   - 反向 WebSocket：OneBot 实现反向连接到 ws://127.0.0.1:18082/onebot/ws
-  #     （地址即 listen_addr + ws_path，令牌用 ?access_token= 或 Authorization 头）
-  #   - 发送：有反向 WebSocket 连接时优先走连接，否则调用 api_url；api_url 可省
+  # OneBot v11：mode 四选一，一次只启用一种接入方式（缺省 reverse_ws）。
+  # 与所选 mode 无关的键会被忽略并记一条 warn，因此可以保留全部键、只改 mode。
+  #   forward_http / reverse_http（同义）：本进程监听 listen_addr+path 收 HTTP 上报，
+  #     并用 api_url 的 HTTP API 发送；listen_addr 与 api_url 都必填。
+  #   reverse_ws（缺省）：OneBot 实现反向连接到 ws://127.0.0.1:18082/onebot/ws
+  #     （地址即 listen_addr + ws_path，令牌用 ?access_token= 或 Authorization 头）；
+  #     仅需 listen_addr。
+  #   forward_ws：kei 主动连接 ws_url 的 WebSocket 服务端，不监听任何端口；
+  #     仅需 ws_url，断线后按 1s→30s 指数退避自动重连。
+  # 发送优先级与 mode 无关：可用 WebSocket 连接 → api_url → 报错。
   - name: qq-main
     adapter: onebot
-    api_url: http://127.0.0.1:3000
-    listen_addr: 127.0.0.1:18082
-    path: /onebot/event
-    ws_path: /onebot/ws        # 反向 WebSocket 接入路径，默认 /onebot/ws
+    mode: reverse_ws           # forward_http / reverse_http / forward_ws / reverse_ws
+    api_url: http://127.0.0.1:3000   # HTTP API；forward_http/reverse_http 下必填
+    ws_url: ""                 # 正向 WebSocket 地址，如 ws://127.0.0.1:6700；forward_ws 下必填
+    listen_addr: 127.0.0.1:18082     # HTTP 上报与反向 WebSocket 的监听地址
+    path: /onebot/event        # HTTP 上报路径，默认 /onebot/event（forward_http 下生效）
+    ws_path: /onebot/ws        # 反向 WebSocket 接入路径，默认 /onebot/ws（reverse_ws 下生效）
     ping_interval: 30s         # 心跳间隔，默认 30s；负值表示关闭心跳
     secret: ""                 # 非空时上报与反向 WebSocket 都必须带同一令牌
     access_token: ""

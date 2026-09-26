@@ -62,7 +62,7 @@ internal/storage/        bot.Storage 内存实现
 internal/dedup/          带 TTL 与容量的去重集合
 internal/ratelimit/      按 key 的令牌桶（非阻塞 Allow + 阻塞 Wait）
 adapters/mock/           本地测试适配器（HTTP 控制面注入事件、观察发送）
-adapters/onebot/         OneBot v11（HTTP 上报 + HTTP API + 反向 WebSocket，零第三方依赖）
+adapters/onebot/         OneBot v11（按 mode 选 HTTP 双向 / 反向 WebSocket / 正向 WebSocket，零第三方依赖）
 adapters/feishu/         飞书开放平台（事件订阅回调 + 消息发送）
 plugins/echo/            示例插件：/echo
 plugins/manage/          管理命令：/ping、/version、/plugins、/adapters、/admin
@@ -299,39 +299,51 @@ type Adapter interface {
 | 适配器 | 接入方式 | 能力 |
 | --- | --- | --- |
 | `mock` | HTTP 控制面注入/观察 | 全能力，用于本地联调与测试 |
-| `onebot` | HTTP 上报（`Authorization: Bearer <secret>`）/ 反向 WebSocket；发送走反向 WebSocket 或 HTTP API | 文本/图片/At/表情/引用/文件；不支持 Markdown、卡片 |
+| `onebot` | 按 `mode` 选择 HTTP 双向（HTTP 上报 + HTTP API）/ 反向 WebSocket / 正向 WebSocket；发送优先走 WebSocket 连接，否则回落 HTTP API | 文本/图片/At/表情/引用/文件；不支持 Markdown、卡片 |
 | `feishu` | 事件订阅回调（challenge、签名校验、AES 解密、3s 内 ACK）+ 开放平台 API | 文本/Markdown/图片/At/卡片/引用/文件 |
 
 ### OneBot v11 的接入方式
 
-事件有两条入站通道，可以同时开启；发送优先走反向 WebSocket 连接，没有可用连接
-时回落到 HTTP API：
+`mode` 四选一，一次只启用一种，缺省 `reverse_ws`；与所选 mode 无关的键会被忽略并记
+一条 warn，因此同一份配置可以保留全部方式的键、只改 `mode`。发送优先级固定为
+「可用 WebSocket 连接 → `api_url` → 报错」，与 `mode` 无关：
+
+| `mode` | 事件入站 | 发送 |
+| --- | --- | --- |
+| `forward_http` / `reverse_http`（同义） | 本进程监听 `listen_addr` + `path`，接收 HTTP 上报（POST JSON） | `api_url` 的 HTTP API |
+| `reverse_ws`（缺省） | 本进程监听 `listen_addr` + `ws_path`，OneBot 主动连入 | 优先经该连接（按 `echo` 匹配响应） |
+| `forward_ws` | 本端主动连 `ws_url`，不监听任何端口 | 优先经该连接 |
 
 ```yaml
 bots:
   - name: qq-main
     adapter: onebot
-    api_url: http://127.0.0.1:3000   # 可省：省去后发送只走反向 WebSocket
-    listen_addr: 127.0.0.1:18082     # HTTP 上报与反向 WebSocket 共用
+    mode: reverse_ws                 # forward_http / reverse_http / forward_ws / reverse_ws
+    api_url: http://127.0.0.1:3000   # HTTP API；forward_http/reverse_http 下必填
+    listen_addr: 127.0.0.1:18082     # HTTP 上报与反向 WebSocket 的监听地址
     path: /onebot/event              # HTTP 上报路径，默认 /onebot/event
     ws_path: /onebot/ws              # 反向 WebSocket 路径，默认 /onebot/ws
-    ping_interval: 30s               # 心跳间隔，默认 30s；负值关闭心跳
-    secret: ""                       # 非空时两条通道都要带同一令牌
+    ws_url: ""                       # 正向 WebSocket 地址，如 ws://127.0.0.1:6700；forward_ws 下必填
+    ping_interval: 30s               # 心跳间隔，默认 30s；负值关闭心跳（两种 WebSocket 都生效）
+    secret: ""                       # 非空时两条入站通道都要带同一令牌
     self_id: ""                      # 非空时只接受 X-Self-ID 一致的连接
 ```
 
 在 OneBot 实现里把反向 WebSocket 地址配置为 `ws://127.0.0.1:18082/onebot/ws`
-（`secret` 非空时加 `?access_token=<secret>`，或用 `Authorization: Bearer` 头）。
+（`secret` 非空时加 `?access_token=<secret>`，或用 `Authorization: Bearer` 头）；
+`forward_ws` 则反过来把 OneBot 实现的 WebSocket 服务端地址填进 `ws_url`。
 行为要点：
 
 - 事件收到即投递（反向 WebSocket 没有回应帧，不存在 ACK 超时）；分片消息会先重组，
   二进制帧按 JSON 解析，`Event.ID` 与 HTTP 上报路径完全一致，去重不受通道影响。
-- 发送经连接下发并按 `echo` 精确匹配响应，因此同一条连接可以并行等待多次发送；
-  连接断开会让等待中的发送立即失败，而不是等到 `context` 超时。
+- 发送经 WebSocket 连接下发并按 `echo` 精确匹配响应，因此同一条连接可以并行等待
+  多次发送；连接断开会让等待中的发送立即失败，而不是等到 `context` 超时。
 - `X-Client-Role` 为 `event` 的连接只用于接收事件，不会被选中发送；未声明角色按
   `universal` 处理。`self_id` 非空时，`X-Self-ID` 不一致的连接会被拒绝（403）。
 - 心跳（ping）用于发现半开连接：连续两个心跳周期收不到任何帧即回收该连接，
   之后发送回落到 HTTP API。多连接时发送固定走最早建立的连接。
+- `forward_ws` 断线后按 1s→30s 指数退避自动重连，连接建立即重置退避；该模式不监听
+  任何端口（`Addr()` 恒为空串）。
 
 
 适配器与插件一样由注册表驱动：适配器在自己的包内 `init()` 注册「元信息 + 工厂」，
@@ -547,6 +559,7 @@ cd proto && nix develop --command buf lint        # proto 规范校验
 Mock→EventBus→Router→Plugin→Reply 全链路集成、飞书回调（challenge/签名/AES 解密/ACK）、
 OneBot 事件与 API、OneBot 反向 WebSocket（握手/Accept 校验、鉴权、事件上行与分片重组、
 按 echo 并行发送、role/self_id 过滤、心跳与半开连接回收、协议错误、停止时关闭连接）、
+OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 发送、断线重连）、
 gRPC 外部插件（bufconn + localhost TCP + mTLS）。
 
 ## 已知限制
@@ -557,6 +570,7 @@ gRPC 外部插件（bufconn + localhost TCP + mTLS）。
 - 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称
   （gRPC 通道对应 `Target.bot_id`）；不指定则只有该平台仅有一个 bot 时才能自动选择。
 - `Storage` 为内存实现，重启即丢失；生产可替换为 Redis/SQLite（实现 `bot.Storage` 即可）。
-- OneBot 反向 WebSocket 只做服务端：连接必须由 OneBot 实现主动发起，kei 不主动连
-  OneBot 的正向 WebSocket。一个 bot 实例只服务一个账号（`self_id` 非空时按 `X-Self-ID`
+- OneBot 一个 bot 实例同一时刻只启用一种接入方式（`mode`）：HTTP 双向用
+  `forward_http`/`reverse_http`，`reverse_ws` 由 OneBot 实现连入，`forward_ws` 由 kei
+  主动连出且不监听端口。一个 bot 实例只服务一个账号（`self_id` 非空时按 `X-Self-ID`
   过滤），多个账号请为每个账号配置一个 bot 实例。

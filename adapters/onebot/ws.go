@@ -3,7 +3,9 @@ package onebot
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha1"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -11,16 +13,19 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/textproto"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
-// 本文件是反向 WebSocket 所需的 RFC 6455 服务端最小实现。
+// 本文件是 WebSocket 的 RFC 6455 最小实现，同时覆盖服务端与客户端两个方向。
 //
-// 只覆盖 OneBot 反向 WebSocket 用到的部分：握手校验、文本/二进制数据帧、
-// 分片重组、ping/pong 与关闭握手；不做扩展协商（含压缩）、不实现客户端方向，
-// 以维持本适配器零第三方依赖的约束（见包注释）。
+// 只覆盖 OneBot 用到的部分：握手（服务端校验升级请求 / 客户端发起并校验响应）、
+// 文本/二进制数据帧、分片重组、ping/pong 与关闭握手；不做扩展协商（含压缩），
+// 以维持本适配器零第三方依赖的约束（见包注释）。服务端方向由反向 WebSocket
+// （reverse.go）使用，客户端方向由正向 WebSocket（forward.go）使用。
 
 // WebSocket 操作码（RFC 6455 §5.2）。
 const (
@@ -56,7 +61,7 @@ const (
 // errWSClosed 表示对端发起了关闭握手。
 var errWSClosed = errors.New("onebot: 对端关闭了 WebSocket 连接")
 
-// wsConn 是一条已完成握手的 WebSocket 连接（服务端方向）。
+// wsConn 是一条已完成握手的 WebSocket 连接。
 //
 // 读必须由单个 goroutine 串行调用（readMessage）；写可由多个 goroutine 并发
 // 调用（writeMu 串行化），因此同一条连接上可以并行等待多个 API 调用的响应。
@@ -64,6 +69,10 @@ var errWSClosed = errors.New("onebot: 对端关闭了 WebSocket 连接")
 type wsConn struct {
 	conn net.Conn
 	br   *bufio.Reader
+
+	// client 为 true 表示本端是主动连接的一侧（正向 WebSocket）：出站帧必须带掩码，
+	// 入站帧不得带掩码；为 false 表示本端是服务端一侧（反向 WebSocket），规则相反。
+	client bool
 
 	writeMu   sync.Mutex
 	closeOnce sync.Once
@@ -139,6 +148,139 @@ func wsAcceptKey(key string) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
+// dialWebSocket 以客户端身份连接 ws:// 或 wss:// 地址并完成 RFC 6455 握手。
+//
+// ctx 同时限制 TCP 连接、TLS 握手与握手响应读取（ctx 无更早截止时间时用
+// defaultTimeout 兜底）；header 中的键值原样附加到升级请求（例如 Authorization）。
+// 返回的 wsConn 处于客户端方向。任何失败都会关闭底层连接。
+func dialWebSocket(ctx context.Context, rawURL string, header http.Header) (*wsConn, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("onebot: 解析 WSURL %q 失败: %w", rawURL, err)
+	}
+	var defaultPort string
+	switch u.Scheme {
+	case "ws":
+		defaultPort = "80"
+	case "wss":
+		defaultPort = "443"
+	default:
+		return nil, fmt.Errorf("onebot: 不支持的 WebSocket 协议 %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, errors.New("onebot: WSURL 缺少主机名")
+	}
+
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		port = defaultPort
+	}
+
+	deadline := time.Now().Add(defaultTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return nil, fmt.Errorf("onebot: 连接 %s 失败: %w", net.JoinHostPort(host, port), err)
+	}
+	if u.Scheme == "wss" {
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: host})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("onebot: TLS 握手失败: %w", err)
+		}
+		conn = tlsConn
+	}
+
+	key, err := newWSKey()
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	p := u.EscapedPath()
+	if p == "" {
+		p = "/"
+	}
+	if u.RawQuery != "" {
+		p += "?" + u.RawQuery
+	}
+
+	var req strings.Builder
+	req.WriteString("GET " + p + " HTTP/1.1\r\n")
+	req.WriteString("Host: " + u.Host + "\r\n")
+	req.WriteString("Upgrade: websocket\r\n")
+	req.WriteString("Connection: Upgrade\r\n")
+	req.WriteString("Sec-WebSocket-Version: " + wsVersion + "\r\n")
+	req.WriteString("Sec-WebSocket-Key: " + key + "\r\n")
+	for name, values := range header {
+		for _, v := range values {
+			req.WriteString(name + ": " + v + "\r\n")
+		}
+	}
+	req.WriteString("\r\n")
+
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if _, err := io.WriteString(conn, req.String()); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("onebot: 写 WebSocket 握手请求失败: %w", err)
+	}
+
+	// 用 textproto 手动读状态行与 MIME 头：http.ReadResponse 会把 101 的 Body
+	// 当成连接本身，语义不适用。br 必须沿用给 wsConn，因为对端可能已在 101
+	// 之后立刻发了帧，已被 bufio 预读。
+	br := bufio.NewReader(conn)
+	tp := textproto.NewReader(br)
+	statusLine, err := tp.ReadLine()
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("onebot: 读 WebSocket 握手响应失败: %w", err)
+	}
+	respHeader, err := tp.ReadMIMEHeader()
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("onebot: 读 WebSocket 握手响应头失败: %w", err)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("onebot: 清除连接超时失败: %w", err)
+	}
+
+	if fields := strings.Fields(statusLine); len(fields) < 2 || fields[1] != "101" {
+		_ = conn.Close()
+		return nil, fmt.Errorf("onebot: WebSocket 握手返回 %q", statusLine)
+	}
+	if !headerHasToken(respHeader.Get("Upgrade"), "websocket") {
+		_ = conn.Close()
+		return nil, errors.New("onebot: WebSocket 握手缺少 Upgrade: websocket 头")
+	}
+	if !headerHasToken(respHeader.Get("Connection"), "upgrade") {
+		_ = conn.Close()
+		return nil, errors.New("onebot: WebSocket 握手缺少 Connection: Upgrade 头")
+	}
+	if got := respHeader.Get("Sec-WebSocket-Accept"); got != wsAcceptKey(key) {
+		_ = conn.Close()
+		return nil, errors.New("onebot: WebSocket 握手的 Sec-WebSocket-Accept 不匹配")
+	}
+
+	return &wsConn{conn: conn, br: br, client: true}, nil
+}
+
+// newWSKey 生成握手请求的 Sec-WebSocket-Key（RFC 6455 §4.1：16 字节随机数 base64）。
+func newWSKey() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("onebot: 生成 Sec-WebSocket-Key 失败: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw[:]), nil
+}
+
 // readMessage 读取一条完整消息，自动处理分片、ping/pong 与关闭握手。
 //
 // readTimeout 为正值时，每读到一个帧都会顺延读超时：任何帧（含对端的 pong）
@@ -192,8 +334,9 @@ func (c *wsConn) readMessage(readTimeout time.Duration) (byte, []byte, error) {
 
 // readFrame 读取单个帧并解掩码。
 //
-// readTimeout 为正值时按帧设置读超时。客户端方向的帧必须带掩码（RFC 6455 §5.1），
-// 未带掩码一律视为协议错误；载荷长度按帧头上的 7/16/64 位三段解析，
+// readTimeout 为正值时按帧设置读超时。掩码方向由 wsConn.client 决定：对端是
+// 客户端时必须带掩码，对端是服务端时不得带掩码（RFC 6455 §5.1），违反一律视为
+// 协议错误；载荷长度按帧头上的 7/16/64 位三段解析，
 // 超过 maxBodyBytes 直接拒绝。
 func (c *wsConn) readFrame(readTimeout time.Duration) (fin bool, opcode byte, payload []byte, err error) {
 	if readTimeout > 0 {
@@ -237,20 +380,28 @@ func (c *wsConn) readFrame(readTimeout time.Duration) (fin bool, opcode byte, pa
 	if length > maxBodyBytes {
 		return false, 0, nil, fmt.Errorf("帧载荷 %d 超过 %d 字节上限", length, maxBodyBytes)
 	}
-	if head[1]&0x80 == 0 {
+	if c.client {
+		if head[1]&0x80 != 0 {
+			return false, 0, nil, errors.New("服务端帧不得使用掩码")
+		}
+	} else if head[1]&0x80 == 0 {
 		return false, 0, nil, errors.New("客户端帧未使用掩码")
 	}
 
 	var key [4]byte
-	if _, err = io.ReadFull(c.br, key[:]); err != nil {
-		return false, 0, nil, err
+	if !c.client {
+		if _, err = io.ReadFull(c.br, key[:]); err != nil {
+			return false, 0, nil, err
+		}
 	}
 	payload = make([]byte, length)
 	if _, err = io.ReadFull(c.br, payload); err != nil {
 		return false, 0, nil, err
 	}
-	for i := range payload {
-		payload[i] ^= key[i%4]
+	if !c.client {
+		for i := range payload {
+			payload[i] ^= key[i%4]
+		}
 	}
 	return fin, opcode, payload, nil
 }
@@ -264,21 +415,39 @@ func (c *wsConn) writeMessage(ctx context.Context, opcode byte, payload []byte) 
 	return c.writeFrame(opcode, payload, deadline)
 }
 
-// writeFrame 写一个帧。服务端方向的帧不带掩码。
+// writeFrame 写一个帧。方向决定是否带掩码：客户端方向的帧必须带掩码，服务端方向不带。
 func (c *wsConn) writeFrame(opcode byte, payload []byte, deadline time.Time) error {
-	frame := make([]byte, 0, len(payload)+10)
-	frame = append(frame, 0x80|opcode)
+	head := make([]byte, 0, 10)
+	head = append(head, 0x80|opcode)
 	switch n := len(payload); {
 	case n < 126:
-		frame = append(frame, byte(n))
+		head = append(head, byte(n))
 	case n <= 0xFFFF:
-		frame = append(frame, 126, byte(n>>8), byte(n))
+		head = append(head, 126, byte(n>>8), byte(n))
 	default:
-		frame = append(frame, 127)
+		head = append(head, 127)
 		var ext [8]byte
 		binary.BigEndian.PutUint64(ext[:], uint64(n))
-		frame = append(frame, ext[:]...)
+		head = append(head, ext[:]...)
 	}
+
+	if c.client {
+		head[1] |= 0x80
+		var key [4]byte
+		if _, err := rand.Read(key[:]); err != nil {
+			return err
+		}
+		head = append(head, key[:]...)
+		// 复制后再掩码，避免原地改写调用方的切片。
+		masked := make([]byte, len(payload))
+		for i := range masked {
+			masked[i] = payload[i] ^ key[i%4]
+		}
+		payload = masked
+	}
+
+	frame := make([]byte, 0, len(head)+len(payload))
+	frame = append(frame, head...)
 	frame = append(frame, payload...)
 
 	if err := c.conn.SetWriteDeadline(deadline); err != nil {

@@ -26,7 +26,7 @@ func TestRegisterMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("适配器 %q 未注册", platformName)
 	}
-	if meta.Name != "onebot" || meta.Version != "v0.2.0" || meta.Author != "core" {
+	if meta.Name != "onebot" || meta.Version != "v0.3.0" || meta.Author != "core" {
 		t.Fatalf("元信息不符: %+v", meta)
 	}
 	if len(meta.Platforms) != 1 || meta.Platforms[0] != platformName {
@@ -38,7 +38,7 @@ func TestRegisterMetadata(t *testing.T) {
 	if len(meta.Description) == 0 {
 		t.Fatal("Description 不能为空")
 	}
-	want := "api_url,listen_addr,path,ws_path,ping_interval,secret,access_token,self_id"
+	want := "mode,api_url,ws_url,listen_addr,path,ws_path,ping_interval,secret,access_token,self_id"
 	if got := strings.Join(meta.Options, ","); got != want {
 		t.Fatalf("Options = %q, want %q", got, want)
 	}
@@ -50,6 +50,7 @@ func TestFactoryBuildsAdapter(t *testing.T) {
 		t.Fatalf("适配器 %q 未注册", platformName)
 	}
 	ad, err := factory(testContext(map[string]any{
+		"mode":          "reverse_ws",
 		"api_url":       "http://127.0.0.1:3000",
 		"listen_addr":   "127.0.0.1:0",
 		"path":          "/onebot/event",
@@ -76,6 +77,31 @@ func TestFactoryBuildsAdapter(t *testing.T) {
 	}
 	if got := onebot.hub.pingInterval; got != 5*time.Second {
 		t.Errorf("心跳间隔 = %v, want 5s", got)
+	}
+
+	// forward_ws 下同样的工厂必须把 mode 与 ws_url 落到实例上，且不要求 listen_addr。
+	fwd, err := factory(testContext(map[string]any{
+		"mode":   "forward_ws",
+		"ws_url": "ws://127.0.0.1:6700",
+	}))
+	if err != nil {
+		t.Fatalf("forward_ws 工厂返回错误: %v", err)
+	}
+	fwdAdapter, ok := fwd.(*Adapter)
+	if !ok {
+		t.Fatalf("工厂返回 %T, 期望 *onebot.Adapter", fwd)
+	}
+	if fwdAdapter.mode != modeForwardWS {
+		t.Errorf("mode = %q, want %q", fwdAdapter.mode, modeForwardWS)
+	}
+	if fwdAdapter.wsURL != "ws://127.0.0.1:6700" {
+		t.Errorf("wsURL = %q, want ws://127.0.0.1:6700", fwdAdapter.wsURL)
+	}
+	if fwdAdapter.topo != topoForwardWS {
+		t.Errorf("topo = %v, want topoForwardWS", fwdAdapter.topo)
+	}
+	if fwdAdapter.listenAddr != "" {
+		t.Errorf("listenAddr = %q, forward_ws 下期望为空", fwdAdapter.listenAddr)
 	}
 }
 
