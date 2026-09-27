@@ -178,7 +178,7 @@ service AdapterService {
 
 ### 12.3 要求
 
-1. 核心侧实现：`BotService` 的 gRPC 服务端在 `internal/grpcsrv`，由插件与外部适配器共用；两条客户端通道互为镜像，外部插件在 `internal/pluginmgr/external`，外部适配器在 `internal/adaptermgr/external`。装配与配置解析在 `cmd/bot/external.go`（令牌登记 `bindToken`、外部适配器名单 `externalAdapterNames`、外部插件描述 `externalSpecs`）。
+1. 核心侧实现：`BotService` 的 gRPC 服务端在 `internal/grpcsrv`，由插件与外部适配器共用；两条客户端通道互为镜像，外部插件在 `internal/pluginmgr/external`，外部适配器在 `internal/adaptermgr/external`。装配与配置解析在 `pkg/kei/external.go`（令牌登记 `bindToken`、外部适配器名单 `externalAdapterNames`、外部插件描述 `externalSpecs`）。
 2. 一个外部适配器进程可服务多个 bot：`Init` 一次，`Start` 每个绑定的 bot 一次，`Stop` 幂等；实例状态必须按 `bot_id` 隔离。核心侧由 `adaptermgr/external.Client` 的 `instances map[string]*instance` 与每个 `instance` 自持的状态实现；同一 `bot_id` 重复 `Instance()` 报错，已启动实例再次 `Start` 由核心侧状态短路，`Stop` 按协议必须在对端幂等。
 3. 事件上行只经 `BotService.EmitEvent`：适配器必须先 ACK 平台，再调用它；`ok` 只表示已入队。核心侧 `grpcsrv.EmitEvent` 只把事件交给 `Options.EmitEvent` 钩子并按返回值决定 `ok`/`error`；适配器通道的 `instance.Start` 不接触 `EventSink`。
 4. 授权：`EmitEvent` 需要 `receive_event` 权限，且令牌类别必须是适配器（插件令牌即使带该权限也被拒绝）；`GetConfig`/`Log` 与插件同一规则（只需有效令牌）。未知或空 token 返回 `Unauthenticated`，权限不足返回 `PermissionDenied`，事件不得落到事件总线。核心未接入事件入口时返回 `FailedPrecondition`。入队阶段还会校验归属：适配器只能投递其绑定的 bot 的事件（`adaptermgr.Bindings.EmitFunc`）。

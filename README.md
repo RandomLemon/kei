@@ -44,11 +44,12 @@ QQ / 飞书 / OneBot / Mock
 ## 目录结构
 
 ```
-cmd/bot/                 入口：加载配置、装配适配器与插件、优雅退出
+cmd/bot/                 入口薄壳：flag + 信号 + 空导入 + 一次 kei.Run（无装配逻辑）
 cmd/example-plugin/      Go 外部插件示例（独立进程）
 cmd/example-adapter/     Go 外部适配器示例（独立进程）
 pkg/bot/                 公开 SDK：Event/Message/Adapter 注册表/Plugin/Registrar/Reply/BotAPI
 pkg/message/             消息段构建器
+pkg/kei/                 装配门面：加载配置、装配适配器与插件、启动引擎、优雅退出
 internal/engine/         核心引擎（BotAPI 实现、发送限流与重试、优雅关闭）
 internal/eventbus/       事件总线（分片保序、去重、drain）
 internal/router/         路由匹配与 Registrar 实现
@@ -130,6 +131,135 @@ curl -sS 127.0.0.1:19090/metrics | grep kei_events
 | `GET /sent` | 已发送消息记录（含结果与错误） |
 | `DELETE /sent` | 清空记录 |
 | `GET /healthz` | 存活检查 |
+
+## 创建一个新 chatbot
+
+`cmd/bot` 是通用入口，装配全部委托给 [`pkg/kei`](pkg/kei)（装配门面），由注册表 + 配置驱动。
+**多数情况下创建一个 bot 只需要一份配置，不写代码**；只有「平台不在内置适配器列表」或
+「需要自定义业务逻辑」才动手写代码。完整流程：
+
+**0. 先选启动方式：CLI 还是代码内嵌入**
+
+两种方式共用同一套 YAML 配置与注册表装配，只是入口不同。
+
+- **命令行**：`go run ./cmd/bot -config configs/mybot.yaml`（下方步骤 1–7 的默认路径）。
+- **代码内（import + 几行代码）**：把 chatbot 嵌进已有服务，只写 go import 与 `kei.Run`：
+
+  ```go
+  package main
+
+  import (
+  	"context"
+  	"log"
+
+  	kei "github.com/RandomLemon/kei/pkg/kei"
+
+  	// 空导入决定适配器/插件是否编译进二进制，是否启用由配置决定。
+  	_ "github.com/RandomLemon/kei/adapters/mock"
+  	_ "github.com/RandomLemon/kei/adapters/onebot"
+  	_ "github.com/RandomLemon/kei/plugins/echo"
+  )
+
+  func main() {
+  	if err := kei.Run(context.Background(), kei.Options{ConfigFile: "configs/mybot.yaml"}); err != nil {
+  		log.Fatal(err)
+  	}
+  }
+  ```
+
+  配置也可以内联，配合 `go:embed` 做单二进制分发：
+
+  ```go
+  //go:embed configs/mybot.yaml
+  var cfg []byte
+
+  // ...
+  kei.Run(ctx, kei.Options{Config: cfg})
+  ```
+
+  `Options` 只提供依赖注入点（`Logger`/`HTTPClient`/`Storage`/`Plugins`），配置语义完全由 YAML
+  决定，不新建第二套配置。`Options.Plugins` 可直接注入 `*bot.FuncPlugin`（见「写一个插件」的内联
+  写法）。`ConfigFile` 与 `Config` 二选一必填：都不给时 `Run` 直接报错，不会静默回落默认路径。
+
+**1. 跑通环境与骨架**
+
+```bash
+direnv allow .                       # 首次；之后进入目录自动加载，或显式 nix develop
+nix develop --command go run ./cmd/bot -config configs/config.yaml
+
+# 另开终端：注入 /echo 并观察实际发出的消息
+curl -sS -XPOST 127.0.0.1:18080/inject -H 'content-type: application/json' \
+  -d '{"text":"/echo hello"}'
+curl -sS 127.0.0.1:18080/sent | jq '.[0].Request.Message.Segments'
+```
+
+**2. 复制配置并选平台**
+
+```bash
+cp configs/config.yaml configs/mybot.yaml   # 保留需要的 bots[]/plugins，删除其余
+```
+
+`bots[].adapter` 决定用哪个适配器，按需求分支：
+
+| 需求 | 做法 |
+| --- | --- |
+| 平台已内置（`mock`/`onebot`/`feishu`） | 只填 `bots[]` 配置，见「配置」与「写一个适配器」的接入小节 |
+| 平台无内置适配器（含企业微信） | 写适配器：独立包/独立 module 调 `bot.RegisterAdapter`（见「写一个适配器」），或独立进程 + `proto/adapter.proto`（见「外部适配器（gRPC）」） |
+| 本地联调 | 用 `mock` 适配器注入事件、观察发送，无需真实平台 |
+
+平台凭证只经配置读取，密钥用环境变量覆盖而不落盘（见「环境变量覆盖」）：
+
+```bash
+KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx \
+  nix develop --command go run ./cmd/bot -config configs/mybot.yaml
+```
+
+**3. 实现业务逻辑（插件）**
+
+需要自定义逻辑时新增插件：在 `plugins/<name>/` 实现 `bot.Plugin`
+（`Metadata`/`Setup`/`Start`/`Stop`），在 `init()` 中 `bot.RegisterPlugin(...)`，
+并只在 `Setup` 里经 `bot.Registrar` 注册触发规则（命令/正则/关键词/事件/兜底）。
+接口与规则语义见「写一个插件」。
+
+**4. 装配入口（空导入）**
+
+适配器与插件都是注册表驱动：入口程序空导入其包即完成注册，是否启用由配置决定。
+
+- 仓库内新增插件：仿照 `plugins/echo`，在 `cmd/bot/main.go` 的 import 块加一行
+  `_ "github.com/RandomLemon/kei/plugins/<name>"`。
+- 不想改动核心仓库：把插件做成**外部进程**（`proto/plugin.proto` + gRPC），核心零改动，
+  见「外部插件（gRPC）」。
+
+**5. 启用并在本地验证**
+
+```yaml
+plugins:
+  echo:     { enabled: true }   # 也可简写为 echo: true
+  <name>:   { enabled: true }
+```
+
+- 注入一次事件，确认 `/sent`（mock）或平台侧收到回复。
+- 用管理命令检查装配：`/plugins`（已加载插件）、`/adapters`（适配器与每个 bot 的绑定）。
+- 插件单测无需启动引擎：`bot.NewRecordingRegistrar()` + `bot.NewNoopReply()`，
+  见「写一个插件」末尾。
+- 同一平台配多个 bot（多账号）时，主动发送必须显式指定 `Target.BotID`。
+
+**6. 权限、限流与多账号**
+
+插件按需声明权限（`PermNetwork`/`PermStorage`/`PermSendMessage` 等），未声明时对应能力被
+裁剪；限流、管理员名单与 `bots[].plugins` 白名单见「配置」的 `limits`/`auth`/`bots` 要点。
+
+**7. 质量门与发布**
+
+```bash
+nix develop --command gofmt -l .     # 必须无输出
+nix develop --command go vet ./...
+nix develop --command go test -race ./...
+nix build                            # → result/bin/bot
+./result/bin/bot -config configs/mybot.yaml
+```
+
+上线后的指标、优雅退出与当前边界分别见「可观测性」「已知限制」两节。
 
 ## 配置
 
@@ -245,6 +375,26 @@ func (p *Plugin) Stop(context.Context) error  { return nil }
 
 func init() { bot.RegisterPlugin(&Plugin{}) }
 ```
+
+不想为一段逻辑单独建包时，用 `bot.FuncPlugin` 内联实现，再经 `kei.Options.Plugins` 注入
+（它不进入编译期注册表，只用于代码内启动）：
+
+```go
+p := &bot.FuncPlugin{
+	Meta: bot.Metadata{Name: "hello", Version: "v0.1.0"},
+	OnSetup: func(ctx context.Context, reg bot.Registrar) error {
+		reg.OnCommand("hello", func(ctx context.Context, e *bot.Event, r bot.Reply) error {
+			return r.Text("你好！").Send(ctx)
+		})
+		return nil
+	},
+	// OnStart / OnStop 为 nil 时是空实现。
+}
+kei.Run(ctx, kei.Options{ConfigFile: "configs/mybot.yaml", Plugins: []bot.Plugin{p}})
+```
+
+注入的实例一律启用：配置里没有同名键时自动补 `enabled: true`；同名键必须 `enabled` 且不能是
+外部插件声明（`grpc_addr`），否则 `Run` 报错。同名时注入实例优先，编译期注册的同名实例被跳过。
 
 规则语义：
 

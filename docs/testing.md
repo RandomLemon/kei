@@ -57,14 +57,14 @@
 
 ### 实际测试分布
 
-统计口径：`*_test.go` 数量与顶层 `^func Test` 数量（不含 `t.Run` 子测试）。根 module（`github.com/RandomLemon/kei`）共 39 个测试文件、394 个测试函数、约 16490 行测试代码；独立 module `examples/kei-adapter-myim` 另有 1 个测试文件、11 个测试函数、744 行（下表末行单列，不计入根 module 合计，`go test ./...` 在仓库根目录不会执行它）。
+统计口径：`*_test.go` 数量与顶层 `^func Test` 数量（不含 `t.Run` 子测试）。根 module（`github.com/RandomLemon/kei`）共 42 个测试文件、401 个测试函数、约 16903 行测试代码；独立 module `examples/kei-adapter-myim` 另有 1 个测试文件、11 个测试函数、744 行（下表末行单列，不计入根 module 合计，`go test ./...` 在仓库根目录不会执行它）。
 
 | 包 | 测试文件 | 测试函数 | 覆盖的关键行为（由测试函数名归纳） |
 | --- | --- | --- | --- |
 | `adapters/feishu` | `feishu_test.go`、`register_test.go` | 36 | 元信息与能力清单、工厂装配与缺 `network` 权限拒绝；challenge、签名校验、AES 加密事件、非法 token 拒绝；文本/At/图片/文件/富文本转换、未知事件类型按 notice、事件 ID 回退；Start/Stop 生命周期与幂等、队列溢出不阻塞、Stop 等待投递；发送（群/私聊/回复/卡片/图片上传/超长分段/中途失败/API 错误）、令牌缓存与并发单飞、令牌提前刷新、图片大小限制 |
 | `adapters/mock` | `mock_test.go`、`register_test.go` | 13 | 元信息与工厂（缺省 platform、不要求 network）；未启动时注入报错、注入填充默认字段、发送记录与 `WaitSent`/`Reset`、HTTP 控制面 `/inject` `/sent` `/healthz` 与非法 JSON、无 `listen_addr` 时无控制面、停止后拒绝注入、默认全能力、`Send` 尊重 ctx |
 | `adapters/onebot` | `onebot_test.go`、`mode_test.go`、`register_test.go`、`reverse_test.go`、`forward_test.go` | 40 | 群消息数组与私聊 CQ 串解析、事件类型与确定性 ID、鉴权与畸形请求、先响应后投递、发送降级（Markdown→文本、卡片→文本）、私聊与目标推断、发送错误、自定义路径与停止；`ws_path`/`ping_interval` 落到实例、缺 `network` 拒绝；`mode` 归一与必填键校验（`forward_http`/`reverse_http`/`forward_ws`/`reverse_ws`、大小写与空白不敏感、无关键忽略）、按拓扑只挂实际入口（HTTP 上报 204 且 `ws_path` 404、反向 WS 握手 101 且 `path` 404、`forward_ws` 不监听任何端口）；反向 WebSocket 握手与 `Accept` 校验、非法握手拒绝、鉴权、事件上行与分片、经连接发送、优先 WebSocket、并发响应按 echo 匹配、role 回退、`self_id` 过滤、多连接、心跳与半开连接回收、协议错误、停止关闭连接、客户端断开解除发送阻塞；正向 WebSocket 客户端握手（请求行与升级头、`Authorization`、`Sec-WebSocket-Accept` 校验失败的三类拒绝）、掩码方向、事件上行、按 echo 发送、断线重连后仍可发送、停止关闭连接 |
-| `cmd/bot` | `main_test.go`、`thirdparty_adapter_test.go` | 12 | 装配表驱动（mock/onebot/feishu/未注册适配器）、插件启用筛选、权限解析、外部插件 spec 校验（token 必填、通道键不透传）、缺 `grpc.addr` 报错、令牌重复/空令牌/插件与适配器同名拒绝、忽略非通道适配器、TLS 与 mTLS 配置、示例配置可加载且 mock bot 设置可用、示例配置飞书 bot 经 `enabled: false` 停用且 `enabled` 不落入 `Settings`；第三方适配器端到端 |
+| `cmd/bot` | `main_test.go`、`thirdparty_adapter_test.go` | 4 | CLI 薄壳（`TestVersionFlag` 打印 `kei v<version>` 且不加载配置、`TestUnknownFlag` 未知 flag 报错）、示例配置可加载且 mock bot 设置可用、示例配置飞书 bot 经 `enabled: false` 停用且 `enabled` 不落入 `Settings`；第三方适配器端到端（`TestThirdPartyAdapterEndToEnd`：进程内注册 + 配置，经 `adaptermgr.Build` + `engine` + `echo` 插件跑通事件→回复） |
 | `cmd/example-adapter` | `integration_test.go` | 4 | 外部适配器端到端（`Send` 经适配器进程、`EmitEvent` 上行、未知 bot 拒绝、关闭下发 `Stop` 与 `Shutdown`）、缺 `receive_event` 被拒、非法 `Init` 被拒、`Start`/`Stop` 幂等与关闭后拒绝 |
 | `cmd/example-plugin` | `integration_test.go`、`plugin_test.go` | 21 | 命令往返端到端、坏 token 拒绝、坏 token 阻断 `SendMessage`、mTLS 与缺客户端证书拒绝、真实二进制端到端、插件先于核心启动、缺必填参数报错；bufconn 上的插件 Init 校验、命令/关键词回复、未匹配忽略、发送失败上报、`Shutdown`、回复内容规则、选项校验 |
 | `internal/adaptermgr` | `adaptermgr_test.go`、`external_build_test.go` | 18 | 注册表校验表驱动、未知适配器报错并列出已注册名、被拒注册报错（`TestValidateRegistrationRejects`）、保留键需 `net_listen`、权限裁剪、未知配置键与未声明平台告警、工厂失败与 nil 实例、禁用适配器跳过（外部不 dial / 进程内跳过 / 其他 bot 不受影响）、禁用条目跳过校验、实例级 `bots[].enabled` 停用（`TestBuildSkipsDisabledBot`、`TestValidateDisabledBotSkipsReservedOption`）、`Emit` 归属校验、`Close` 幂等；外部通道装配后仍可用、失败时不返回部分绑定且可重新装配 |
@@ -82,7 +82,8 @@
 | `internal/reply` | `reply_test.go` | 3 | 累积段发送、错误累积、默认私聊 |
 | `internal/router` | `router_test.go` | 27 | 命令解析与自定义前缀、优先级顺序、多规则命中、无匹配、注册校验与错误、正则/关键词（大小写不敏感）、事件类型与平台过滤、`OnAll` 兜底、中间件顺序与作用域、中间件读取路由、触发描述、正则捕获、per-rule Reply、Reply 工厂回退、错误聚合、自动 ID、规则副本隔离、`UpdateRules` 重排与 nil 拒绝、并发派发与注册 |
 | `internal/storage` | `memory_test.go` | 6 | 内存往返、TTL、ctx 取消、`Close` 幂等、拒绝式存储、并发访问 |
-| `pkg/bot` | `adapter_registry_test.go`、`api_test.go`、`event_test.go`、`registrar_test.go` | 16 | 非法注册被记录并由启动校验报错（`TestRegisterAdapterRejectsInvalid`：不入表但记录 Name/Reason）、注册表快照隔离（入参/出参均不污染）、权限判定（`PermAll` 不适用于适配器）、`Config` 访问器、`BotAPI`/`Storage` 接口满足、`PluginContext` 往返、`NoopReply`、`TargetFromEvent`、`SessionKey`/命令解析/事件文本、段支持判定、能力降级、规则匹配表驱动、元信息权限、插件注册忽略 nil |
+| `pkg/bot` | `adapter_registry_test.go`、`api_test.go`、`event_test.go`、`func_plugin_test.go`、`registrar_test.go` | 17 | 非法注册被记录并由启动校验报错（`TestRegisterAdapterRejectsInvalid`：不入表但记录 Name/Reason）、注册表快照隔离（入参/出参均不污染）、权限判定（`PermAll` 不适用于适配器）、`Config` 访问器、`BotAPI`/`Storage` 接口满足、`PluginContext` 往返、`NoopReply`、`TargetFromEvent`、`SessionKey`/命令解析/事件文本、段支持判定、能力降级、规则匹配表驱动、元信息权限、插件注册忽略 nil、内联插件 `FuncPlugin`（函数委托与调用顺序、nil 接收者与缺省字段都是空实现） |
+| `pkg/kei` | `assemble_test.go`、`external_test.go`、`kei_test.go` | 14 | 装配表驱动（mock/onebot/feishu/未注册适配器）、插件启用筛选、注入实例优先（同名时跳过注册表实例、缺键补 `enabled: true`、不误报未注册）、`buildConfig` 来源冲突与缺来源报错、内联配置校验错误透出、注入冲突（nil 实例/空名/重名/配置 `enabled: false`/`grpc_addr`）、权限解析、外部插件 spec 校验（token 必填、通道键不透传）、缺 `grpc.addr` 报错、令牌重复/空令牌/插件与适配器同名拒绝、忽略非通道适配器、TLS 与 mTLS 配置、门面端到端（`TestRunEndToEndWithInlinePlugin`：内联 `FuncPlugin` + 进程内适配器 + 内联 YAML，事件→回复→优雅退出） |
 | `pkg/message` | `message_test.go` | 3 | 段构建器（文本/图片/At/表情/引用/卡片）、消息构建器、`New` 复制段 |
 | `plugins/echo` | `echo_test.go` | 3 | 拼接参数回复、无参数显示用法、元信息与生命周期 |
 | `plugins/manage` | `manage_test.go` | 5 | `/ping` 与 `/version`、`/plugins` 列表、`/adapters` 列表、管理员规则、优先级胜过兜底插件 |

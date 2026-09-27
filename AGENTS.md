@@ -13,7 +13,7 @@
 
 ### 2.1 分层与依赖
 
-- 公开 SDK 只放 `pkg/bot`（唯一的公开辅助包是 `pkg/message` 消息段构建器）；`pkg/bot` 禁止 import `internal/`。
+- 公开包只有三个：`pkg/bot`（唯一 SDK，禁止 import `internal/`）、`pkg/message`（消息段构建器，只依赖 `pkg/bot`）、`pkg/kei`（装配门面：唯一允许 import `internal/` 的公开包，只做装配，不含平台分支与业务逻辑）。
 - 核心逻辑只放 `internal/`；平台专属代码只允许出现在 `adapters/<platform>/` 或第三方适配器包/module 中；插件代码只放 `plugins/` 或第三方包/module，且只依赖 `pkg/bot`。
 - `cmd/` 与 `internal/` 中禁止出现平台名分支（`switch adapter`、`if platform == "feishu"` 等）。适配器只能经 `bot.LookupAdapter` + `internal/adaptermgr` 装配，插件只能经注册表 + `internal/pluginmgr` 装配。
 - 适配器与插件同等对待：任何「为某平台写死」的改动都说明注册表被绕过，先修设计再加平台。新增平台的自检问题：只加一个新包（或新 module）+ 一段配置能否跑通？完整示例见 `examples/kei-adapter-myim/`（独立 module，只依赖 `pkg/bot`）。
@@ -80,12 +80,13 @@ cd proto && buf lint          # 改动 proto 时
 ## 5. 项目结构
 
 ```text
-cmd/bot/                 入口：加载配置、装配适配器与插件、优雅退出（无平台分支）
+cmd/bot/                 入口薄壳：flag + 信号 + 空导入 + 一次 kei.Run（无装配逻辑，无平台分支）
 cmd/example-plugin/      Go 外部插件示例（独立进程）
 cmd/example-adapter/     Go 外部适配器示例（独立进程）
 examples/kei-adapter-myim/  独立 module 的第三方适配器示例（只依赖 pkg/bot，等价独立仓库形态）
 pkg/bot/                 公开 SDK：Event/Message/Segment、Adapter 注册表、Plugin、Registrar、Reply、BotAPI、Storage
 pkg/message/             消息段构建器
+pkg/kei/                 装配门面：加载配置、装配适配器与插件、启动引擎与优雅退出
 internal/engine/         核心引擎：BotAPI 实现、发送限流与重试、优雅关闭
 internal/eventbus/       事件总线：分片保序、去重、drain
 internal/router/         路由匹配与 Registrar 实现

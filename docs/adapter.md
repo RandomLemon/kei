@@ -430,7 +430,7 @@ bots:
 
 ### 6.7 内置适配器现状
 
-三个内置适配器都在 `cmd/bot/main.go` 中空导入。`wecom`（企业微信）**未实现**：仓库中没有 `adapters/wecom` 目录，`cmd/bot/main_test.go` 把 `adapter: wecom` 当作「未注册适配器」的失败用例，[../README.md](../README.md) 的「已知限制」也记录了这一点（企业微信可参考飞书适配器的结构接入）。
+三个内置适配器都在 `cmd/bot/main.go` 中空导入。`wecom`（企业微信）**未实现**：仓库中没有 `adapters/wecom` 目录，`pkg/kei/assemble_test.go` 的 `TestAdaptermgrBuild` 把 `adapter: wecom` 当作「未注册适配器」的失败用例，[../README.md](../README.md) 的「已知限制」也记录了这一点（企业微信可参考飞书适配器的结构接入）。
 
 `bots[]` 条目上的 `enabled: false` 是实例级开关（缺省 true，可用 `KEI_BOTS_<NAME>_ENABLED` 覆盖）：`adaptermgr.Validate` 与 `Build` 都跳过该实例，跳过时不校验保留键、不装配、不记未知键告警，`Build` 记一条 `bot 已禁用，跳过` info 日志。它与 `adapters.<name>.enabled` 的区别是作用范围只到单个实例：同一适配器的其他 bot 实例不受影响，内置适配器（`adapters/feishu` 等）无需任何改动即支持。
 

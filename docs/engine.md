@@ -83,12 +83,12 @@ type AdapterBinding struct {
 
 ### 7.2 启动顺序
 
-实际顺序（`cmd/bot/main.go` → `adaptermgr.Build` → `setupExternal` → `engine.New` → `engine.Run`）：
+实际顺序（`pkg/kei.Run`：`buildConfig` → `adaptermgr.Build` → `setupExternal` → `engine.New` → `engine.Run`）：
 
-1. `config.Load` 加载配置；构造 `slog` 日志器并设为默认；`storage.NewMemory()`；`metrics.New()`；`cfg.Metrics.Addr` 非空时启动 `/metrics` HTTP 服务。
+1. `config.Load`/`config.LoadBytes` 加载配置；构造 `slog` 日志器并设为默认；`storage.NewMemory()`；`metrics.New()`；`cfg.Metrics.Addr` 非空时启动 `/metrics` HTTP 服务。
 2. `adaptermgr.Build(ctx, cfg, deps)`：校验适配器注册表与配置一致性，并按配置装配全部 bot 的适配器（进程内适配器经 `bot.LookupAdapter` + `bot.AdapterContext`；外部适配器建立 gRPC 通道）。平台名分支只存在于适配器实现内部，`cmd/` 与 `internal/` 没有平台名分支。
-3. 收集已启用的编译期插件（`enabledPlugins`）；`setupExternal` 记录外部插件与外部适配器的令牌/配置，并在下一步的钩子中真正启动 gRPC 服务。
-4. `engine.New`：构造 Router（含全局中间件链）、构造并**启动事件总线 worker**、构造插件管理器，登记编译期插件，最后调用 `Options.ExternalPlugins(e)` 钩子（`cmd/bot` 在此启动 `BotService` gRPC 服务并连接外部插件，返回的插件与编译期插件一同管理）。
+3. 收集需要加载的进程内插件（`selectPlugins`：注入实例在前，其后是配置启用且已注册的插件）；`setupExternal` 记录外部插件与外部适配器的令牌/配置，并在下一步的钩子中真正启动 gRPC 服务。
+4. `engine.New`：构造 Router（含全局中间件链）、构造并**启动事件总线 worker**、构造插件管理器，登记编译期插件，最后调用 `Options.ExternalPlugins(e)` 钩子（`pkg/kei` 在此启动 `BotService` gRPC 服务并连接外部插件，返回的插件与编译期插件一同管理）。
 5. `engine.Run(ctx)`：
    - `plugins.Setup(runCtx, e.router.Registrar)`：按注册顺序调用每个插件的 `Setup`，注入 `PluginContext`（含路由注册器、目录、适配器目录、按权限裁剪的依赖）。任一步失败或 panic 立即返回错误。
    - `e.applyBotPluginFilter()`：按每个 bot 的插件白名单裁剪规则适用范围（见 7.6）。
@@ -109,9 +109,9 @@ type AdapterBinding struct {
 
 关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；总超时由 `ShutdownTimeout`（默认 10s）约束。`Run` 的返回值是适配器错误（若有），ctx 取消返回 nil。
 
-外部资源的关闭发生在 `Run` 返回之后，由 `cmd/bot` 的 `defer` 执行（LIFO）：先 `external.close()`（关闭外部插件、停止 `BotService` gRPC 服务），再 `bindings.Close()`（停止外部适配器实例、通知适配器进程退出并关闭连接）。
+外部资源的关闭发生在 `Run` 返回之后，由 `pkg/kei.Run` 的 `defer` 执行（LIFO）：先 `external.close()`（关闭外部插件、停止 `BotService` gRPC 服务），再 `bindings.Close()`（停止外部适配器实例、通知适配器进程退出并关闭连接）。
 
-优雅退出的触发点是 `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`；取消后 `Run` 走上述关闭路径，因此已入队事件不会丢失（`internal/engine` 的 `TestGracefulShutdownDrainsQueuedEvents` 覆盖该行为）。
+优雅退出的触发点是 `cmd/bot/main.go` 的 `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`（门面本身只消费传入的 ctx）；取消后 `Run` 走上述关闭路径，因此已入队事件不会丢失（`internal/engine` 的 `TestGracefulShutdownDrainsQueuedEvents` 覆盖该行为）。
 
 ### 7.4 事件接收与处理
 

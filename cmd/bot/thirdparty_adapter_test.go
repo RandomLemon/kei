@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -14,6 +16,11 @@ import (
 	"github.com/RandomLemon/kei/pkg/bot"
 	"github.com/RandomLemon/kei/plugins/echo"
 )
+
+func testLogger() (*slog.Logger, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})), buf
+}
 
 // thirdPartyAdapter 模拟第三方进程内适配器：只依赖 pkg/bot，事件由适配器自行产生。
 //

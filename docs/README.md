@@ -23,7 +23,7 @@
 ## 建议阅读顺序
 
 1. [`architecture.md`](architecture.md)：先建立分层与数据流模型（适配器 → 事件总线 → 引擎 → 插件 → 回复）。
-2. [`domain-model.md`](domain-model.md)：`pkg/bot` 是唯一公开 SDK，先掌握类型与 `Segment.Data` 键约定。
+2. [`domain-model.md`](domain-model.md)：`pkg/bot` 是唯一公开 SDK，先掌握类型与 `Segment.Data` 键约定。公开包共三个：`pkg/bot`（SDK）、`pkg/message`（消息段构建器）、`pkg/kei`（装配门面，唯一允许 import `internal/` 的公开包）。
 3. 按角色选读：
    - 写平台适配器 → [`adapter.md`](adapter.md)；独立进程形态 → [`grpc.md`](grpc.md)。
    - 写插件 → [`plugin.md`](plugin.md)；事件投递与路由语义 → [`engine.md`](engine.md)。
@@ -43,4 +43,4 @@
 ## 相关文档
 
 - [`AGENTS.md`](../AGENTS.md)：全局硬性规则、代码约定、质量门、项目结构概览
-- [`README.md`](../README.md)：安装、快速开始、配置示例、插件/适配器开发指南、可观测性
+- [`README.md`](../README.md)：安装、快速开始、创建一个新 chatbot 的流程、配置示例、插件/适配器开发指南、可观测性

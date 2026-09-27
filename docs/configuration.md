@@ -1,10 +1,10 @@
 # kei 配置
 
-本文即第 13 章，覆盖配置的来源与加载顺序、顶层各段的真实键名与默认值、`bots[]`/`plugins`/`adapters` 三段的解码与语义、环境变量覆盖规则、一份键名真实的示例，以及配置要求（14 条，逐条核对到 `internal/config`、`internal/adaptermgr`、`cmd/bot` 的具体代码位置）。
+本文即第 13 章，覆盖配置的来源与加载顺序、顶层各段的真实键名与默认值、`bots[]`/`plugins`/`adapters` 三段的解码与语义、环境变量覆盖规则、一份键名真实的示例，以及配置要求（14 条，逐条核对到 `internal/config`、`internal/adaptermgr`、`pkg/kei` 的具体代码位置）。
 
 不覆盖：面向用户的安装、快速开始与联调流程（见 [../README.md](../README.md) 的「配置」「环境变量覆盖」）；`grpc`/`adapters` 段背后的 gRPC 协议字段与重连语义（见 [grpc.md](grpc.md)）；插件运行期 `Get/String/Bool/...` 的完整接口说明（见 [plugin.md](plugin.md)）与适配器装配细节（见 [adapter.md](adapter.md)）。
 
-本文以仓库实现为准。结构体、解码、默认值、校验与告警全部逐项对照 `internal/config/config.go`、`internal/config/env.go`、`internal/adaptermgr/adaptermgr.go`、`internal/adaptermgr/external/client.go`、`cmd/bot/main.go`、`cmd/bot/external.go` 与 `configs/config.yaml`。
+本文以仓库实现为准。结构体、解码、默认值、校验与告警全部逐项对照 `internal/config/config.go`、`internal/config/env.go`、`internal/adaptermgr/adaptermgr.go`、`internal/adaptermgr/external/client.go`、`pkg/kei/kei.go`、`pkg/kei/assemble.go`、`pkg/kei/external.go` 与 `configs/config.yaml`。
 
 ---
 
@@ -114,8 +114,8 @@ type PluginConfig struct {
 - `enabled`：布尔标量或带引号的布尔文本（`enabled: "false"` 也得到 `false`，见 `decodeBool`）；非布尔（如 `enabled: 也许`）报 `plugins.<name>.enabled: 需要布尔值`。`enabled` 不会进入 `Settings`。
 - 私有配置：其余键进入 `Settings`，由引擎在构造插件管理器时转换为 `bot.Config`（`engine.New` → `pluginmgr.Deps.Configs`），插件经 `PluginContext.Config` 读取；插件未配置时是空配置（`bot.NewConfig(nil)`）。
 - 读取方式（`pkg/bot/api.go`，`Config` 对 nil 接收者与缺失键都返回默认值）：`Raw() map[string]any`、`Get(key) (any, bool)`（支持 `"a.b.c"` 多级路径）、`String(key, def)`、`Bool(key, def)`、`Int(key, def)`、`Duration(key, def)`（字符串按 `time.ParseDuration`，数字按秒）、`Strings(key)`（缺失返回 nil）、`Unmarshal(v)`（依赖 `encoding/json` 标签）。
-- 外部插件：在 `plugins.<name>` 上用 `grpc_addr` 声明（`grpc_addr` 非空即视为外部插件，进程内注册的同名插件会被跳过并记 info 日志）。此时额外键为 `token`（必填，`cmd/bot/external.go` 的 `externalSpecs` 在缺失时报 `config: plugin <name> needs a non-empty token`）、`timeout`（缺省 10s）、`permissions`（缺省 `[send_message]`）；`grpc_addr`/`token`/`permissions`/`timeout` 会在下发给插件前被剔除，其余键作为插件配置。启用外部插件要求 `grpc.addr` 非空，这一条不在 `internal/config` 校验，而在 `cmd/bot/external.go` 的 `setupExternal`（`config: grpc.addr is required when external plugins or adapters are enabled`）。协议语义见 [grpc.md](grpc.md)。
-- 「`enabled: true` 但没有任何已注册插件对应、且未声明 `grpc_addr`」只会得到 warn（`cmd/bot/main.go` 的 `enabledPlugins`：`enabled plugin is not registered`）。
+- 外部插件：在 `plugins.<name>` 上用 `grpc_addr` 声明（`grpc_addr` 非空即视为外部插件，进程内注册的同名插件会被跳过并记 info 日志）。此时额外键为 `token`（必填，`pkg/kei/external.go` 的 `externalSpecs` 在缺失时报 `config: plugin <name> needs a non-empty token`）、`timeout`（缺省 10s）、`permissions`（缺省 `[send_message]`）；`grpc_addr`/`token`/`permissions`/`timeout` 会在下发给插件前被剔除，其余键作为插件配置。启用外部插件要求 `grpc.addr` 非空，这一条不在 `internal/config` 校验，而在 `pkg/kei/external.go` 的 `setupExternal`（`config: grpc.addr is required when external plugins or adapters are enabled`）。协议语义见 [grpc.md](grpc.md)。
+- 「`enabled: true` 但没有任何已注册插件对应、且未声明 `grpc_addr`」只会得到 warn（`pkg/kei/assemble.go` 的 `selectPlugins`：`enabled plugin is not registered`）。
 
 ### 13.4 `adapters.<name>`
 
@@ -142,7 +142,7 @@ type AdapterConfig struct {
 - **未知私有键告警（不报错）**：进程级未知键在 `adaptermgr.Build` 建立外部通道时经 `warnUnknownOptions` 告警，键集来自适配器上报的 `AdapterInitResponse.info.options`；实例级未知键在装配每个 bot 时告警，键集来自进程内适配器的 `AdapterMetadata.Options`。适配器未声明 `Options`（空列表）时静默跳过。告警形如 `适配器不认识的配置键`，字段为 `bot`、`adapter`、`key`。
 - 装配期的其他告警：`adapters` 段声明了但未注册的进程内适配器（`适配器已在 adapters 段声明但未注册（是否漏了空导入？）`）、声明了外部适配器但没有 bot 引用它（`外部适配器已在 adapters 段声明但没有 bot 引用`）。
 - 存在启用的外部适配器时还要求 `grpc.addr` 非空且是固定 `host:port`（不能是 `:0`），见 13.7 的第 8、10 条。
-- **禁用语义**：`enabled: false` 的适配器不建立任何通道，其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn：`适配器已禁用，跳过 bot`），不参与未知适配器名与权限/保留键校验；核心仍可只运行插件（`cmd/bot/main.go` 会记 warn：`没有启用的适配器，核心将只运行插件`）。
+- **禁用语义**：`enabled: false` 的适配器不建立任何通道，其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn：`适配器已禁用，跳过 bot`），不参与未知适配器名与权限/保留键校验；核心仍可只运行插件（`pkg/kei.Run` 会记 warn：`没有启用的适配器，核心将只运行插件`）。
 
 ### 13.5 环境变量覆盖
 
@@ -289,7 +289,7 @@ plugins:
 13. 适配器不认识的私有键必须告警（不报错），以支持第三方适配器独立演进；进程内适配器的键集来自 `AdapterMetadata.Options`，外部适配器来自 `AdapterInitResponse.info.options`。
     核对：`adaptermgr.warnUnknownOptions`（`Build` 中三处调用：进程级 `adapters.<name>.Settings` 用 `client.Metadata().Options`，实例级用进程内 `meta.Options` 或外部 `meta.Options`）；外部 `meta.Options` 即 `info.GetOptions()`（`external/client.go` 的 `init`）。告警不阻断装配。
 14. 外部适配器与外部插件共用 `grpc` 段的 TLS/mTLS 配置（`cert_file`/`key_file`/`ca_file`）。
-    核对：`cmd/bot/external.go` 的 `serverTLSConfig`（有 `ca_file` 即 `tls.RequireAndVerifyClientCert`）与 `clientTLSConfig`，两者同时用于 `grpcsrv` 的 Server 和外部插件、外部适配器客户端；三者齐备性由 `GrpcConfig.validate` 保证。
+    核对：`pkg/kei/external.go` 的 `serverTLSConfig`（有 `ca_file` 即 `tls.RequireAndVerifyClientCert`）与 `clientTLSConfig`，两者同时用于 `grpcsrv` 的 Server 和外部插件、外部适配器客户端；三者齐备性由 `GrpcConfig.validate` 保证。
 
 ---
 
@@ -297,7 +297,7 @@ plugins:
 
 现状与证据文件：
 
-- 外部插件侧的 `grpc.addr` 与 `token` 校验不在 `internal/config`，而在 `cmd/bot/external.go`：`setupExternal` 报 `grpc.addr is required when external plugins or adapters are enabled`，`externalSpecs` 报 `config: plugin <name> needs a non-empty token`。`internal/config.Config.validate` 只负责外部适配器侧的同类校验与 `host:port` 固定端口检查。
+- 外部插件侧的 `grpc.addr` 与 `token` 校验不在 `internal/config`，而在 `pkg/kei/external.go`：`setupExternal` 报 `grpc.addr is required when external plugins or adapters are enabled`，`externalSpecs` 报 `config: plugin <name> needs a non-empty token`。`internal/config.Config.validate` 只负责外部适配器侧的同类校验与 `host:port` 固定端口检查。
 - `KEI_BOTS_<NAME>_*`、`KEI_PLUGINS_*` 与 `KEI_ADAPTERS_*` 只覆盖配置中已存在的名字；未在 `bots`/`plugins`/`adapters` 段声明的名字被静默忽略，也不会创建新条目（`internal/config/env.go` 的 `applyBotEnv` 遍历 `c.Bots`，`applyPluginEnv`/`applyAdapterEnv` 遍历 `c.Plugins`/`c.Adapters`）。
 
 ---

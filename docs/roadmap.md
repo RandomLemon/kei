@@ -36,7 +36,7 @@
 - [x] 已完成：实现 `internal/middleware`，至少包含 Recover、Logger、Timeout、Dedup。
   - 证据：`internal/middleware/middleware.go:56`（Recover）、`:91`（Logger）、`:164`（Timeout）、`:192`（Dedup）；另有 `:144`（Metrics）、`:216`（RateLimit）、`:246`（Auth），组合器 `internal/middleware/chain.go:13`（Chain）、`:32`（Apply）。测试 22 个。
 - [x] 已完成：实现 `internal/engine`，串联 Adapter、EventBus、Router、Plugin；引擎只接收 `AdapterBinding`，不感知平台名。
-  - 证据：`internal/engine/engine.go:48`（AdapterBinding）、`:72`（`Options.Adapters`）、`:144`（New）、`:305`（Run）；`internal/` 与 `cmd/` 的非测试代码中不存在平台名分支（唯一出现的平台名是 `cmd/bot/main.go:33-37` 的空导入与 `pkg/bot/adapter.go:11` 的注释示例）。测试 24 个。
+  - 证据：`internal/engine/engine.go`（AdapterBinding、`Options.Adapters`、New、Run）；`internal/` 与 `cmd/` 的非测试代码中不存在平台名分支（唯一出现的平台名是 `cmd/bot/main.go` 的空导入与 `pkg/bot/adapter.go` 的注释示例）。测试 24 个。
 - [x] 已完成：编写单元测试。
   - 证据：`internal/eventbus/bus_test.go`（23）、`internal/router/router_test.go`（27）、`internal/middleware/middleware_test.go`（22）、`internal/engine/engine_test.go` 与同包的 `adapter_catalog_test.go`/`pluginapi_test.go`（合计 24）。
 - [x] 已完成：验收：`go test ./...` 通过。
@@ -50,14 +50,14 @@
   - 证据：`adapters/mock/mock.go:192`（Inject）、`:211`（InjectText）、`:329`（`POST /inject`）、`:330`（`GET /sent`）；`adapters/mock/register.go:15` 在 `init()` 中 `bot.RegisterAdapter`。测试 13 个。
 - [x] 已完成：实现 `plugins/echo`。
   - 证据：`plugins/echo/echo.go:12`（Plugin）、`:18`（Metadata）、`:44`（`init()`，`:45` 调用 `bot.RegisterPlugin`）。测试 3 个。
-- [x] 已完成：在 `cmd/bot/main.go` 中通过空导入 + `internal/adaptermgr` 装配 Mock Adapter 并启动 Engine，不得出现平台名分支。
-  - 证据：`cmd/bot/main.go:24`（导入 `internal/adaptermgr`）、`:33-37`（空导入 `adapters/mock`、`plugins/echo` 等）；适配器按 `bots[].adapter` 经 `adaptermgr.Build` 装配。
+- [x] 已完成：通过空导入 + `internal/adaptermgr` 装配 Mock Adapter 并启动 Engine，不得出现平台名分支。装配实现现位于公开包 `pkg/kei`（见 [architecture.md](architecture.md) 3.1），`cmd/bot/main.go` 只保留空导入与 `kei.Run` 调用。
+  - 证据：`cmd/bot/main.go`（空导入 `adapters/mock`、`plugins/echo` 等）；适配器按 `bots[].adapter` 经 `adaptermgr.Build` 装配（`pkg/kei/kei.go` 的 `Run`）。
 - [x] 已完成：编写集成测试：注入 `/echo hello`，断言回复 `hello`。
   - 证据：`internal/engine/engine_test.go:172`（TestEchoIntegrationRoundTrip，注入 `/echo hello` 后断言发送内容为 `hello`、目标为 `mock-main`/`mock`/`mock-group`）。
 - [x] 已完成：验收：`go test -race ./...` 通过。
-  - 证据：全仓 40 个测试文件共 405 个顶层 `Test*`（根 module 394 个 + `examples/kei-adapter-myim` 11 个）；执行结果属质量门，见 `docs/testing.md`。
+  - 证据：全仓 43 个测试文件共 412 个顶层 `Test*`（根 module 401 个 + `examples/kei-adapter-myim` 11 个）；执行结果属质量门，见 `docs/testing.md`。
 
-交付物：`adapters/mock/`、`plugins/echo/`、`cmd/bot/main.go`、`internal/engine/engine_test.go`。
+交付物：`adapters/mock/`、`plugins/echo/`、`pkg/kei/`（当前装配门面）、`cmd/bot/main.go`、`internal/engine/engine_test.go`。
 
 ### 阶段 4：飞书 Adapter 或 OneBot Adapter
 
@@ -82,12 +82,12 @@
 
 - [x] 已完成：实现 `internal/config`，加载 YAML，支持环境变量覆盖。
   - 证据：`internal/config/config.go:143`（Load）、`:159`（LoadBytes）、`internal/config/env.go:20`（applyEnv，前缀 `KEI_`，`env.go:13`），支持 `KEI_BOTS_<BOT>_<KEY>`、`KEI_PLUGINS_<PLUGIN>_<KEY>`、`KEI_ADAPTERS_<NAME>_<KEY>` 三类覆盖。测试 25 个。
-- [x] 已完成：在 `cmd/bot/main.go` 中实现优雅启动和关闭。
-  - 证据：`cmd/bot/main.go:68`（`signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)`）、`:198`（HTTP 服务 `Shutdown`）；引擎侧排空由 `internal/engine/engine.go:367`（shutdown）实现，`internal/engine/engine_test.go:198`（TestGracefulShutdownDrainsQueuedEvents）覆盖。
+- [x] 已完成：实现优雅启动和关闭（装配实现现位于 `pkg/kei`，`cmd/bot/main.go` 只做信号处理与 `kei.Run` 调用）。
+  - 证据：`cmd/bot/main.go`（`signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)`）、`pkg/kei/assemble.go`（`serveMetrics` 的 HTTP 服务 `Shutdown`）；引擎侧排空由 `internal/engine/engine.go`（shutdown）实现，`internal/engine/engine_test.go`（TestGracefulShutdownDrainsQueuedEvents）覆盖。
 - [x] 已完成：支持多 bot、多 adapter 配置；`bots[].adapter` 经注册表解析。
   - 证据：`internal/adaptermgr/adaptermgr.go:211`（Build 逐 bot 查表）、`:320`（查表失败的保护性报错）；启动期未知适配器报错见 `:134`；`internal/engine/engine_test.go:458`（TestMultiBotSamePlatformNeedsExplicitBotID）、`internal/adaptermgr/adaptermgr_test.go:131`（TestBuildTrimsDependencies 覆盖工厂多实例隔离）。
 - [x] 已完成：支持插件启用/禁用。
-  - 证据：`cmd/bot/main.go:208`（enabledPlugins 按 `plugins.<name>.enabled` 过滤，未列出的插件不启用）、`internal/engine/engine.go:418`（applyBotPluginFilter 按 `bots[].plugins` 白名单）、`internal/engine/engine_test.go:343`（TestPerBotPluginWhitelist）。
+  - 证据：`pkg/kei/assemble.go`（`selectPlugins` 按 `plugins.<name>.enabled` 过滤，未列出的插件不启用）、`internal/engine/engine.go`（applyBotPluginFilter 按 `bots[].plugins` 白名单）、`internal/engine/engine_test.go`（TestPerBotPluginWhitelist）。
 - [x] 已完成：支持 `adapters.<name>.enabled` 启用/禁用适配器（缺省启用，禁用则跳过其 bot）；支持 `adapters:` 段声明外部适配器；未知适配器名、重复注册名、缺 `Name`/`Platforms` 必须启动报错。
   - 证据（启用/禁用与外部声明）：`internal/config/config.go:358`（AdapterConfig）、`:380`（IsEnabled）、`:387`（AdapterEnabled）；`internal/adaptermgr/adaptermgr.go:117`（Validate 跳过被禁用适配器）、`:244`（禁用时告警并跳过 bot）；测试 `internal/adaptermgr/adaptermgr_test.go:278`（TestBuildSkipsDisabledAdapter）、`:321`（TestBuildSkipsDisabledInProcessAdapter）、`:355`（TestValidateSkipsDisabledUnknownAdapter）。
   - 证据（未知适配器名报错并列出已注册与已声明名单）：`internal/adaptermgr/adaptermgr.go:117-134`；测试 `internal/adaptermgr/adaptermgr_test.go:94`（TestValidateUnknownAdapter）。
@@ -97,12 +97,12 @@
   - 证据：`pkg/bot/adapter_registry.go:97`（AdapterRegistrationError）、`:122`（RegisterAdapter 的两条拒绝分支：`"注册名为空"`、`"工厂为 nil"`）、`:137`（recordAdapterReject）、`:147`（AdapterRegistrationErrors）；`internal/adaptermgr/adaptermgr.go:157`（ValidateRegistry）、`:165`（validateRegistrationRejects）；测试 `pkg/bot/adapter_registry_test.go:19`（TestRegisterAdapterRejectsInvalid，断言拒绝记录内容）、`internal/adaptermgr/adaptermgr_test.go:520`（TestValidateRegistrationRejects）。缺 `Platforms` 仍在 `internal/adaptermgr/adaptermgr.go:187` 报错。
 - [x] 已完成：`bots[].enabled`（实例级开关）。语义与适配器同向：`BotConfig.Enabled *bool` 为 nil（未写）视为启用，只有显式 `enabled: false` 才跳过该实例。被停用的实例不装配、不建通道、不接收事件、不参与适配器校验（含保留键校验），日志记 info `bot 已禁用，跳过`（且不再对其私有键告警未知），也不进入 `Rule.BotIDs`（因此不参与 `bots[].plugins` 白名单收窄）。环境变量 `KEI_BOTS_<NAME>_ENABLED` 可覆盖（值无法解析为布尔时忽略、保留原值）。与 `adapters.<name>.enabled` 的区别：后者停用整个平台（该适配器下所有 bot 一并跳过并记 warn），前者只停用单个实例。
   - 证据：`internal/config/config.go:108`（BotConfig）、`:118`（`Enabled *bool`）、`:127`（IsEnabled）、`:275`（decodeBot 的 `case "enabled"`；`Settings` 注释已改为「除 name/adapter/enabled/plugins 外」）；`internal/config/env.go:123`（applyBotEnv 的 `case "enabled"`，经 `envBool` 解析）；`internal/adaptermgr/adaptermgr.go:126`（Validate 跳过条件 `!bc.IsEnabled() || !cfg.AdapterEnabled(...)`）、`:237`（Build 先判实例开关、`:239` 记 info）；`internal/engine/engine.go:418`（applyBotPluginFilter 两处 `if !b.IsEnabled() { continue }`）。
-  - 测试：`internal/config/config_test.go:941`（TestBotEnabled）、`internal/adaptermgr/adaptermgr_test.go:457`（TestBuildSkipsDisabledBot）、`:494`（TestValidateDisabledBotSkipsReservedOption）、`internal/engine/engine_test.go:537`（TestDisabledBotExcludedFromPluginWhitelist）、`:560`（TestDisabledBotWhitelistNarrowing）、`cmd/bot/main_test.go:358`（TestExampleConfigLoads，断言飞书实例停用且 `enabled` 不落入 `Settings`）。
+  - 测试：`internal/config/config_test.go:941`（TestBotEnabled）、`internal/adaptermgr/adaptermgr_test.go:457`（TestBuildSkipsDisabledBot）、`:494`（TestValidateDisabledBotSkipsReservedOption）、`internal/engine/engine_test.go`（TestDisabledBotExcludedFromPluginWhitelist）、（TestDisabledBotWhitelistNarrowing）、`cmd/bot/main_test.go`（TestExampleConfigLoads，断言飞书实例停用且 `enabled` 不落入 `Settings`）。
   - 示例配置已生效：`configs/config.yaml` 中 `feishu-main` 的 `enabled: false` 现在只停用该实例（不装配、不监听 18081），注释同时说明「要停用整个平台用 `adapters.feishu.enabled: false`」。
 - [x] 已完成：验收：`go run ./cmd/bot -config configs/config.yaml` 可启动并优雅退出。
-  - 证据：`configs/config.yaml` 可被加载并校验（`cmd/bot/main_test.go:358` TestExampleConfigLoads）；插件仅启用 `echo` 与 `manage`。
+  - 证据：`configs/config.yaml` 可被加载并校验（`cmd/bot/main_test.go` TestExampleConfigLoads）；插件仅启用 `echo` 与 `manage`。
 
-交付物：`internal/config/`（`config.go`、`env.go`）、`cmd/bot/main.go`、`cmd/bot/external.go`、`configs/config.yaml`。
+交付物：`internal/config/`（`config.go`、`env.go`）、`pkg/kei/`（`kei.go`、`assemble.go`、`external.go`）、`cmd/bot/main.go`、`configs/config.yaml`。
 
 ### 阶段 6：外部插件 gRPC
 
@@ -115,7 +115,7 @@
 - [x] 已完成：提供 Python 或 Go 外部插件示例。
   - 证据：`cmd/example-plugin/main.go`、`cmd/example-plugin/plugin.go`（Go 实现 `PluginService` 并以客户端身份调用核心 `BotService`）；测试 21 个（含 bufconn 与 localhost TCP）。非 Go 语言示例未实现（第 20 章第 10 条将其列为可选）。
 - [x] 已完成：支持 token/mTLS。
-  - 证据：token 身份与权限 `internal/grpcsrv/server.go:62`（TokenInfo）、`:76`（Tokens）、`:140`（非 `plugin`/`adapter` 类别拒绝）；TLS `internal/grpcsrv/server.go:84`、`:170`；`cmd/bot/external.go:306`（serverTLSConfig，配置 `ca_file` 即启用 mTLS：`:321` `RequireAndVerifyClientCert`）、`:327`（clientTLSConfig）；配置项 `internal/config/config.go:78`（GrpcConfig，字段 `cert_file`/`key_file`/`ca_file` 见 `:82`/`:84`/`:86`）。测试 `cmd/bot/main_test.go:302`（TestTLSConfigs）、`internal/grpcsrv/server_test.go:1030`（TestTLSListenerAcceptsTrustedClient）、`cmd/example-plugin/integration_test.go:457`（TestEndToEndMutualTLS）。
+  - 证据：token 身份与权限 `internal/grpcsrv/server.go`（TokenInfo、Tokens、非 `plugin`/`adapter` 类别拒绝）；TLS `internal/grpcsrv/server.go`；`pkg/kei/external.go`（serverTLSConfig，配置 `ca_file` 即启用 mTLS：`RequireAndVerifyClientCert`）、（clientTLSConfig）；配置项 `internal/config/config.go`（GrpcConfig，字段 `cert_file`/`key_file`/`ca_file`）。测试 `pkg/kei/external_test.go`（TestTLSConfigs）、`internal/grpcsrv/server_test.go`（TestTLSListenerAcceptsTrustedClient）、`cmd/example-plugin/integration_test.go`（TestEndToEndMutualTLS）。
 - [x] 已完成：验收：外部插件可连接核心、接收事件、发送回复。
   - 证据：`cmd/example-plugin/integration_test.go:219`（TestEndToEndCommandRoundTrip）、`:246`（TestEndToEndRejectsBadToken）；核心侧 token 与 `send_message` 权限校验见 `internal/grpcsrv/server_test.go:479/494`。
 
@@ -136,7 +136,7 @@
 - [x] 已完成：实现管理命令，如 `/ping`、`/version`、`/plugins`、`/adapters`。
   - 证据：`plugins/manage/manage.go:45`（`/ping`）、`:50`（`/version`）、`:59`（`/plugins`，可经 `plugins_admin_only` 限定为管理员）、`:63`（`/adapters`）、`:67`（`/admin`，本阶段清单之外的额外命令）。测试 5 个。
 - [x] 已完成：验收：指标可暴露，限流可测试，`/adapters` 能列出注册表与绑定关系。
-  - 证据：指标 HTTP 端点 `cmd/bot/main.go:176`（serveMetrics，注册 `/metrics` 与 `/healthz`），端点开关为 `metrics.addr`；`/adapters` 输出 `plugins/manage/manage.go:63` → `describeAdapters(pc.Adapters, bot.RegisteredAdapters())`，即「已注册适配器注册表 + 各 bot 绑定（含进程内/外部标记）」。
+  - 证据：指标 HTTP 端点 `pkg/kei/assemble.go`（serveMetrics，注册 `/metrics` 与 `/healthz`），端点开关为 `metrics.addr`；`/adapters` 输出 `plugins/manage/manage.go:63` → `describeAdapters(pc.Adapters, bot.RegisteredAdapters())`，即「已注册适配器注册表 + 各 bot 绑定（含进程内/外部标记）」。
 
 交付物：`internal/metrics/`、`internal/ratelimit/`、`internal/dedup/`、`plugins/manage/`，以及 `internal/middleware/` 中的 Metrics/RateLimit/Auth 中间件。
 
@@ -168,15 +168,15 @@
 
 ## 20. 最终交付物
 
-1. 完整 Go 项目源码。**存在**：根 module 的 `go list ./...` 解析出 26 个包，覆盖 `pkg/`、`internal/`、`adapters/`、`plugins/`、`cmd/`、`proto/pluginpb`；另有独立 module `examples/kei-adapter-myim/`。
+1. 完整 Go 项目源码。**存在**：根 module 的 `go list ./...` 解析出 27 个包，覆盖 `pkg/`、`internal/`、`adapters/`、`plugins/`、`cmd/`、`proto/pluginpb`；另有独立 module `examples/kei-adapter-myim/`。
 2. `AGENTS.md`：全局硬性规则、代码约定、质量门、项目结构概览与文档索引（AGENTS.md 已不再承载设计与实现内容，详见 `docs/README.md`）。**存在**：仓库根 `AGENTS.md`。
 3. `README.md` 使用说明。**存在**：仓库根 `README.md`（安装与快速开始、写插件、写适配器、外部适配器、外部插件、可观测性、测试与验证、已知限制）。
-4. `configs/config.yaml` 示例配置。**存在**：`configs/config.yaml`（`mock-main`、`feishu-main`、`qq-main` 三个 bot 示例，`adapters:` 段与外部插件示例以注释给出）；加载校验测试 `cmd/bot/main_test.go:358`。`feishu-main` 通过实例级 `enabled: false` 停用，实测该 bot 不再装配、不监听 18081（见阶段 5 的 `bots[].enabled`）。
+4. `configs/config.yaml` 示例配置。**存在**：`configs/config.yaml`（`mock-main`、`feishu-main`、`qq-main` 三个 bot 示例，`adapters:` 段与外部插件示例以注释给出）；加载校验测试 `cmd/bot/main_test.go`（TestExampleConfigLoads，另有 `pkg/kei/assemble_test.go` 覆盖门面装配）。`feishu-main` 通过实例级 `enabled: false` 停用，实测该 bot 不再装配、不监听 18081（见阶段 5 的 `bots[].enabled`）。
 5. `plugins/echo` 示例插件。**存在**：`plugins/echo/echo.go`（`:44` 注册，`:12` Plugin）；测试 `plugins/echo/echo_test.go` 3 个。
 6. `adapters/mock` Mock 适配器（经注册表接入）。**存在**：`adapters/mock/`（`register.go:15` 注册工厂、`mock.go` 实现、HTTP 控制面 `POST /inject` 与 `GET /sent`）；测试 13 个。
 7. 至少一个真实平台适配器（飞书或 OneBot），经注册表接入。**存在且超额**：`adapters/feishu/`（`register.go:19`）与 `adapters/onebot/`（`register.go:19`）均已实现并注册。
 8. 第三方适配器示例：只依赖 `pkg/bot` 的独立 module 注册示例 + `cmd/example-adapter` 外部 gRPC 适配器示例。**存在**：`examples/kei-adapter-myim/`（独立 module，只依赖 `pkg/bot`，11 个测试，不新增 `go.work`、不改根 module 任何文件）+ `cmd/example-adapter/`（外部 gRPC 适配器示例 + 4 个集成测试）。
-9. 测试用例。**存在**：40 个测试文件、405 个顶层 `Test*`（`adapters/onebot` 40、`adapters/feishu` 36、`internal/grpcsrv` 34、`internal/router` 27、`internal/config` 25、`internal/engine` 24、`internal/eventbus` 23、`internal/middleware` 22、`cmd/example-plugin` 21、`internal/pluginmgr/external` 20、`internal/adaptermgr` 18、`pkg/bot` 16、`adapters/mock` 13、`cmd/bot` 12、`internal/adaptermgr/external` 10、`internal/metrics` 9、`internal/ratelimit` 7、`internal/dedup` 7、`internal/storage` 6、`internal/pluginmgr` 6、`plugins/manage` 5、`cmd/example-adapter` 4、`plugins/echo` 3、`pkg/message` 3、`internal/reply` 3；另 `examples/kei-adapter-myim` 11 个，属独立 module，不计入根 module 的 394 个）。
+9. 测试用例。**存在**：42 个测试文件、401 个顶层 `Test*`（`adapters/onebot` 40、`adapters/feishu` 36、`internal/grpcsrv` 34、`internal/router` 27、`internal/config` 25、`internal/engine` 24、`internal/eventbus` 23、`internal/middleware` 22、`cmd/example-plugin` 21、`internal/pluginmgr/external` 20、`internal/adaptermgr` 18、`pkg/bot` 17、`pkg/kei` 14、`adapters/mock` 13、`internal/adaptermgr/external` 10、`internal/metrics` 9、`internal/ratelimit` 7、`internal/dedup` 7、`internal/storage` 6、`internal/pluginmgr` 6、`plugins/manage` 5、`cmd/example-adapter` 4、`cmd/bot` 4、`plugins/echo` 3、`pkg/message` 3、`internal/reply` 3；另 `examples/kei-adapter-myim` 11 个，属独立 module，不计入根 module 的 401 个）。
 10. `proto/plugin.proto`、`proto/adapter.proto` 与外部插件/适配器示例（非 Go 语言实现可选）。**存在**：两份 proto 与生成代码 `proto/pluginpb/`；外部插件示例 `cmd/example-plugin/`（Go）、外部适配器示例 `cmd/example-adapter/`（Go）与 `examples/kei-adapter-myim/`（Go 独立 module）。非 Go 语言示例未提供，属该条明确可选项。
 
 ## 相关文档

@@ -314,7 +314,20 @@ func init() {
 }
 ```
 
-启用路径：插件包在 `init()` 中调用 `bot.RegisterPlugin`；入口程序空导入该包（`cmd/bot/main.go` 中 `_ "github.com/RandomLemon/kei/plugins/echo"`）；配置里写 `plugins: { echo: true }` 即启用，`enabledPlugins` 只把「已注册且配置启用」的插件交给引擎，配置启用但未注册的插件只记告警。插件目录中的空导入与 `plugins` 段配置见 [configuration.md](configuration.md)。
+启用路径：插件包在 `init()` 中调用 `bot.RegisterPlugin`；入口程序空导入该包（`cmd/bot/main.go` 中 `_ "github.com/RandomLemon/kei/plugins/echo"`）；配置里写 `plugins: { echo: true }` 即启用，`pkg/kei` 门面的 `selectPlugins` 只把「已注册且配置启用」的插件交给引擎，配置启用但未注册的插件只记告警。插件目录中的空导入与 `plugins` 段配置见 [configuration.md](configuration.md)。
+
+内联插件（不单独建包）：`bot.FuncPlugin` 用函数实现 `Plugin`，不经编译期注册表，只用于代码内启动时经 `pkg/kei` 门面注入：
+
+```go
+type FuncPlugin struct {
+	Meta    Metadata                                       // Name 必须非空且与其它插件不重名
+	OnSetup func(ctx context.Context, reg Registrar) error // 语义同 Plugin.Setup
+	OnStart func(ctx context.Context) error                // nil 表示无后台任务
+	OnStop  func(ctx context.Context) error                // nil 表示无需释放
+}
+```
+
+`Metadata`/`Setup`/`Start`/`Stop` 对 nil 接收者安全：nil 或对应函数为 nil 时是空实现（`Metadata` 返回零值，空名最终由 `pluginmgr.Add` 拒绝），与 `pkg/bot.Config` 的取值方法风格一致。它不调用 `RegisterPlugin`，因此不在注册表快照里；只能经 `pkg/kei.Options.Plugins` 注入，注入实例一律启用，与同名配置冲突（`enabled: false` 或 `grpc_addr`）时启动失败。装配门面见 [architecture.md](architecture.md) 3.1。
 
 需要 `PluginContext`（配置、日志、存储、插件目录）的插件在 `Setup` 阶段用 `bot.PluginContextFrom(ctx)` 取出并保存，`plugins/manage` 就是这么做的：
 

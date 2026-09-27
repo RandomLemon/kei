@@ -27,7 +27,7 @@
 3. 不实现复杂的自然语言处理模型。
 4. 不追求一次性覆盖所有 IM 平台：仓库内置适配器为 `adapters/mock`、`adapters/onebot`（OneBot v11）、`adapters/feishu` 三种，其余平台按 [adapter.md](adapter.md) 第 6 章的适配器契约由第三方以独立包或独立 module 形式接入。
 
-当前内置适配器的注册与启用方式：`cmd/bot/main.go` 空导入三个内置适配器包，各包在自己的 `init()` 中调用 `bot.RegisterAdapter`，是否实例化由配置中的 `bots[].adapter` 决定。
+当前内置适配器的注册与启用方式：`cmd/bot/main.go` 空导入三个内置适配器包，各包在自己的 `init()` 中调用 `bot.RegisterAdapter`，是否实例化由配置中的 `bots[].adapter` 决定。装配逻辑本身不在 `cmd/bot`，而在公开包 `pkg/kei`（见 3.1）：`cmd/bot` 只是「flag + 信号 + 空导入 + 一次 `kei.Run`」的薄壳，库使用者无需复制它就能跑起一个 chatbot。
 
 ---
 
@@ -77,6 +77,15 @@
 5. 消息段统一：文本、图片、At、Markdown、卡片等统一为 Segment。
 6. 动态扩展优先用外部进程/gRPC，而不是 Go `plugin`。
 
+### 3.1 装配门面（`pkg/kei`）
+
+`pkg/kei` 是唯一的装配实现：加载 YAML 配置 → 装配适配器（`internal/adaptermgr`）与插件（注册表 + `internal/pluginmgr`，含外部 gRPC 通道）→ 构造并运行引擎（`internal/engine`）→ 优雅退出。它是公开包，允许 import `internal/`（同 module 内合法），因为装配必须触碰 `internal/` 各包；这也是把装配从 `cmd/` 抽出来的原因——`cmd/` 无法被外部 module 复用。
+
+- 职责边界：只做装配与生命周期编排，不含平台名分支与业务逻辑，不空导入任何适配器或插件（编译期注册仍由调用方空导入完成）。配置语义完全来自 YAML，门面不新建第二套配置。
+- 依赖方向：`pkg/kei` → `internal/*` + `pkg/bot`；`pkg/bot` 与 `pkg/message` 不依赖 `pkg/kei`（`pkg/bot` 禁止 import `internal/`）。`cmd/bot` → `pkg/kei`，自身不再持有装配逻辑。
+- 依赖注入点：`Options` 只暴露 `Logger`/`HTTPClient`/`Storage`/`Plugins` 等可替换依赖，其余全部由配置决定。
+- 内联插件：`pkg/bot.FuncPlugin` 让「单文件定义业务逻辑」成为可能，注入实例一律启用（与配置冲突时启动失败）。
+
 ---
 
 ## 4. 目录结构
@@ -93,12 +102,13 @@ kei/
 ├── .envrc                        # direnv 集成：进入目录自动加载 devShell
 ├── .gitignore                    # 忽略构建产物与本地环境
 ├── cmd/
-│   ├── bot/                      # 入口：加载配置、空导入内置适配器与插件、装配、优雅退出，不含平台分支
+│   ├── bot/                      # 入口薄壳：flag + 信号 + 空导入内置适配器与插件 + 一次 kei.Run，不含装配逻辑与平台分支
 │   ├── example-plugin/           # Go 外部插件示例（独立进程，实现 PluginService）
 │   └── example-adapter/          # Go 外部适配器示例（独立进程，实现 AdapterService）
 ├── pkg/
 │   ├── bot/                      # 公开 SDK：Event、Message、Adapter 注册表、Plugin、Registrar、Reply、BotAPI、Storage、Config
-│   └── message/                  # 消息与消息段构建器
+│   ├── message/                  # 消息与消息段构建器
+│   └── kei/                      # 装配门面：加载配置、装配适配器与插件、启动引擎、优雅退出（cmd/bot 的唯一实现）
 ├── internal/
 │   ├── engine/                   # 核心引擎：串联适配器、事件总线、路由与插件，对外提供 BotAPI
 │   ├── adaptermgr/               # 适配器装配：注册表查表、权限裁剪、保留键校验
