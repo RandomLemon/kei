@@ -10,26 +10,13 @@
 
 ## Architecture
 
-```
-QQ / 飞书 / OneBot / Mock
-        │  平台回调（签名校验、协议解析、快速 ACK）
-        ▼
-┌──────────────────┐
-│   Adapter 适配层  │  事件转换 → 统一 bot.Event ─┐
-└──────────────────┘                            │
-        ▲                                       ▼
-        │ Send                      ┌──────────────────────┐
-        │                           │  EventBus 事件总线    │ 分片 worker 池
-        │                           │  按会话哈希保序 + 去重 │
-        │                           └──────────────────────┘
-        │                                       │
-        │                                       ▼
-        │                           ┌──────────────────────┐
-        │                           │  Engine 核心引擎      │
-        │                           │  Middleware 链（洋葱）│
-        │                           │  Router 路由匹配      │
-        └───────────────────────────│  Plugin Handler       │
-                                    └──────────────────────┘
+```mermaid
+flowchart TD
+    P["第三方平台"] -->|"平台回调"| A
+    A["Adapter 适配层<br/>事件转换 → bot.Event"]
+    A --> B["EventBus 事件总线<br/>分片 worker 池"]
+    B --> E["Engine 核心引擎<br/>Middleware 链<br/>Router 路由匹配<br/>Plugin Handler"]
+    E -->|"统一消息段 → 平台消息<br/>Send"| A
 ```
 
 - **统一消息段**：文本、Markdown、图片、At、表情、引用、卡片、文件都归一为 `bot.Segment`，
