@@ -30,34 +30,45 @@ flowchart TD
 
 ## 目录结构
 
-```
-cmd/bot/                 入口薄壳：flag + 信号 + 空导入 + 一次 kei.Run（无装配逻辑）
-cmd/example-plugin/      Go 外部插件示例（独立进程）
-cmd/example-adapter/     Go 外部适配器示例（独立进程）
-pkg/bot/                 公开 SDK：Event/Message/Adapter 注册表/Plugin/Registrar/Reply/BotAPI
-pkg/message/             消息段构建器
-pkg/kei/                 装配门面：加载配置、装配适配器与插件、启动引擎、优雅退出
-internal/engine/         核心引擎（BotAPI 实现、发送限流与重试、优雅关闭）
-internal/eventbus/       事件总线（分片保序、去重、drain）
-internal/router/         路由匹配与 Registrar 实现
-internal/middleware/     中间件（Recover/Logger/Metrics/Timeout/Auth/RateLimit/Dedup）
-internal/metrics/        Prometheus 文本指标（标准库实现）
-internal/pluginmgr/      插件生命周期管理 + gRPC 外部插件加载
-internal/adaptermgr/     适配器装配：注册表查表、权限裁剪、外部适配器通道
-internal/grpcsrv/        BotService gRPC 服务端（插件与外部适配器共用）
-internal/config/         YAML 配置加载与环境变量覆盖
-internal/storage/        bot.Storage 内存实现
-internal/dedup/          带 TTL 与容量的去重集合
-internal/ratelimit/      按 key 的令牌桶（非阻塞 Allow + 阻塞 Wait）
-adapters/mock/           本地测试适配器（HTTP 控制面注入事件、观察发送）
-adapters/onebot/         OneBot v11（按 mode 选 HTTP 双向 / 反向 WebSocket / 正向 WebSocket，零第三方依赖）
-adapters/feishu/         飞书开放平台（事件订阅回调 + 消息发送）
-plugins/echo/            示例插件：/echo
-plugins/manage/          管理命令：/ping、/version、/plugins、/adapters、/admin
-proto/plugin.proto       外部插件 gRPC 协议 + BotService（含生成代码 proto/pluginpb）
-proto/adapter.proto      外部适配器 gRPC 协议（同 package，复用 plugin.proto 消息）
-configs/config.yaml      示例配置
-docs/                    设计文档集（架构/领域模型/适配器/插件/引擎/gRPC/配置/测试/阶段现状）
+```text
+kei/
+├── cmd/
+│   ├── bot/               入口薄壳：flag + 信号 + 空导入 + 一次 kei.Run（无装配逻辑）
+│   ├── example-plugin/    Go 外部插件示例（独立进程）
+│   └── example-adapter/   Go 外部适配器示例（独立进程）
+├── pkg/
+│   ├── bot/               公开 SDK：Event/Message/Adapter 注册表/Plugin/Registrar/Reply/BotAPI
+│   ├── message/           消息段构建器
+│   └── kei/               装配门面：加载配置、装配适配器与插件、启动引擎、优雅退出
+├── internal/
+│   ├── engine/            核心引擎（BotAPI 实现、发送限流与重试、优雅关闭）
+│   ├── eventbus/          事件总线（分片保序、去重、drain）
+│   ├── router/            路由匹配与 Registrar 实现
+│   ├── middleware/        中间件（Recover/Logger/Metrics/Timeout/Auth/RateLimit/Dedup）
+│   ├── metrics/           Prometheus 文本指标（标准库实现）
+│   ├── pluginmgr/         插件生命周期管理 + gRPC 外部插件加载
+│   ├── adaptermgr/        适配器装配：注册表查表、权限裁剪、外部适配器通道
+│   ├── grpcsrv/           BotService gRPC 服务端（插件与外部适配器共用）
+│   ├── config/            YAML 配置加载与环境变量覆盖
+│   ├── storage/           bot.Storage 内存实现
+│   ├── dedup/             带 TTL 与容量的去重集合
+│   └── ratelimit/         按 key 的令牌桶（非阻塞 Allow + 阻塞 Wait）
+├── adapters/
+│   ├── mock/              本地测试适配器（HTTP 控制面注入事件、观察发送）
+│   ├── onebot/            OneBot v11（按 mode 选 HTTP 双向 / 反向 WebSocket / 正向 WebSocket，零第三方依赖）
+│   └── feishu/            飞书开放平台（事件订阅回调 + 消息发送）
+├── plugins/
+│   ├── echo/              示例插件：/echo
+│   └── manage/            管理命令：/ping、/version、/plugins、/adapters、/admin
+├── proto/
+│   ├── plugin.proto       外部插件 gRPC 协议 + BotService（同目录生成代码 pluginpb/）
+│   ├── adapter.proto      外部适配器 gRPC 协议（同 package，复用 plugin.proto 消息）
+│   └── pluginpb/          buf 生成的 Go 代码（plugin/adapter 的 pb 与 grpc 桩）
+├── examples/
+│   └── kei-adapter-myim/  独立 module 的第三方适配器示例（只依赖 pkg/bot）
+├── configs/
+│   └── config.yaml        示例配置
+└── docs/                  设计文档集（架构/领域模型/适配器/插件/引擎/gRPC/配置/测试/阶段现状）
 ```
 
 ## 环境准备（Nix + direnv）
