@@ -112,7 +112,7 @@ func (p *Plugin) describePlugins(catalog bot.PluginCatalog) string {
 // describeAdapters 把适配器注册表与已绑定实例格式化为多行文本。
 //
 // 注册表来自 pkg/bot（编译期注册，含第三方进程内适配器），绑定信息来自引擎
-// （每个 bot 用哪个适配器、是否走外部 gRPC 进程）。
+// （每个 bot 用哪个适配器）。
 func (p *Plugin) describeAdapters(catalog bot.AdapterCatalog, registered []bot.AdapterMetadata) string {
 	sort.Slice(registered, func(i, j int) bool { return registered[i].Name < registered[j].Name })
 
@@ -152,11 +152,7 @@ func (p *Plugin) describeAdapters(catalog bot.AdapterCatalog, registered []bot.A
 
 	fmt.Fprintf(&b, "\n已绑定 %d 个实例：", len(infos))
 	for _, info := range infos {
-		kind := "进程内"
-		if info.External {
-			kind = "外部 gRPC"
-		}
-		fmt.Fprintf(&b, "\n- %s → %s（%s）", info.BotID, info.Metadata.Name, kind)
+		fmt.Fprintf(&b, "\n- %s → %s", info.BotID, info.Metadata.Name)
 	}
 	return b.String()
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -51,18 +50,6 @@ func applyEnvPath(c *Config, botNames []string, segments []string, key, value st
 	case "metrics_addr":
 		c.Metrics.Addr = value
 		return nil
-	case "grpc_addr":
-		c.Grpc.Addr = value
-		return nil
-	case "grpc_cert_file":
-		c.Grpc.CertFile = value
-		return nil
-	case "grpc_key_file":
-		c.Grpc.KeyFile = value
-		return nil
-	case "grpc_ca_file":
-		c.Grpc.CAFile = value
-		return nil
 	case "limits_handler_rate":
 		return envFloat(key, "Limits.HandlerRate", value, &c.Limits.HandlerRate)
 	case "limits_handler_burst":
@@ -81,7 +68,7 @@ func applyEnvPath(c *Config, botNames []string, segments []string, key, value st
 	case strings.HasPrefix(full, "plugins_"):
 		applyPluginEnv(c, full[len("plugins_"):], value)
 	case strings.HasPrefix(full, "adapters_"):
-		return applyAdapterEnv(c, full[len("adapters_"):], value)
+		applyAdapterEnv(c, full[len("adapters_"):], value)
 	}
 	return nil
 }
@@ -173,9 +160,8 @@ func applyPluginEnv(c *Config, rest, value string) {
 //
 // 只有配置中已存在的适配器名才会被命中，未知适配器名一律忽略。
 // 同时命中多个适配器时取名字规范化后最长者，长度相同时全部应用。
-// 支持 enabled（控制启用状态）与 grpc_addr/token/platform/permissions/timeout，
-// 其余键写入该适配器的进程级配置。
-func applyAdapterEnv(c *Config, rest, value string) error {
+// 只支持 enabled（控制启用状态），其余键忽略。
+func applyAdapterEnv(c *Config, rest, value string) {
 	best, tail := -1, ""
 	var names []string
 	for name := range c.Adapters {
@@ -197,44 +183,15 @@ func applyAdapterEnv(c *Config, rest, value string) error {
 		}
 	}
 	for _, name := range names {
-		ac := c.Adapters[name]
-		switch tail {
-		case "enabled":
-			if enabled, ok := envBool(value); ok {
-				ac.Enabled = &enabled
-			}
-		case "grpc_addr":
-			ac.GrpcAddr = value
-		case "token":
-			ac.Token = value
-		case "platform":
-			ac.Platform = value
-		case "permissions":
-			ac.Permissions = splitList(value)
-		case "timeout":
-			d, err := parseDurationValue(tail, value)
-			if err != nil {
-				return fmt.Errorf("config: 环境变量 KEI_ADAPTERS_%s_%s: %w", strings.ToUpper(name), strings.ToUpper(tail), err)
-			}
-			ac.Timeout = d
-		default:
-			setSetting(&ac.Settings, tail, value)
+		if tail != "enabled" {
+			continue
 		}
-		c.Adapters[name] = ac
+		if enabled, ok := envBool(value); ok {
+			ac := c.Adapters[name]
+			ac.Enabled = &enabled
+			c.Adapters[name] = ac
+		}
 	}
-	return nil
-}
-
-// parseDurationValue 解析环境变量中的时长：先按 time.ParseDuration，
-// 纯数字按秒处理；两者都失败时报错。
-func parseDurationValue(field, value string) (time.Duration, error) {
-	if d, err := time.ParseDuration(strings.TrimSpace(value)); err == nil {
-		return d, nil
-	}
-	if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
-		return time.Duration(n) * time.Second, nil
-	}
-	return 0, fmt.Errorf("需要时长（如 10s），实际为 %q", value)
 }
 
 // setSetting 写入一个 Settings 键。path 是规范化后的路径（小写下划线形式）。

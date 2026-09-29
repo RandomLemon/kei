@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -145,11 +144,10 @@ func TestBuildTrimsDependencies(t *testing.T) {
 		{Name: "bare-bot", Adapter: bare},
 		{Name: "full-bot", Adapter: full},
 	}}
-	bindings, err := Build(context.Background(), cfg, testDeps(mem, httpClient, nil))
+	bindings, err := Build(cfg, testDeps(mem, httpClient, nil))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 
 	if bareAd.ac.HTTPClient != nil {
 		t.Fatal("未声明 network 时 HTTPClient 应为 nil")
@@ -172,7 +170,7 @@ func TestBuildTrimsDependencies(t *testing.T) {
 	if len(list) != 2 || list[0].BotID != "bare-bot" || list[1].BotID != "full-bot" {
 		t.Fatalf("绑定顺序 = %+v", list)
 	}
-	if list[0].Info.External || list[0].Info.Metadata.Name != bare {
+	if list[0].Info.Metadata.Name != bare {
 		t.Fatalf("绑定信息 = %+v", list[0].Info)
 	}
 }
@@ -188,11 +186,10 @@ func TestBuildWarnsUnknownOptions(t *testing.T) {
 	cfg := &config.Config{Bots: []config.BotConfig{{
 		Name: "b1", Adapter: name, Settings: map[string]any{"known": 1, "typo_key": 2},
 	}}}
-	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	_, err := Build(cfg, testDeps(storage.NewMemory(), nil, logger))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 
 	got := buf.String()
 	if !strings.Contains(got, "typo_key") {
@@ -209,7 +206,7 @@ func TestBuildFactoryFailures(t *testing.T) {
 		func(bot.AdapterContext) (bot.Adapter, error) { return nil, errors.New("boom") })
 
 	cfg := &config.Config{Bots: []config.BotConfig{{Name: "b1", Adapter: name}}}
-	_, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil))
+	_, err := Build(cfg, testDeps(storage.NewMemory(), nil, nil))
 	if err == nil || !strings.Contains(err.Error(), "boom") || !strings.Contains(err.Error(), "b1") {
 		t.Fatalf("构造失败错误 = %v", err)
 	}
@@ -218,7 +215,7 @@ func TestBuildFactoryFailures(t *testing.T) {
 	bot.RegisterAdapter(bot.AdapterMetadata{Name: nilName, Platforms: []string{"p"}},
 		func(bot.AdapterContext) (bot.Adapter, error) { return nil, nil })
 	cfg.Bots[0].Adapter = nilName
-	if _, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil)); err == nil ||
+	if _, err := Build(cfg, testDeps(storage.NewMemory(), nil, nil)); err == nil ||
 		!strings.Contains(err.Error(), "nil") {
 		t.Fatalf("工厂返回 nil 应报错: %v", err)
 	}
@@ -231,50 +228,18 @@ func TestBuildWarnsUndeclaredPlatform(t *testing.T) {
 	buf := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := &config.Config{Bots: []config.BotConfig{{Name: "b1", Adapter: name}}}
-	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	_, err := Build(cfg, testDeps(storage.NewMemory(), nil, logger))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 
 	if !strings.Contains(buf.String(), "未在元信息中声明") {
 		t.Fatalf("未声明的平台名应告警: %s", buf.String())
 	}
 }
 
-// fakeEmitter 是实现了 Emit 的最小 BotAPI。
-type fakeEmitter struct {
-	got *bot.Event
-}
-
-func (f *fakeEmitter) Send(context.Context, bot.Target, *bot.Message) (*bot.SendResult, error) {
-	return nil, nil
-}
-func (f *fakeEmitter) Reply(context.Context, *bot.Event, *bot.Message) (*bot.SendResult, error) {
-	return nil, nil
-}
-func (f *fakeEmitter) Logger() *slog.Logger { return slog.New(slog.DiscardHandler) }
-func (f *fakeEmitter) Storage() bot.Storage { return storage.Denied() }
-func (f *fakeEmitter) Emit(_ context.Context, ev *bot.Event) error {
-	f.got = ev
-	return nil
-}
-
-// plainAPI 是不提供 Emit 的 BotAPI。
-type plainAPI struct{}
-
-func (plainAPI) Send(context.Context, bot.Target, *bot.Message) (*bot.SendResult, error) {
-	return nil, nil
-}
-func (plainAPI) Reply(context.Context, *bot.Event, *bot.Message) (*bot.SendResult, error) {
-	return nil, nil
-}
-func (plainAPI) Logger() *slog.Logger { return slog.New(slog.DiscardHandler) }
-func (plainAPI) Storage() bot.Storage { return storage.Denied() }
-
 // TestBuildSkipsDisabledAdapter 覆盖 enabled: false 的装配语义：
-// 不建立通道（外部适配器即便地址不可达也不会被 dial）、其 bot 一并跳过，
-// 其他 bot 不受影响。
+// 被禁用的适配器不装配，其 bot 一并跳过，其他 bot 不受影响。
 func TestBuildSkipsDisabledAdapter(t *testing.T) {
 	const inproc = "test-enabled-inproc"
 	registerTestAdapter(t, bot.AdapterMetadata{Name: inproc, Platforms: []string{"recording"}})
@@ -287,37 +252,29 @@ func TestBuildSkipsDisabledAdapter(t *testing.T) {
 	cfg := &config.Config{
 		Bots: []config.BotConfig{
 			{Name: "inproc-bot", Adapter: inproc},
-			{Name: "ext-bot", Adapter: "test-enabled-ext"},
+			{Name: "off-bot", Adapter: "test-disabled-adapter"},
 		},
 		Adapters: map[string]config.AdapterConfig{
-			"test-enabled-ext": {
-				Enabled:  &disabled,
-				GrpcAddr: "127.0.0.1:1", // 不可达：若被 dial，会阻塞到超时并报错
-				Token:    "t",
-			},
+			"test-disabled-adapter": {Enabled: &disabled},
 		},
 	}
 
-	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	bindings, err := Build(cfg, testDeps(storage.NewMemory(), nil, logger))
 	if err != nil {
-		t.Fatalf("禁用的外部适配器不应被 dial: %v", err)
+		t.Fatalf("禁用的适配器不应阻塞装配: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 
 	list := bindings.List()
 	if len(list) != 1 || list[0].BotID != "inproc-bot" {
 		t.Fatalf("绑定 = %+v", list)
 	}
-	if got := buf.String(); !strings.Contains(got, "ext-bot") || !strings.Contains(got, "已禁用") {
+	if got := buf.String(); !strings.Contains(got, "off-bot") || !strings.Contains(got, "已禁用") {
 		t.Fatalf("应记录被跳过的 bot 与禁用状态: %s", got)
-	}
-	if _, _, ok := bot.LookupAdapter("test-enabled-ext"); ok {
-		t.Fatal("测试前提不成立：该名字不应在注册表中")
 	}
 }
 
 // TestBuildSkipsDisabledInProcessAdapter 覆盖进程内适配器被禁用的情况：
-// adapters 段只写 enabled 也能禁用（不需要 grpc_addr）。
+// adapters 段只写 enabled 即可禁用。
 func TestBuildSkipsDisabledInProcessAdapter(t *testing.T) {
 	const name = "test-disabled-inproc"
 	registerTestAdapter(t, bot.AdapterMetadata{Name: name, Platforms: []string{"recording"}})
@@ -329,22 +286,20 @@ func TestBuildSkipsDisabledInProcessAdapter(t *testing.T) {
 		Adapters: map[string]config.AdapterConfig{name: {Enabled: &disabled}},
 	}
 
-	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	bindings, err := Build(cfg, testDeps(storage.NewMemory(), nil, logger))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 	if got := bindings.List(); len(got) != 0 {
 		t.Fatalf("禁用的进程内适配器不应产生绑定: %+v", got)
 	}
 
 	// 启用后立即可用，说明禁用只是跳过而非破坏配置。
 	cfg.Adapters[name] = config.AdapterConfig{Enabled: &enabled}
-	bindings, err = Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	bindings, err = Build(cfg, testDeps(storage.NewMemory(), nil, logger))
 	if err != nil {
 		t.Fatalf("启用后 Build: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 	if got := bindings.List(); len(got) != 1 || got[0].BotID != "b1" {
 		t.Fatalf("启用后绑定 = %+v", got)
 	}
@@ -361,11 +316,10 @@ func TestValidateSkipsDisabledUnknownAdapter(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("禁用的未知适配器不应报错: %v", err)
 	}
-	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil))
+	_, err := Build(cfg, testDeps(storage.NewMemory(), nil, nil))
 	if err != nil {
 		t.Fatalf("禁用的未知适配器不应阻塞装配: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 
 	cfg.Adapters["test-ghost-adapter"] = config.AdapterConfig{Enabled: &enabled}
 	err = Validate(cfg)
@@ -387,70 +341,12 @@ func TestBuildWarnsUnregisteredDeclaration(t *testing.T) {
 		Bots:     []config.BotConfig{{Name: "b1", Adapter: botAdapter}},
 		Adapters: map[string]config.AdapterConfig{"test-unregistered-decl": {Enabled: &enabled}},
 	}
-	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, logger))
+	_, err := Build(cfg, testDeps(storage.NewMemory(), nil, logger))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 	if !strings.Contains(buf.String(), "未注册") {
 		t.Fatalf("未注册的声明应告警: %s", buf.String())
-	}
-}
-
-func TestEmitFuncChecksOwnership(t *testing.T) {
-	bindings := &Bindings{
-		log:      slog.New(slog.DiscardHandler),
-		external: map[string][]string{"myim": {"myim-main"}},
-	}
-
-	api := &fakeEmitter{}
-	emit, err := bindings.EmitFunc(api)
-	if err != nil {
-		t.Fatalf("EmitFunc: %v", err)
-	}
-
-	ev := &bot.Event{ID: "e1", Platform: "myim", BotID: "myim-main"}
-	if err := emit(context.Background(), "myim", ev); err != nil {
-		t.Fatalf("合法事件被拒: %v", err)
-	}
-	if api.got != ev {
-		t.Fatalf("事件未透传: %+v", api.got)
-	}
-
-	if err := emit(context.Background(), "unknown", ev); err == nil {
-		t.Fatal("未声明的适配器应被拒")
-	}
-	if err := emit(context.Background(), "myim", &bot.Event{ID: "e2", BotID: "other-bot"}); err == nil {
-		t.Fatal("越权 bot 的事件应被拒")
-	}
-	if err := emit(context.Background(), "myim", nil); err == nil {
-		t.Fatal("nil 事件应被拒")
-	}
-
-	if _, err := bindings.EmitFunc(plainAPI{}); err == nil {
-		t.Fatal("BotAPI 未实现 Emit 时应报错")
-	}
-}
-
-// countingCloser 记录 Close 调用次数。
-type countingCloser struct{ n int }
-
-func (c *countingCloser) Close() error {
-	c.n++
-	return nil
-}
-
-func TestBindingsCloseIsIdempotent(t *testing.T) {
-	c := &countingCloser{}
-	bindings := &Bindings{log: slog.New(slog.DiscardHandler), closers: []io.Closer{c}}
-	if err := bindings.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := bindings.Close(); err != nil {
-		t.Fatalf("第二次 Close: %v", err)
-	}
-	if c.n != 1 {
-		t.Fatalf("Close 调用次数 = %d, want 1", c.n)
 	}
 }
 
@@ -470,11 +366,10 @@ func TestBuildSkipsDisabledBot(t *testing.T) {
 		{Name: "off-bot", Adapter: adapter, Enabled: &disabled},
 	}}
 
-	bindings, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil))
+	bindings, err := Build(cfg, testDeps(storage.NewMemory(), nil, nil))
 	if err != nil {
 		t.Fatalf("停用的实例不应阻塞装配: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 
 	list := bindings.List()
 	if len(list) != 1 || list[0].BotID != "live-bot" {
@@ -512,7 +407,7 @@ func TestValidateDisabledBotSkipsReservedOption(t *testing.T) {
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("停用实例不应触发保留键校验: %v", err)
 	}
-	if _, err := Build(context.Background(), cfg, testDeps(storage.NewMemory(), nil, nil)); err != nil {
+	if _, err := Build(cfg, testDeps(storage.NewMemory(), nil, nil)); err != nil {
 		t.Fatalf("停用实例应可装配（产出为空）: %v", err)
 	}
 }

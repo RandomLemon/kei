@@ -633,15 +633,6 @@ func (f *fakeRecorder) RuleMatched(plugin, rule string) {
 	f.gotMatch.plugin, f.gotMatch.rule = plugin, rule
 }
 
-// AdapterReconnected 实现 metrics.Recorder（本包不使用，留空）。
-func (f *fakeRecorder) AdapterReconnected(string) {}
-
-// AdapterReconnectFailed 实现 metrics.Recorder（本包不使用，留空）。
-func (f *fakeRecorder) AdapterReconnectFailed(string) {}
-
-// AdapterDisabled 实现 metrics.Recorder（本包不使用，留空）。
-func (f *fakeRecorder) AdapterDisabled(string) {}
-
 // TestMetricsMiddleware 验证指标中间件上报插件、规则、耗时与错误。
 func TestMetricsMiddleware(t *testing.T) {
 	rec := &fakeRecorder{}

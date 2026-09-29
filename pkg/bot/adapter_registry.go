@@ -80,8 +80,6 @@ type AdapterInfo struct {
 	BotID string
 	// Metadata 是适配器的注册元信息。
 	Metadata AdapterMetadata
-	// External 表示该实例由外部 gRPC 适配器进程提供。
-	External bool
 }
 
 // AdapterCatalog 提供已加载适配器的绑定信息，供管理类插件使用。

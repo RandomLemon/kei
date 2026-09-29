@@ -4,7 +4,7 @@
 
 覆盖 `pkg/bot` 中平台无关的领域类型、枚举常量与方法，以及 `pkg/message` 的消息段构建器；同时给出 `Segment.Data` 的键名契约。
 
-不覆盖：消息段降级规则与 `Capabilities` 映射（见 adapter.md#64-能力与降级）、事件总线与路由行为（见 engine.md）、插件运行期接口与 `Reply` 构建器（见 plugin.md）、gRPC 消息映射（见 grpc.md）。
+不覆盖：消息段降级规则与 `Capabilities` 映射（见 adapter.md#64-能力与降级）、事件总线与路由行为（见 engine.md）、插件运行期接口与 `Reply` 构建器（见 plugin.md）。
 
 ### 5.1 稳定性契约
 
@@ -312,4 +312,3 @@ func Plain(kind bot.MessageKind, text string) *bot.Message
 - [架构与目录结构](architecture.md)
 - [Adapter 平台适配层：能力与降级](adapter.md#64-能力与降级)
 - [插件系统与 BotAPI](plugin.md)
-- [外部插件与适配器 gRPC 协议](grpc.md)

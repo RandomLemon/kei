@@ -5,9 +5,9 @@
 ## 1. 项目定位
 
 - 项目名 `kei`，模块路径 `github.com/RandomLemon/kei`。
-- 目标：Go 编写的 chatbot 框架。平台协议与业务逻辑解耦；插件开发轻量；适配器与插件**同构**——同一套注册表、元信息、权限声明、配置驱动装配，既可进程内加载，也可扩展为独立 gRPC 进程（`proto/` 是唯一契约）。
+- 目标：Go 编写的 chatbot 框架。平台协议与业务逻辑解耦；插件开发轻量；适配器与插件**同构**——同一套注册表、元信息、权限声明、配置驱动装配，均在进程内加载。
 - 非目标：个人微信逆向协议、完整管理后台 UI、NLP 模型、一次性覆盖所有 IM 平台。
-- 现状：内置适配器 `mock`/`onebot`/`feishu`（`wecom` 未实现），插件 `echo`/`manage`，外部进程示例 `cmd/example-plugin`、`cmd/example-adapter`。逐项状态与已知缺口见 [`docs/roadmap.md`](docs/roadmap.md)。
+- 现状：内置适配器 `mock`/`onebot`/`feishu`（`wecom` 未实现），插件 `echo`/`manage`。逐项状态与已知缺口见 [`docs/roadmap.md`](docs/roadmap.md)。
 
 ## 2. 硬性规则
 
@@ -22,11 +22,10 @@
 
 ### 2.2 技术栈与依赖
 
-- Go 1.25+（`go.mod` 为 `go 1.25.0`）。工具链、`gopls`、`golangci-lint`、`dlv`、`protoc`/`buf` 由 `flake.nix` + direnv 提供，`GOTOOLCHAIN=local`。
+- Go 1.25+（`go.mod` 为 `go 1.25.0`）。工具链、`gopls`、`golangci-lint`、`dlv` 由 `flake.nix` + direnv 提供，`GOTOOLCHAIN=local`。
 - 优先标准库：`context`、`log/slog`、`net/http`、`encoding/json`、`sync`、`time`。
-- 允许的第三方依赖仅 `gopkg.in/yaml.v3`（配置）、`google.golang.org/grpc`、`google.golang.org/protobuf`。新增依赖必须先说明理由，并同步 [`docs/architecture.md`](docs/architecture.md) 与 [`README.md`](README.md)。
-- 禁止用 Go `plugin` 作为插件机制；动态扩展走独立进程 + gRPC。
-- `proto/` 由 `buf` 管理（`proto/buf.yaml`、`proto/buf.gen.yaml`，生成物 `proto/pluginpb`）。改 proto 必须同步生成代码与 [`docs/grpc.md`](docs/grpc.md)。
+- 允许的第三方依赖仅 `gopkg.in/yaml.v3`（配置）。新增依赖必须先说明理由，并同步 [`docs/architecture.md`](docs/architecture.md) 与 [`README.md`](README.md)。
+- 禁止用 Go `plugin` 作为插件机制：适配器与插件都在编译期注册到各自注册表，由配置驱动装配。
 
 ### 2.3 运行时契约
 
@@ -47,12 +46,11 @@ go build ./...
 go vet ./...
 go test ./...
 go test -race ./...
-cd proto && buf lint          # 改动 proto 时
 ```
 
 - 公开接口必须有文档注释；注释与实现不符视为缺陷。
 - 不破坏 `pkg/bot` 的向后兼容性。
-- 行为变更（公共 API、配置键、proto）必须同步更新对应 `docs/` 文档与 `README.md`；修掉缺口后同步删除文档中「附：已知缺口与实现边界」的对应条目。
+- 行为变更（公共 API、配置键）必须同步更新对应 `docs/` 文档与 `README.md`；修掉缺口后同步删除文档中「附：已知缺口与实现边界」的对应条目。
 
 ## 3. 代码约定
 
@@ -73,7 +71,6 @@ cd proto && buf lint          # 改动 proto 时
 
 - 每个核心包必须有单元测试；核心链路必须有集成测试（Mock Adapter → EventBus → Router → 插件 → Reply）。
 - 必须覆盖：命令/正则/关键词/事件触发、规则优先级、中间件顺序、panic recover、超时、去重、同会话保序、优雅关闭排空、发送限流与重试、能力降级、适配器注册表校验（未知名并列出已注册名 / 重复注册名 / 缺 `Platforms`）、多实例隔离、权限裁剪、适配器启用开关。
-- gRPC 相关测试用 `bufconn`。
 - 测试断言可观察行为，不断言实现细节（wiring、字段拷贝、日志文案）。
 - 完整矩阵、命令与完成定义见 [`docs/testing.md`](docs/testing.md)。
 
@@ -81,8 +78,6 @@ cd proto && buf lint          # 改动 proto 时
 
 ```text
 cmd/bot/                 入口薄壳：flag + 信号 + 空导入 + 一次 kei.Run（无装配逻辑，无平台分支）
-cmd/example-plugin/      Go 外部插件示例（独立进程）
-cmd/example-adapter/     Go 外部适配器示例（独立进程）
 examples/kei-adapter-myim/  独立 module 的第三方适配器示例（只依赖 pkg/bot，等价独立仓库形态）
 pkg/bot/                 公开 SDK：Event/Message/Segment、Adapter 注册表、Plugin、Registrar、Reply、BotAPI、Storage
 pkg/message/             消息段构建器
@@ -92,9 +87,8 @@ internal/eventbus/       事件总线：分片保序、去重、drain
 internal/router/         路由匹配与 Registrar 实现
 internal/middleware/     中间件：Recover/Logger/Metrics/Timeout/Auth/RateLimit/Dedup
 internal/config/         YAML 配置加载与环境变量覆盖
-internal/adaptermgr/     适配器装配：注册表查表、权限裁剪、外部适配器通道（external/）
-internal/pluginmgr/      插件生命周期管理、外部插件加载（external/）
-internal/grpcsrv/        BotService gRPC 服务端（插件与外部适配器共用）
+internal/adaptermgr/     适配器装配：注册表查表、权限裁剪、保留键校验
+internal/pluginmgr/      插件生命周期管理
 internal/storage/        bot.Storage 内存实现
 internal/dedup/          带 TTL 与容量的去重集合
 internal/ratelimit/      按 key 的令牌桶
@@ -105,7 +99,6 @@ adapters/onebot/         OneBot v11 适配器
 adapters/feishu/         飞书开放平台适配器
 plugins/echo/            示例插件：/echo
 plugins/manage/          管理命令：/ping、/version、/plugins、/adapters
-proto/                   plugin.proto、adapter.proto 与生成代码 pluginpb/
 configs/config.yaml      示例配置
 docs/                    设计文档集，入口 docs/README.md
 ```
@@ -122,8 +115,7 @@ docs/                    设计文档集，入口 docs/README.md
 | [`docs/adapter.md`](docs/adapter.md) | 第 6 章：适配器接口、注册表与工厂、权限、能力与降级、第三方接入、内置适配器现状 |
 | [`docs/plugin.md`](docs/plugin.md) | 第 9、11 章：插件接口、Registrar/Option、Reply、BotAPI、PluginContext、Storage |
 | [`docs/engine.md`](docs/engine.md) | 第 7、8、10 章：Engine、EventBus、Router、中间件与限流 |
-| [`docs/grpc.md`](docs/grpc.md) | 第 12 章：外部插件与外部适配器 gRPC 协议、代码生成、崩溃隔离与重连 |
-| [`docs/configuration.md`](docs/configuration.md) | 第 13 章：配置结构、键语义、环境变量覆盖、校验与告警 |
+| [`docs/configuration.md`](docs/configuration.md)| 第 13 章：配置结构、键语义、环境变量覆盖、校验与告警 |
 | [`docs/testing.md`](docs/testing.md) | 第 16、17、19 章：测试要求、构建与运行命令、完成定义 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 第 14、20 章：实现阶段回顾与交付物现状（含未实现项） |
 

@@ -1,7 +1,7 @@
 # kei 插件系统与 BotAPI
 
 覆盖 `pkg/bot` 中的插件契约（`Plugin`/`Metadata`/`Permission`）、`Registrar` 与全部注册 API、`Reply` 构建器、`BotAPI`/`Storage`/`PluginContext` 及其权限降级行为，并给出仓库内 `plugins/echo`、`plugins/manage` 的真实实现。
-不覆盖：路由匹配与中间件链的实现（见 [engine.md](engine.md)）、适配器契约（见 [adapter.md](adapter.md)）、外部插件的 gRPC 通道（见 [grpc.md](grpc.md)）、配置键表（见 [configuration.md](configuration.md)）。
+不覆盖：路由匹配与中间件链的实现（见 [engine.md](engine.md)）、适配器契约（见 [adapter.md](adapter.md)）、配置键表（见 [configuration.md](configuration.md)）。
 面向用户的插件编写教程与完整示例见 [../README.md](../README.md)。
 
 ---
@@ -57,7 +57,7 @@ const (
 	PermStorage Permission = "storage"
 	// PermNetListen 允许启动入站监听（webhook / 长连接），适配器使用。
 	PermNetListen Permission = "net_listen"
-	// PermReceiveEvent 允许向核心投递事件（外部适配器的 BotService.EmitEvent）。
+	// PermReceiveEvent 允许向核心投递事件。
 	PermReceiveEvent Permission = "receive_event"
 	// PermAdmin 允许执行管理员命令（配合 Auth 中间件）。
 	PermAdmin Permission = "admin"
@@ -66,7 +66,7 @@ const (
 )
 ```
 
-插件侧 `PermAll` 的语义：`Metadata.HasPermission` 对 `*` 恒返回 true，因此声明 `*` 的插件自动获得全部权限（`internal/pluginmgr` 据此裁剪依赖，见 11.4）。适配器侧完全不同：`AdapterMetadata.HasPermission` 只做精确匹配，`*` 不展开；`internal/adaptermgr.ValidateRegistry` 与 `internal/adaptermgr/external` 在适配器声明 `*` 时直接报错。适配器视角的裁剪规则见 [adapter.md](adapter.md)。
+插件侧 `PermAll` 的语义：`Metadata.HasPermission` 对 `*` 恒返回 true，因此声明 `*` 的插件自动获得全部权限（`internal/pluginmgr` 据此裁剪依赖，见 11.4）。适配器侧完全不同：`AdapterMetadata.HasPermission` 只做精确匹配，`*` 不展开；`internal/adaptermgr.ValidateRegistry` 在适配器声明 `*` 时直接报错。适配器视角的裁剪规则见 [adapter.md](adapter.md)。
 
 注册表 API：
 
@@ -78,7 +78,7 @@ func RegisterPlugin(p Plugin)          // p == nil 时忽略
 func RegisteredPlugins() []Plugin      // 按注册顺序的快照
 ```
 
-插件是否被实例化由配置决定（`plugins.<name>.enabled`，可简写为 `plugins.<name>: true`），入口程序通过空导入引入插件包；`plugins.<name>.grpc_addr` 非空时该名字被当作外部插件，进程内实例会被跳过。配置键与启用规则见 [configuration.md](configuration.md)。
+插件是否被实例化由配置决定（`plugins.<name>.enabled`，可简写为 `plugins.<name>: true`），入口程序通过空导入引入插件包。配置键与启用规则见 [configuration.md](configuration.md)。
 
 生命周期由 `internal/pluginmgr.Manager` 执行：按注册顺序 `Setup` 与 `Start`、逆序 `Stop`，每阶段在独立 `context.WithTimeout` 中运行（默认各 15s，`Deps.SetupTimeout/StartTimeout/StopTimeout` 可覆盖），并带 `recover` 隔离，插件 panic 或阶段失败不会拖垮进程，只终止本次启动。
 
@@ -136,7 +136,7 @@ type Option func(*Rule)
 
 `Use` 只影响调用 `Use` 之后为该插件注册的规则：每条规则在注册时把当前的插件中间件列表复制进 `Rule.Middlewares`，此前已注册的规则保持不变。折叠顺序由内到外为 handler → 插件 `Use` 中间件 → 全局中间件；同一组内按注册顺序由外到内包裹，即「先注册的先执行」。
 
-全局中间件中的 `middleware.Metrics(rec)`（`internal/middleware`）是规则命中与处理结果的唯一指标上报点：进入该中间件即表示所在规则已匹配当前事件（路由器只为命中的规则构造处理链），因此先调用 `rec.RuleMatched(plugin, rule)`，再在 `next` 返回后调用 `rec.EventHandled(plugin, rule, 耗时, err)`——规则随后是否被 Auth/RateLimit 等拒绝只体现在 `EventHandled` 的 result 标签里，命中计数仍然递增。`metrics.Recorder` 另有 `EventPublished`、`EventDropped`、`MessageSent` 与供外部适配器通道使用的 `AdapterReconnected`、`AdapterReconnectFailed`、`AdapterDisabled`（对应 `kei_adapter_reconnects_total{adapter,result}` 与 `kei_adapter_disabled_total{adapter}`），中间件链上报的指标族与全局链顺序见 [engine.md](engine.md)。
+全局中间件中的 `middleware.Metrics(rec)`（`internal/middleware`）是规则命中与处理结果的唯一指标上报点：进入该中间件即表示所在规则已匹配当前事件（路由器只为命中的规则构造处理链），因此先调用 `rec.RuleMatched(plugin, rule)`，再在 `next` 返回后调用 `rec.EventHandled(plugin, rule, 耗时, err)`——规则随后是否被 Auth/RateLimit 等拒绝只体现在 `EventHandled` 的 result 标签里，命中计数仍然递增。`metrics.Recorder` 另有 `EventPublished`、`EventDropped`、`MessageSent`，中间件链上报的指标族与全局链顺序见 [engine.md](engine.md)。
 
 `Option` 是 `func(*Rule)`，仓库提供全部 8 个构造器（`pkg/bot/registrar.go`）：
 
@@ -327,7 +327,7 @@ type FuncPlugin struct {
 }
 ```
 
-`Metadata`/`Setup`/`Start`/`Stop` 对 nil 接收者安全：nil 或对应函数为 nil 时是空实现（`Metadata` 返回零值，空名最终由 `pluginmgr.Add` 拒绝），与 `pkg/bot.Config` 的取值方法风格一致。它不调用 `RegisterPlugin`，因此不在注册表快照里；只能经 `pkg/kei.Options.Plugins` 注入，注入实例一律启用，与同名配置冲突（`enabled: false` 或 `grpc_addr`）时启动失败。装配门面见 [architecture.md](architecture.md) 3.1。
+`Metadata`/`Setup`/`Start`/`Stop` 对 nil 接收者安全：nil 或对应函数为 nil 时是空实现（`Metadata` 返回零值，空名最终由 `pluginmgr.Add` 拒绝），与 `pkg/bot.Config` 的取值方法风格一致。它不调用 `RegisterPlugin`，因此不在注册表快照里；只能经 `pkg/kei.Options.Plugins` 注入，注入实例一律启用，与同名配置冲突（`enabled: false`）时启动失败。装配门面见 [architecture.md](architecture.md) 3.1。
 
 需要 `PluginContext`（配置、日志、存储、插件目录）的插件在 `Setup` 阶段用 `bot.PluginContextFrom(ctx)` 取出并保存，`plugins/manage` 就是这么做的：
 
@@ -501,7 +501,7 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 | `storage` | `PluginContext.Storage` 与 `BotAPI.Storage()` 都是 `storage.Denied()`，任意调用返回 `storage.ErrPermissionDenied` |
 | `admin` | 仅作声明与审计；管理员校验实际由 `Rule.AdminOnly` + Auth 中间件按 `auth.admin_users` 完成，与插件元信息无关 |
 | `read_user` | 仅作声明与审计，核心当前不据此裁剪任何依赖（用户信息本就在 `Event.Sender` 中） |
-| `net_listen` / `receive_event` | 属于适配器语义，进程内插件不涉及 |
+| `net_listen` / `receive_event` | 属于适配器语义，插件不涉及 |
 | `*` | `Metadata.HasPermission` 视为包含一切权限，等价于声明全部权限；仅内置插件可用 |
 
 要点：
@@ -510,8 +510,6 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 2. `Storage` 的 MVP 为内存实现，可通过 `engine.Options.Storage` 替换为 Redis/SQLite 等实现。
 3. 插件通过 `PluginContext` 获取配置、日志、HTTP Client、Storage、插件目录与适配器目录。
 4. 插件默认不能任意发消息（需 `PermSendMessage`）、不能读写存储（需 `PermStorage`）、不能发起出站请求（需 `PermNetwork`）；核心不提供文件访问能力。
-
-外部插件的权限来自核心配置而非插件进程自报：`plugins.<name>.permissions`（缺失或为空时默认 `[send_message]`，支持列表或逗号分隔字符串），授权集合随 gRPC 令牌下发。外部适配器相反，权限由适配器进程上报后与 `adapters.<name>.permissions` 取交集。两边的越权调用都由 `internal/grpcsrv` 以 `codes.PermissionDenied` 拒绝：`BotService.SendMessage` 校验 `PermSendMessage`，`BotService.EmitEvent` 校验 `PermReceiveEvent`。协议细节见 [grpc.md](grpc.md)。
 
 ### 11.5 插件测试辅助
 

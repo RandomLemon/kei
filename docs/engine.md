@@ -52,8 +52,6 @@ type AdapterBinding struct {
 	Adapter bot.Adapter
 	// Metadata 是适配器的注册元信息，用于管理命令展示；可为零值。
 	Metadata bot.AdapterMetadata
-	// External 表示该实例由外部 gRPC 适配器进程提供。
-	External bool
 }
 ```
 
@@ -75,20 +73,20 @@ type AdapterBinding struct {
 | `HTTPClient` | 插件 HTTP 客户端，nil 时使用 `Timeout: 15s` 的默认客户端 | 15s |
 | `CommandPrefixes` | 命令前缀 | `["/"]` |
 
-插件生命周期各阶段超时由 `internal/pluginmgr` 决定，默认 Setup/Start/Stop 各 15s；外部适配器单次 RPC 超时默认 10s（见 [adapter.md](adapter.md)）。
+插件生命周期各阶段超时由 `internal/pluginmgr` 决定，默认 Setup/Start/Stop 各 15s。
 
-`Engine` 实现 `bot.BotAPI`、`bot.PluginCatalog`、`bot.AdapterCatalog` 三个接口，并提供 `Router()`、`Bus()`、`Logger()`、`Storage()`、`Adapter(botID)`、`Adapters()`。`Adapters()` 返回深拷贝快照（`Platforms`/`Permissions`/`Options` 切片全部复制），调用方修改不影响引擎内部状态。`Emit(ctx, ev)` 是外部适配器上行通道的落点，语义等同 `eventSink.Emit`：只表示入队成功与否。
+`Engine` 实现 `bot.BotAPI`、`bot.PluginCatalog`、`bot.AdapterCatalog` 三个接口，并提供 `Router()`、`Bus()`、`Logger()`、`Storage()`、`Adapter(botID)`、`Adapters()`。`Adapters()` 返回深拷贝快照（`Platforms`/`Permissions`/`Options` 切片全部复制），调用方修改不影响引擎内部状态。
 
 插件拿到的不是引擎本体：`engine.pluginAPI` 按插件名与元信息包装出专属 `bot.BotAPI`，`Send` 需要 `PermSendMessage`（否则返回 `engine: plugin %s lacks permission %s`），`Reply` 所有插件可用，`Storage()` 在未声明 `PermStorage` 时返回 `storage.Denied()`，`Logger()` 带 `plugin` 字段。详见 [plugin.md](plugin.md)。
 
 ### 7.2 启动顺序
 
-实际顺序（`pkg/kei.Run`：`buildConfig` → `adaptermgr.Build` → `setupExternal` → `engine.New` → `engine.Run`）：
+实际顺序（`pkg/kei.Run`：`buildConfig` → `adaptermgr.Build` → `engine.New` → `engine.Run`）：
 
 1. `config.Load`/`config.LoadBytes` 加载配置；构造 `slog` 日志器并设为默认；`storage.NewMemory()`；`metrics.New()`；`cfg.Metrics.Addr` 非空时启动 `/metrics` HTTP 服务。
-2. `adaptermgr.Build(ctx, cfg, deps)`：校验适配器注册表与配置一致性，并按配置装配全部 bot 的适配器（进程内适配器经 `bot.LookupAdapter` + `bot.AdapterContext`；外部适配器建立 gRPC 通道）。平台名分支只存在于适配器实现内部，`cmd/` 与 `internal/` 没有平台名分支。
-3. 收集需要加载的进程内插件（`selectPlugins`：注入实例在前，其后是配置启用且已注册的插件）；`setupExternal` 记录外部插件与外部适配器的令牌/配置，并在下一步的钩子中真正启动 gRPC 服务。
-4. `engine.New`：构造 Router（含全局中间件链）、构造并**启动事件总线 worker**、构造插件管理器，登记编译期插件，最后调用 `Options.ExternalPlugins(e)` 钩子（`pkg/kei` 在此启动 `BotService` gRPC 服务并连接外部插件，返回的插件与编译期插件一同管理）。
+2. `adaptermgr.Build(ctx, cfg, deps)`：校验适配器注册表与配置一致性，并按配置装配全部 bot 的适配器（适配器经 `bot.LookupAdapter` + `bot.AdapterContext`）。平台名分支只存在于适配器实现内部，`cmd/` 与 `internal/` 没有平台名分支。
+3. 收集需要加载的插件（`selectPlugins`：注入实例在前，其后是配置启用且已注册的插件）。
+4. `engine.New`：构造 Router（含全局中间件链）、构造并**启动事件总线 worker**、构造插件管理器，登记注册表中的插件。
 5. `engine.Run(ctx)`：
    - `plugins.Setup(runCtx, e.router.Registrar)`：按注册顺序调用每个插件的 `Setup`，注入 `PluginContext`（含路由注册器、目录、适配器目录、按权限裁剪的依赖）。任一步失败或 panic 立即返回错误。
    - `e.applyBotPluginFilter()`：按每个 bot 的插件白名单裁剪规则适用范围（见 7.6）。
@@ -108,8 +106,6 @@ type AdapterBinding struct {
 6. 记录 `engine stopped` 日志，携带总线的 `published`/`handled` 计数。
 
 关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；总超时由 `ShutdownTimeout`（默认 10s）约束。`Run` 的返回值是适配器错误（若有），ctx 取消返回 nil。
-
-外部资源的关闭发生在 `Run` 返回之后，由 `pkg/kei.Run` 的 `defer` 执行（LIFO）：先 `external.close()`（关闭外部插件、停止 `BotService` gRPC 服务），再 `bindings.Close()`（停止外部适配器实例、通知适配器进程退出并关闭连接）。
 
 优雅退出的触发点是 `cmd/bot/main.go` 的 `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`（门面本身只消费传入的 ctx）；取消后 `Run` 走上述关闭路径，因此已入队事件不会丢失（`internal/engine` 的 `TestGracefulShutdownDrainsQueuedEvents` 覆盖该行为）。
 
@@ -229,22 +225,12 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 
 适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。
 
-### 7.9 外部适配器崩溃隔离与退避重连
-
-外部适配器（`adapters.<name>.grpc_addr` 声明的独立进程）由 `internal/adaptermgr/external` 管理，崩溃只影响其绑定的 bot：
-
-- 每个实例（`instance`）持有能力、启动标记与停用标记；`Start` 通知适配器进程启动该 bot 实例后阻塞到 ctx 结束，退出前下发 `Stop`（幂等）。
-- 连接巡检 `supervise` 随 `Start` 的 ctx 启动：连接非 `Ready`/`Idle`/`Connecting` 时先 `init`（重新下发身份、令牌、核心地址、进程级配置）再对「此前处于已启动」的实例重新 `Start`。退避参数：巡检间隔 500ms、初始退避 100ms、退避上限 5s、连续失败上限 6 次；达到上限后把全部实例标记为停用并转入 30s 低速巡检，任何一步都不会让核心进程退出。
-- 停用期间的实例 `Send` 返回明确错误（`adaptermgr/external: 适配器 %s 的实例 %s 已停用（重连失败）`），引擎的重试会重复得到该错误，最终以 `engine: send via %s: %w` 返回；重连成功后清除停用标记与退避计数（`外部适配器已重连`）。
-- 该路径记录日志与指标：重连失败调 `AdapterReconnectFailed(name)`、达上限停用调 `AdapterDisabled(name)`、重连成功调 `AdapterReconnected(name)`。`internal/metrics` 把它实现为两个计数器族 `kei_adapter_reconnects_total{adapter,result}`（`result` 为 `ok`/`error`）与 `kei_adapter_disabled_total{adapter}`，指标族的 HELP/TYPE 头在无数据时也会输出。记录器经 `adaptermgr.Deps.Recorder` → `external.Deps.Recorder` 注入（`cmd/bot` 传入全局 `registry`）；字段为 nil 时回退为 `(*metrics.Registry)(nil)`——`Recorder` 的全部方法都对 nil 接收者安全，巡检路径因此无需判空。
-- 上行事件经 `adaptermgr.Bindings.EmitFunc` 校验归属：适配器只能投递其绑定的 bot 的事件（`adaptermgr: 外部适配器 %q 无权投递 bot %q 的事件`），再落到 `Engine.Emit` 写入总线。
-
 ### 7.10 管理命令 `/adapters`
 
 `/adapters` 由内置 `plugins/manage` 插件注册（`bot.WithPriority(100)`、`bot.WithID("manage:adapters")`，非管理员专属）。输出分两段：
 
-- 已注册适配器：来自 `bot.RegisteredAdapters()`（编译期注册表，含第三方进程内适配器），按名排序，逐行 `- <名称> <版本> (<平台1,平台2>) [<权限1,权限2>] — <描述>`，缺省字段省略；无注册项时输出「没有已注册的适配器」。
-- 已绑定实例：来自 `Engine.Adapters()`（`bot.AdapterCatalog`），按 bot 名排序，逐行 `- <bot 名> → <适配器名>（进程内）` 或 `（外部 gRPC）`；`AdapterCatalog` 缺失时追加「绑定信息不可用」，无实例时输出「没有已绑定的适配器实例」。
+- 已注册适配器：来自 `bot.RegisteredAdapters()`（注册表，含第三方适配器），按名排序，逐行 `- <名称> <版本> (<平台1,平台2>) [<权限1,权限2>] — <描述>`，缺省字段省略；无注册项时输出「没有已注册的适配器」。
+- 已绑定实例：来自 `Engine.Adapters()`（`bot.AdapterCatalog`），按 bot 名排序，逐行 `- <bot 名> → <适配器名>`；`AdapterCatalog` 缺失时追加「绑定信息不可用」，无实例时输出「没有已绑定的适配器实例」。
 
 `plugins/manage` 还提供 `/ping`、`/version`、`/plugins`（可经插件配置 `plugins_admin_only` 改为管理员专属）、`/admin`（`WithAdmin`，演示 Auth 中间件）。命令与插件生命周期的其余细节见 [plugin.md](plugin.md)。
 
@@ -467,7 +453,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 两者不相等：`Metrics` 在全局链中位于 `Timeout`/`Auth`/`RateLimit`/`Dedup` 之外（见上表顺序），所以被去重或限流拦下的调用同样计入 `RuleMatched`，而只在 `EventHandled` 上体现为 `result="error"`。据此可从两者差值读出「命中但被拒绝」的比例。
 
-`internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`，以及外部适配器通道的 `kei_adapter_reconnects_total{adapter,result}`、`kei_adapter_disabled_total{adapter}`（见 7.9）。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
+`internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
 
 引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
 
@@ -492,6 +478,6 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 ## 相关文档
 
 - [domain-model.md](domain-model.md)：`pkg/bot` 的公开领域模型（Event/SessionKey、Message、Rule、Handler/Reply）。
-- [adapter.md](adapter.md)：适配器接口与注册表、`AdapterContext`、元信息与权限裁剪、能力降级、外部适配器。
+- [adapter.md](adapter.md)：适配器接口与注册表、`AdapterContext`、元信息与权限裁剪、能力降级。
 - [plugin.md](plugin.md)：插件生命周期、`PluginContext`、`BotAPI` 门面与插件中间件。
 - [testing.md](testing.md)：单元/集成测试与 `-race` 要求、构建与运行方式。

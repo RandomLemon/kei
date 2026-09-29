@@ -23,10 +23,6 @@
           gotools # goimports / guru 等辅助工具
           golangci-lint # 静态检查（可选，见 README）
           delve # 调试器（dlv）
-          protobuf # protoc：阶段 6 gRPC 插件使用
-          protoc-gen-go
-          protoc-gen-go-grpc
-          buf # proto 校验 / lint
           jq # 手工调试 Mock/飞书回调的 JSON 载荷
           curl
           git
@@ -44,7 +40,7 @@
 
           shellHook = ''
             echo "kei dev shell · $(go version)"
-            echo "常用命令: go build ./... | go test -race ./... | go vet ./... | buf lint"
+            echo "常用命令: go build ./... | go test -race ./... | go vet ./..."
           '';
         };
       });

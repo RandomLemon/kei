@@ -4,7 +4,7 @@
 
 ## 章节与文件对应
 
-各文档沿用早期设计稿的章节号（1-20，`docs` 内连续编号），便于跨文档引用（如「见 6.4」「见 12.3」）。
+各文档沿用早期设计稿的章节号（1-20），便于跨文档引用（如「见 6.4」「见 13.1」）。
 
 | 章 | 主题 | 文档 |
 | --- | --- | --- |
@@ -13,7 +13,6 @@
 | 6 | 适配器平台适配层：接口、注册表与工厂、权限、能力与降级、第三方接入、内置适配器现状 | [`adapter.md`](adapter.md) |
 | 7、8、10 | Engine、EventBus 事件总线、路由与中间件 | [`engine.md`](engine.md) |
 | 9、11 | 插件系统、BotAPI 与插件上下文（Storage/权限/测试辅助） | [`plugin.md`](plugin.md) |
-| 12 | 外部插件与外部适配器 gRPC 协议、代码生成、崩溃隔离与重连 | [`grpc.md`](grpc.md) |
 | 13 | 配置：结构、键语义、环境变量覆盖、校验与告警 | [`configuration.md`](configuration.md) |
 | 14、20 | 实现阶段回顾与交付物现状（含未实现项） | [`roadmap.md`](roadmap.md) |
 | 16、17、19 | 测试要求、构建与运行命令、完成定义（Definition of Done） | [`testing.md`](testing.md) |
@@ -25,7 +24,7 @@
 1. [`architecture.md`](architecture.md)：先建立分层与数据流模型（适配器 → 事件总线 → 引擎 → 插件 → 回复）。
 2. [`domain-model.md`](domain-model.md)：`pkg/bot` 是唯一公开 SDK，先掌握类型与 `Segment.Data` 键约定。公开包共三个：`pkg/bot`（SDK）、`pkg/message`（消息段构建器）、`pkg/kei`（装配门面，唯一允许 import `internal/` 的公开包）。
 3. 按角色选读：
-   - 写平台适配器 → [`adapter.md`](adapter.md)；独立进程形态 → [`grpc.md`](grpc.md)。
+   - 写平台适配器 → [`adapter.md`](adapter.md)。
    - 写插件 → [`plugin.md`](plugin.md)；事件投递与路由语义 → [`engine.md`](engine.md)。
    - 部署与运维 → [`configuration.md`](configuration.md) + [`README.md`](../README.md)。
 4. [`testing.md`](testing.md)：动手前确认质量门与测试要求。

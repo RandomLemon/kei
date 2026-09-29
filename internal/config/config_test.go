@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fullYAML 是一份覆盖全部配置段的样例配置。
@@ -17,8 +16,6 @@ log:
   format: json
 metrics:
   addr: ":9100"
-grpc:
-  addr: "127.0.0.1:9000"
 limits:
   handler_rate: 5
   handler_burst: 10
@@ -245,7 +242,6 @@ func TestEnvOverrides(t *testing.T) {
 		"KEI_LOG_LEVEL=warn",
 		"kei_log_format=json",                    // 前缀与键名都不区分大小写
 		"KEI_METRICS_ADDR=:9090",                 // 顶层直接字段
-		"KEI_GRPC_ADDR=127.0.0.1:7000",           // grpc 段
 		"KEI_LIMITS_HANDLER_RATE=7.5",            // 浮点
 		"KEI_LIMITS_SEND_BURST=4",                // 整数
 		"KEI_AUTH_ADMIN_USERS=u1, u2 ,",          // 逗号分隔，忽略空项
@@ -271,9 +267,6 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Metrics.Addr != ":9090" {
 		t.Fatalf("metrics.addr = %q", cfg.Metrics.Addr)
-	}
-	if cfg.Grpc.Addr != "127.0.0.1:7000" {
-		t.Fatalf("grpc.addr = %q", cfg.Grpc.Addr)
 	}
 	if cfg.Limits.HandlerRate != 7.5 || cfg.Limits.HandlerBurst != 10 {
 		t.Fatalf("limits = %+v", cfg.Limits)
@@ -548,11 +541,6 @@ func TestValidateErrors(t *testing.T) {
 			substr: "插件名",
 		},
 		{
-			name:   "grpc 只给 cert",
-			yaml:   "bots:\n  - name: a\n    adapter: mock\ngrpc:\n  addr: \":9000\"\n  cert_file: c.pem\n",
-			substr: "grpc.key_file",
-		},
-		{
 			name:   "limits 负速率",
 			yaml:   "bots:\n  - name: a\n    adapter: mock\nlimits:\n  handler_rate: -1\n",
 			substr: "limits.handler_rate",
@@ -624,53 +612,6 @@ func TestLogValuesAccepted(t *testing.T) {
 	}
 }
 
-func TestGrpcYAMLAndTLS(t *testing.T) {
-	cfg := mustLoadBytes(t, `
-bots:
-  - name: a
-    adapter: mock
-grpc:
-  addr: "0.0.0.0:9000"
-  cert_file: server.pem
-  key_file: server-key.pem
-  ca_file: ca.pem
-`)
-	want := GrpcConfig{
-		Addr:     "0.0.0.0:9000",
-		CertFile: "server.pem",
-		KeyFile:  "server-key.pem",
-		CAFile:   "ca.pem",
-	}
-	if cfg.Grpc != want {
-		t.Fatalf("grpc = %+v，期望 %+v", cfg.Grpc, want)
-	}
-
-	// 三个文件未给齐（任意一个缺失）都必须报错，且错误里带上缺失字段路径。
-	for _, keys := range []struct{ cert, key, ca, missing string }{
-		{"c", "k", "", "grpc.ca_file"},
-		{"c", "", "a", "grpc.key_file"},
-		{"", "k", "a", "grpc.cert_file"},
-	} {
-		y := "bots:\n  - name: a\n    adapter: mock\ngrpc:\n"
-		if keys.cert != "" {
-			y += "  cert_file: " + keys.cert + "\n"
-		}
-		if keys.key != "" {
-			y += "  key_file: " + keys.key + "\n"
-		}
-		if keys.ca != "" {
-			y += "  ca_file: " + keys.ca + "\n"
-		}
-		_, err := LoadBytes([]byte(y), nil)
-		if err == nil {
-			t.Fatalf("TLS 文件不全应报错: %+v", keys)
-		}
-		if !strings.Contains(err.Error(), keys.missing) {
-			t.Fatalf("错误 %q 未指出缺失字段 %q", err, keys.missing)
-		}
-	}
-}
-
 func TestLimitsAndAuthEnvOverride(t *testing.T) {
 	cfg := mustLoadBytes(t, `
 bots:
@@ -708,22 +649,14 @@ func TestEnvBadNumericValue(t *testing.T) {
 	}
 }
 
-// adaptersYAML 是一份含外部适配器声明的配置。
+// adaptersYAML 是一份含适配器启用声明的配置。
 const adaptersYAML = `
-grpc:
-  addr: "127.0.0.1:9000"
 bots:
   - name: myim-main
     adapter: myim
-    api_base: https://im.example.com
 adapters:
   myim:
-    grpc_addr: "127.0.0.1:50071"
-    token: change-me
-    platform: myim
-    timeout: 10s
-    permissions: [receive_event, network, net_listen]
-    listen_addr: "127.0.0.1:19081"
+    enabled: true
 `
 
 func TestAdaptersSection(t *testing.T) {
@@ -733,39 +666,8 @@ func TestAdaptersSection(t *testing.T) {
 	if !ok {
 		t.Fatalf("缺少适配器配置: %+v", cfg.Adapters)
 	}
-	if ac.GrpcAddr != "127.0.0.1:50071" || ac.Token != "change-me" || ac.Platform != "myim" {
-		t.Fatalf("适配器字段 = %+v", ac)
-	}
-	if ac.Timeout != 10*time.Second {
-		t.Fatalf("timeout = %v, 期望 10s", ac.Timeout)
-	}
-	if got := strings.Join(ac.Permissions, ","); got != "receive_event,network,net_listen" {
-		t.Fatalf("permissions = %q", got)
-	}
-	// 非保留键进入 Settings，供核心下发给适配器进程。
-	if got := ac.Settings["listen_addr"]; got != "127.0.0.1:19081" {
-		t.Fatalf("listen_addr = %v", got)
-	}
-	if _, leaked := ac.Settings["grpc_addr"]; leaked {
-		t.Fatal("grpc_addr 不应进入 Settings")
-	}
-}
-
-func TestAdaptersDefaults(t *testing.T) {
-	cfg := mustLoadBytes(t, `
-grpc:
-  addr: "127.0.0.1:9000"
-bots:
-  - name: myim-main
-    adapter: myim
-adapters:
-  myim:
-    grpc_addr: "127.0.0.1:50071"
-    token: t
-`)
-	ac := cfg.Adapters["myim"]
-	if got := strings.Join(ac.Permissions, ","); got != defaultAdapterPermission {
-		t.Fatalf("permissions = %q, 期望默认 %q", got, defaultAdapterPermission)
+	if !ac.IsEnabled() {
+		t.Fatalf("适配器声明 = %+v，期望启用", ac)
 	}
 }
 
@@ -780,7 +682,7 @@ func TestAdaptersEnabled(t *testing.T) {
 		}
 	})
 
-	t.Run("显式禁用外部适配器", func(t *testing.T) {
+	t.Run("显式禁用", func(t *testing.T) {
 		cfg := mustLoadBytes(t, `
 bots:
   - name: myim-main
@@ -791,25 +693,6 @@ adapters:
 `)
 		if cfg.AdapterEnabled("myim") {
 			t.Fatal("enabled: false 应禁用")
-		}
-		if cfg.Adapters["myim"].GrpcAddr != "" {
-			t.Fatalf("禁用条目不应要求 grpc_addr: %+v", cfg.Adapters["myim"])
-		}
-	})
-
-	t.Run("禁用后不校验通道字段", func(t *testing.T) {
-		cfg := mustLoadBytes(t, `
-bots:
-  - name: myim-main
-    adapter: myim
-adapters:
-  myim:
-    enabled: false
-    grpc_addr: "127.0.0.1:50071"
-    token: ""
-`)
-		if cfg.AdapterEnabled("myim") {
-			t.Fatal("应保持禁用")
 		}
 	})
 
@@ -824,9 +707,6 @@ adapters:
 `)
 		if cfg.AdapterEnabled("mock") {
 			t.Fatal("进程内适配器也应可禁用")
-		}
-		if len(cfg.Adapters["mock"].Permissions) != 0 {
-			t.Fatalf("进程内声明不应被填充默认权限: %v", cfg.Adapters["mock"].Permissions)
 		}
 	})
 
@@ -866,24 +746,12 @@ adapters:
 
 func TestAdaptersEnvOverride(t *testing.T) {
 	cfg := mustLoadBytes(t, adaptersYAML, []string{
-		"KEI_ADAPTERS_MYIM_TOKEN=env-token",
-		"KEI_ADAPTERS_MYIM_TIMEOUT=5",
-		"KEI_ADAPTERS_MYIM_PERMISSIONS=receive_event,storage",
-		"KEI_ADAPTERS_MYIM_EXTRA_KEY=1",
+		"KEI_ADAPTERS_MYIM_ENABLED=false",
+		"KEI_ADAPTERS_MYIM_TOKEN=ignored", // 未知键忽略
 	}...)
 
-	ac := cfg.Adapters["myim"]
-	if ac.Token != "env-token" {
-		t.Fatalf("token = %q", ac.Token)
-	}
-	if ac.Timeout != 5*time.Second {
-		t.Fatalf("timeout = %v, 期望 5s", ac.Timeout)
-	}
-	if got := strings.Join(ac.Permissions, ","); got != "receive_event,storage" {
-		t.Fatalf("permissions = %q", got)
-	}
-	if got := ac.Settings["extra_key"]; got != 1 {
-		t.Fatalf("extra_key = %v(%T), 期望 int 1", got, got)
+	if cfg.AdapterEnabled("myim") {
+		t.Fatal("环境变量应能禁用适配器")
 	}
 }
 
@@ -894,34 +762,14 @@ func TestAdaptersValidateErrors(t *testing.T) {
 		want string
 	}{
 		{
-			name: "无 grpc_addr 时只允许 enabled",
+			name: "未知键只允许 enabled",
 			yaml: "bots:\n  - name: a\n    adapter: myim\nadapters:\n  myim:\n    token: t\n",
-			want: "只允许 enabled",
-		},
-		{
-			name: "缺少 token",
-			yaml: "bots:\n  - name: a\n    adapter: myim\nadapters:\n  myim:\n    grpc_addr: \"127.0.0.1:1\"\n",
-			want: "adapters.myim.token",
-		},
-		{
-			name: "缺 grpc.addr",
-			yaml: "bots:\n  - name: a\n    adapter: myim\nadapters:\n  myim:\n    grpc_addr: \"127.0.0.1:1\"\n    token: t\n",
-			want: "grpc.addr",
+			want: "只支持 enabled",
 		},
 		{
 			name: "适配器名非法",
-			yaml: "grpc:\n  addr: \":1\"\nbots:\n  - name: a\n    adapter: myim\nadapters:\n  MyIM:\n    grpc_addr: \"127.0.0.1:1\"\n    token: t\n",
+			yaml: "bots:\n  - name: a\n    adapter: myim\nadapters:\n  MyIM:\n    enabled: true\n",
 			want: "只允许 [a-z0-9_-]",
-		},
-		{
-			name: "权限名为空",
-			yaml: "grpc:\n  addr: \":1\"\nbots:\n  - name: a\n    adapter: myim\nadapters:\n  myim:\n    grpc_addr: \"127.0.0.1:1\"\n    token: t\n    permissions: [\"  \"]\n",
-			want: "permissions",
-		},
-		{
-			name: "timeout 非法",
-			yaml: "grpc:\n  addr: \":1\"\nbots:\n  - name: a\n    adapter: myim\nadapters:\n  myim:\n    grpc_addr: \"127.0.0.1:1\"\n    token: t\n    timeout: 很快\n",
-			want: "adapters.myim.timeout",
 		},
 	}
 	for _, tc := range tests {

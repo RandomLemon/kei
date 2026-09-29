@@ -6,14 +6,13 @@
 // 名为 "feishu-main" 的 bot 的 Settings["app_id"]。未匹配任何已知路径的
 // KEI_* 变量会被忽略（不报错）。
 //
-// 顶层允许的键为 log、metrics、bots、plugins、adapters、grpc、limits、auth，
+// 顶层允许的键为 log、metrics、bots、plugins、adapters、limits、auth，
 // 其余顶层键一律报错。
 package config
 
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -27,9 +26,6 @@ const (
 	defaultLogLevel  = "info"
 	defaultLogFormat = "text"
 )
-
-// defaultAdapterPermission 是外部适配器未声明 permissions 时授予的默认权限。
-const defaultAdapterPermission = "receive_event"
 
 // adapterNamePattern 限制 adapter 名称的字符集。
 var adapterNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
@@ -50,10 +46,8 @@ type Config struct {
 	Bots []BotConfig `yaml:"bots"`
 	// Plugins 是插件名到插件配置的映射。
 	Plugins map[string]PluginConfig `yaml:"plugins"`
-	// Adapters 是外部适配器名到接入配置的映射；进程内适配器无需在此声明。
+	// Adapters 是适配器名到启用开关的映射；进程内适配器无需在此声明。
 	Adapters map[string]AdapterConfig `yaml:"adapters"`
-	// Grpc 是外部插件 gRPC 通道配置。
-	Grpc GrpcConfig `yaml:"grpc"`
 	// Limits 是限流配置。
 	Limits LimitsConfig `yaml:"limits"`
 	// Auth 是权限配置。
@@ -72,18 +66,6 @@ type LogConfig struct {
 type MetricsConfig struct {
 	// Addr 是指标监听地址，为空表示不暴露。
 	Addr string `yaml:"addr"`
-}
-
-// GrpcConfig 是外部插件 gRPC 通道配置。
-type GrpcConfig struct {
-	// Addr 是核心 gRPC 服务（BotService）监听地址，为空表示不启动外部插件通道。
-	Addr string `yaml:"addr"`
-	// CertFile 是服务端 TLS 证书文件。
-	CertFile string `yaml:"cert_file"`
-	// KeyFile 是服务端 TLS 私钥文件。
-	KeyFile string `yaml:"key_file"`
-	// CAFile 是客户端 CA 文件，用于 mTLS。
-	CAFile string `yaml:"ca_file"`
 }
 
 // LimitsConfig 是限流配置。速率为 0 表示不限流。
@@ -208,8 +190,6 @@ func decode(data []byte) (*Config, error) {
 			err = val.Decode(&cfg.Log)
 		case "metrics":
 			err = val.Decode(&cfg.Metrics)
-		case "grpc":
-			err = val.Decode(&cfg.Grpc)
 		case "limits":
 			err = val.Decode(&cfg.Limits)
 		case "auth":
@@ -353,27 +333,14 @@ func decodePlugin(name string, node *yaml.Node) (PluginConfig, error) {
 
 // AdapterConfig 描述一个适配器的声明。
 //
-// 声明是可选的：进程内适配器只靠 bots[].adapter 引用即可工作，此处主要用于
-// 显式启用/禁用，或（声明了 grpc_addr 时）接入外部进程。
+// 声明是可选的：进程内适配器只靠 bots[].adapter 引用即可工作，此处仅用于
+// 显式启用/禁用。
 type AdapterConfig struct {
 	// Enabled 控制是否加载该适配器；nil（未写 enabled）视为启用。
 	//
-	// 只有显式的 enabled: false 才会禁用：该适配器不建立通道、其 bots[] 条目
-	// 一并跳过（记日志）。与插件相反，适配器缺省是启用的——声明本身不是启用的前提。
+	// 只有显式的 enabled: false 才会禁用：该适配器不装配，其 bots[] 条目一并
+	// 跳过（记日志）。与插件相反，适配器缺省是启用的——声明本身不是启用的前提。
 	Enabled *bool
-	// GrpcAddr 是适配器 AdapterService 的监听地址；非空表示该适配器是外部进程。
-	GrpcAddr string
-	// Token 是适配器反向调用核心 BotService 的令牌，外部适配器必填。
-	Token string
-	// Platform 是该适配器写入 Event.Platform 的平台名；适配器上报多个平台时必填。
-	Platform string
-	// Timeout 是单次 RPC 超时与启动就绪等待上限；<=0 时由调用方取默认值。
-	Timeout time.Duration
-	// Permissions 是核心授予该适配器的权限；外部适配器缺省为 [receive_event]。
-	Permissions []string
-	// Settings 是 YAML 中除上述键外的其余键，作为进程级配置下发给外部适配器；
-	// 取值保证可被 encoding/json 编解码。
-	Settings map[string]any
 }
 
 // IsEnabled 判断该声明是否启用：未显式写 enabled 时视为启用。
@@ -395,7 +362,7 @@ func (c *Config) AdapterEnabled(name string) bool {
 	return ac.IsEnabled()
 }
 
-// decodeAdapters 解析 adapters 映射：适配器名 -> 外部接入配置。
+// decodeAdapters 解析 adapters 映射：适配器名 -> 启用开关。
 func decodeAdapters(node *yaml.Node) (map[string]AdapterConfig, error) {
 	if isNull(node) {
 		return map[string]AdapterConfig{}, nil
@@ -415,7 +382,7 @@ func decodeAdapters(node *yaml.Node) (map[string]AdapterConfig, error) {
 	return out, nil
 }
 
-// decodeAdapter 解析单个外部适配器条目，未声明的键进入 Settings。
+// decodeAdapter 解析单个适配器条目，只接受 enabled 键。
 func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
 	if node.Kind != yaml.MappingNode {
 		return AdapterConfig{}, fmt.Errorf("adapters.%s: 必须是映射", name)
@@ -423,7 +390,6 @@ func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
 	var ac AdapterConfig
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key, val := node.Content[i].Value, node.Content[i+1]
-		var err error
 		switch key {
 		case "enabled":
 			enabled, ok := decodeBool(val)
@@ -431,30 +397,8 @@ func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
 				return AdapterConfig{}, fmt.Errorf("adapters.%s.enabled: 需要布尔值", name)
 			}
 			ac.Enabled = &enabled
-			continue
-		case "grpc_addr":
-			err = val.Decode(&ac.GrpcAddr)
-		case "token":
-			err = val.Decode(&ac.Token)
-		case "platform":
-			err = val.Decode(&ac.Platform)
-		case "timeout":
-			ac.Timeout, err = decodeDurationNode(val)
-		case "permissions":
-			ac.Permissions, err = decodeStringList(val)
 		default:
-			var v any
-			if err := val.Decode(&v); err != nil {
-				return AdapterConfig{}, fmt.Errorf("adapters.%s.%s: %w", name, key, err)
-			}
-			if ac.Settings == nil {
-				ac.Settings = make(map[string]any)
-			}
-			ac.Settings[key] = normalizeValue(v)
-			continue
-		}
-		if err != nil {
-			return AdapterConfig{}, fmt.Errorf("adapters.%s.%s: %w", name, key, err)
+			return AdapterConfig{}, fmt.Errorf("adapters.%s: 未知键 %q（只支持 enabled）", name, key)
 		}
 	}
 	return ac, nil
@@ -574,12 +518,6 @@ func applyDefaults(c *Config) {
 	if c.Adapters == nil {
 		c.Adapters = map[string]AdapterConfig{}
 	}
-	for name, ac := range c.Adapters {
-		if ac.GrpcAddr != "" && len(ac.Permissions) == 0 {
-			ac.Permissions = []string{defaultAdapterPermission}
-		}
-		c.Adapters[name] = ac
-	}
 }
 
 // validate 校验配置，返回带字段路径的错误。
@@ -609,57 +547,18 @@ func (c *Config) validate() error {
 			return errors.New("config: plugins: 插件名不能为空")
 		}
 	}
-	externalAdapters := 0
-	for name, ac := range c.Adapters {
+	for name := range c.Adapters {
 		if name == "" {
 			return errors.New("config: adapters: 适配器名不能为空")
 		}
 		if !adapterNamePattern.MatchString(name) {
 			return fmt.Errorf("config: adapters.%s: 适配器名只允许 [a-z0-9_-]", name)
 		}
-		if !ac.IsEnabled() {
-			// 禁用条目只保留 enabled：允许残留或事后补齐的键，不做通道校验。
-			continue
-		}
-		if ac.GrpcAddr == "" {
-			// 进程内声明：只允许 enabled，其余键都是外部通道或实例级配置。
-			if ac.Token != "" || ac.Platform != "" || ac.Timeout != 0 ||
-				len(ac.Permissions) > 0 || len(ac.Settings) > 0 {
-				return fmt.Errorf("config: adapters.%s: 未声明 grpc_addr 时只允许 enabled 键（适配器实例配置写在 bots[] 条目上）", name)
-			}
-			continue
-		}
-		if ac.Token == "" {
-			return fmt.Errorf("config: adapters.%s.token: 不能为空", name)
-		}
-		for _, p := range ac.Permissions {
-			if strings.TrimSpace(p) == "" {
-				return fmt.Errorf("config: adapters.%s.permissions: 权限名不能为空", name)
-			}
-		}
-		externalAdapters++
-	}
-	if externalAdapters > 0 && c.Grpc.Addr == "" {
-		return errors.New("config: grpc.addr: 存在外部适配器时必须配置核心 gRPC 监听地址")
-	}
-	if externalAdapters > 0 {
-		// 适配器进程用该地址反向调用核心（BotService.EmitEvent），因此必须是
-		// 可预先写死的固定地址；":0" 这类临时端口对它没有意义。
-		_, port, err := net.SplitHostPort(c.Grpc.Addr)
-		if err != nil {
-			return fmt.Errorf("config: grpc.addr: 外部适配器要求 host:port 形式，实际为 %q", c.Grpc.Addr)
-		}
-		if port == "0" {
-			return fmt.Errorf("config: grpc.addr: 外部适配器要求固定端口（不能是 %q）", c.Grpc.Addr)
-		}
 	}
 	if err := c.Log.validate(); err != nil {
 		return err
 	}
-	if err := c.Limits.validate(); err != nil {
-		return err
-	}
-	return c.Grpc.validate()
+	return c.Limits.validate()
 }
 
 // validate 校验日志配置：级别与格式都必须在允许集合内（大小写不敏感）。
@@ -706,24 +605,4 @@ func (l LimitsConfig) validate() error {
 		}
 	}
 	return nil
-}
-
-// validate 校验 gRPC 配置：TLS 的 cert/key/ca 三个文件必须同时提供。
-func (g GrpcConfig) validate() error {
-	files := [...]struct{ path, value string }{
-		{"grpc.cert_file", g.CertFile},
-		{"grpc.key_file", g.KeyFile},
-		{"grpc.ca_file", g.CAFile},
-	}
-	var missing []string
-	for _, f := range files {
-		if f.value == "" {
-			missing = append(missing, f.path)
-		}
-	}
-	if len(missing) == 0 || len(missing) == len(files) {
-		return nil
-	}
-	return fmt.Errorf("config: grpc: cert_file/key_file/ca_file 必须同时提供，缺少 %s",
-		strings.Join(missing, ", "))
 }

@@ -24,18 +24,15 @@ flowchart TD
 - **事件总线**：`platform:botID:channelID:userID` 哈希分片，同一会话严格保序，不同会话并行；
   `事件 ID + TTL` 去重；优雅关闭前排空已入队事件。
 - **中间件**：Recover / Logger / Metrics / Timeout / Auth / RateLimit / Dedup 可组合，洋葱模型。
-- **插件**：编译期插件通过 `init()` 注册、配置启用；也可以作为**独立进程**通过 gRPC 接入
-  （token/mTLS 鉴权），核心不因插件崩溃而退出。
-- **零第三方运行时依赖**：仅 `gopkg.in/yaml.v3`、`google.golang.org/grpc`、`google.golang.org/protobuf`。
+- **插件**：插件通过 `init()` 注册、配置启用，只依赖 `pkg/bot`，核心不因插件崩溃而退出。
+- **零第三方运行时依赖**：仅 `gopkg.in/yaml.v3`。
 
 ## 目录结构
 
 ```text
 kei/
 ├── cmd/
-│   ├── bot/               入口薄壳：flag + 信号 + 空导入 + 一次 kei.Run（无装配逻辑）
-│   ├── example-plugin/    Go 外部插件示例（独立进程）
-│   └── example-adapter/   Go 外部适配器示例（独立进程）
+│   └── bot/               入口薄壳：flag + 信号 + 空导入 + 一次 kei.Run（无装配逻辑）
 ├── pkg/
 │   ├── bot/               公开 SDK：Event/Message/Adapter 注册表/Plugin/Registrar/Reply/BotAPI
 │   ├── message/           消息段构建器
@@ -46,9 +43,8 @@ kei/
 │   ├── router/            路由匹配与 Registrar 实现
 │   ├── middleware/        中间件（Recover/Logger/Metrics/Timeout/Auth/RateLimit/Dedup）
 │   ├── metrics/           Prometheus 文本指标（标准库实现）
-│   ├── pluginmgr/         插件生命周期管理 + gRPC 外部插件加载
-│   ├── adaptermgr/        适配器装配：注册表查表、权限裁剪、外部适配器通道
-│   ├── grpcsrv/           BotService gRPC 服务端（插件与外部适配器共用）
+│   ├── pluginmgr/         插件生命周期管理
+│   ├── adaptermgr/        适配器装配：注册表查表、权限裁剪、保留键校验
 │   ├── config/            YAML 配置加载与环境变量覆盖
 │   ├── storage/           bot.Storage 内存实现
 │   ├── dedup/             带 TTL 与容量的去重集合
@@ -60,20 +56,16 @@ kei/
 ├── plugins/
 │   ├── echo/              示例插件：/echo
 │   └── manage/            管理命令：/ping、/version、/plugins、/adapters、/admin
-├── proto/
-│   ├── plugin.proto       外部插件 gRPC 协议 + BotService（同目录生成代码 pluginpb/）
-│   ├── adapter.proto      外部适配器 gRPC 协议（同 package，复用 plugin.proto 消息）
-│   └── pluginpb/          buf 生成的 Go 代码（plugin/adapter 的 pb 与 grpc 桩）
 ├── examples/
 │   └── kei-adapter-myim/  独立 module 的第三方适配器示例（只依赖 pkg/bot）
 ├── configs/
 │   └── config.yaml        示例配置
-└── docs/                  设计文档集（架构/领域模型/适配器/插件/引擎/gRPC/配置/测试/阶段现状）
+└── docs/                  设计文档集（架构/领域模型/适配器/插件/引擎/配置/测试/阶段现状）
 ```
 
 ## 环境准备（Nix + direnv）
 
-Go 工具链、`gopls`、`golangci-lint`、`dlv`、`protoc`/`buf` 全部由 flake 提供，不需要在系统里装 Go。
+Go 工具链、`gopls`、`golangci-lint`、`dlv` 全部由 flake 提供，不需要在系统里装 Go。
 
 ```bash
 # 方式一：direnv（推荐，进入目录自动加载 / 离开自动还原）
@@ -202,7 +194,7 @@ cp configs/config.yaml configs/mybot.yaml   # 保留需要的 bots[]/plugins，�
 | 需求 | 做法 |
 | --- | --- |
 | 平台已内置（`mock`/`onebot`/`feishu`） | 只填 `bots[]` 配置，见「配置」与「写一个适配器」的接入小节 |
-| 平台无内置适配器（含企业微信） | 写适配器：独立包/独立 module 调 `bot.RegisterAdapter`（见「写一个适配器」），或独立进程 + `proto/adapter.proto`（见「外部适配器（gRPC）」） |
+| 平台无内置适配器（含企业微信） | 写适配器：独立包/独立 module 调 `bot.RegisterAdapter`（见「写一个适配器」），核心零改动 |
 | 本地联调 | 用 `mock` 适配器注入事件、观察发送，无需真实平台 |
 
 平台凭证只经配置读取，密钥用环境变量覆盖而不落盘（见「环境变量覆盖」）：
@@ -225,8 +217,7 @@ KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx \
 
 - 仓库内新增插件：仿照 `plugins/echo`，在 `cmd/bot/main.go` 的 import 块加一行
   `_ "github.com/RandomLemon/kei/plugins/<name>"`。
-- 不想改动核心仓库：把插件做成**外部进程**（`proto/plugin.proto` + gRPC），核心零改动，
-  见「外部插件（gRPC）」。
+- 第三方插件：放在独立包或独立 module，只依赖 `pkg/bot`，同样在 `init()` 注册，核心零改动。
 
 **5. 启用并在本地验证**
 
@@ -268,10 +259,8 @@ log:     { level: info, format: text }     # text | json
 metrics: { addr: 127.0.0.1:19090 }         # 空表示不暴露
 limits:  { handler_rate: 0, send_rate: 0 } # 0 表示不限流
 auth:    { admin_users: [] }               # 配合 bot.WithAdmin() 规则
-grpc:    { addr: "", cert_file: "", key_file: "", ca_file: "" }  # 外部插件/适配器通道
-adapters:                                        # 可选：启用/禁用、外部适配器声明
-  feishu:  { enabled: false }                    # 示例：禁用内置适配器（其 bot 一并跳过）
-  myim:    { enabled: true, grpc_addr: 127.0.0.1:50071, token: change-me }  # 示例：外部适配器
+adapters:                                # 可选：启用/禁用适配器（仅支持 enabled 键）
+  feishu:  { enabled: false }            # 示例：禁用内置适配器（其 bot 一并跳过）
 bots:
   - name: mock-main
     adapter: mock
@@ -293,9 +282,9 @@ plugins:
 - `bots[].plugins` 是该 bot 的插件白名单；只要有一个 bot 配置了非空白名单，规则就会按
   「哪些 bot 允许它」收窄（未配置白名单的 bot 允许全部）。
 - `plugins.<name>` 未列出 = 不启用；想启用必须写 `enabled: true`。
-- `adapters.<name>.enabled` 控制适配器开关，**缺省 true**（与插件相反）：写
+- `adapters.<name>` 段可选，且只支持 `enabled` 键：进程内适配器只靠 `bots[].adapter`
+  引用即可工作，此处仅用于显式启用/禁用。`enabled` **缺省 true**（与插件相反）：写
   `enabled: false` 即不加载该适配器，其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn）。
-  声明 `grpc_addr` 表示该适配器是外部进程，外部条目还要求 `token`。
 
 ### 环境变量覆盖
 
@@ -391,8 +380,8 @@ p := &bot.FuncPlugin{
 kei.Run(ctx, kei.Options{ConfigFile: "configs/mybot.yaml", Plugins: []bot.Plugin{p}})
 ```
 
-注入的实例一律启用：配置里没有同名键时自动补 `enabled: true`；同名键必须 `enabled` 且不能是
-外部插件声明（`grpc_addr`），否则 `Run` 报错。同名时注入实例优先，编译期注册的同名实例被跳过。
+注入的实例一律启用：配置里没有同名键时自动补 `enabled: true`；同名键必须 `enabled`，
+否则 `Run` 报错。同名时注入实例优先，注册表登记的同名实例被跳过。
 
 规则语义：
 
@@ -544,9 +533,8 @@ bots:
 | `network` | `AdapterContext.HTTPClient` | 为 `nil`，工厂应报错而不是回落到自带客户端 |
 | `storage` | `AdapterContext.Storage` | 注入拒绝式存储（`ErrPermissionDenied`） |
 | `net_listen` | 允许监听入站端口 | 配置里出现保留键 `listen_addr` 时启动失败 |
-| `receive_event` | 外部适配器经 `BotService.EmitEvent` 投递事件 | 该调用被拒绝 |
 
-`/adapters` 会列出已注册适配器与每个 bot 的绑定关系（含进程内/外部 gRPC 标记）。
+`/adapters` 会列出已注册适配器与每个 bot 的绑定关系（每个绑定一行 `- <botID> → <adapterName>`）。
 
 临时停用某个平台不用删配置，加一行即可（其 `bots[]` 条目一并跳过）：
 
@@ -574,105 +562,6 @@ kei-adapter-myim/
 cd examples/kei-adapter-myim && go test ./...
 ```
 
-想用其他语言写适配器（独立进程 + gRPC）见下一节。
-
-## 外部适配器（gRPC）
-
-适配器也可以作为独立进程运行（Python/Node/Rust 均可按 `proto/adapter.proto` 实现）：
-
-- 核心提供 `BotService`（`EmitEvent`/`GetConfig`/`Log`），用 `token` 鉴权、可选 mTLS；
-- 核心作为客户端连接适配器进程的 `AdapterService`（`Init`/`Start`/`Stop`/`Send`/`Shutdown`），
-  `Init` 一次、每个绑定的 bot `Start` 一次，因此一个进程可服务多个 bot；
-- 事件上行只经 `BotService.EmitEvent`（需 `receive_event` 权限，归属校验由核心完成），
-  适配器要先 ACK 平台再投递；断连后核心按指数退避重连，达上限只停用相关 bot，主进程不受影响。
-
-1）在配置里声明外部适配器（`grpc.addr` 必须是固定端口）：
-
-```yaml
-grpc:
-  addr: 127.0.0.1:19070            # 核心 BotService 监听地址
-adapters:
-  example:
-    enabled: true                  # 缺省 true；false 则不 dial、并跳过 example-main
-    grpc_addr: 127.0.0.1:19071     # 适配器 AdapterService 地址
-    token: change-me               # 必填
-    platform: example              # 适配器上报多个平台时必填
-    timeout: 10s
-    permissions: [receive_event, network, net_listen]
-    listen_addr: 127.0.0.1:18091   # 其余键作为进程级配置下发
-bots:
-  - name: example-main
-    adapter: example
-```
-
-2）启动核心与适配器进程：
-
-```bash
-nix develop --command go run ./cmd/bot -config configs/config.yaml
-
-nix develop --command go run ./cmd/example-adapter \
-  -listen 127.0.0.1:19071 -platform example -control 127.0.0.1:19081
-
-# 模拟平台推来一条消息（适配器 ACK 后经 EmitEvent 投递，由插件回复）
-curl -sS -XPOST 127.0.0.1:19081/inject -H 'content-type: application/json' \
-  -d '{"bot_id":"example-main","text":"/echo hi from adapter"}'
-curl -sS '127.0.0.1:19081/sent?bot_id=example-main' \
-  | jq -r '.[-1].message.segments[0].data_json | fromjson | .text'
-# "hi from adapter"
-```
-
-适配器进程的 `-listen`/`-platform`/`-control` 见 `cmd/example-adapter`：它实现了
-`AdapterService`，把 `/inject` 收到的文本包装成 `bot.Event` 经 `EmitEvent` 投递，
-并记录收到的发送请求。真实适配器把它换成平台 SDK 调用即可。
-
-## 外部插件（gRPC）
-
-插件可以作为独立进程运行（Python/Node/Rust 均可按 `proto/plugin.proto` 实现）：
-
-- 核心提供 `BotService`（`SendMessage`/`GetConfig`/`Log`），并用 `token` 鉴权、可选 mTLS；
-- 核心作为客户端连接插件进程的 `PluginService`（`Init`/`HandleEvent`/`Shutdown`），
-  插件地址来自配置，`HandleEvent` 收到**所有**事件（等价 `OnAll`）；
-- 插件通过 `BotService.SendMessage` 回调核心发消息，因此插件崩溃不影响主进程。
-
-1）在配置里打开通道并声明插件：
-
-```yaml
-grpc:
-  addr: 127.0.0.1:19070          # 核心 BotService 监听地址
-  # cert_file/key_file/ca_file 三个都给齐才启用 TLS；给了 ca_file 即启用 mTLS
-plugins:
-  external-echo:
-    enabled: true
-    grpc_addr: 127.0.0.1:19071   # 插件进程的 PluginService 地址
-    token: change-me             # 必填
-    permissions: send_message    # 默认 send_message
-    greeting: 你好，我是外部插件
-```
-
-2）启动核心与插件进程：
-
-```bash
-nix develop --command go run ./cmd/bot -config configs/config.yaml
-
-# 插件进程（先起或与核心同时起都可以：核心会在超时窗口内重试连接插件，
-# 插件也会在 10s 内等待核心的 BotService 就绪）
-nix develop --command go run ./cmd/example-plugin \
-  -listen 127.0.0.1:19071 -core-addr 127.0.0.1:19070 -token change-me
-
-curl -sS -XPOST 127.0.0.1:18080/inject -H 'content-type: application/json' \
-  -d '{"text":"/ext hi"}'
-curl -sS 127.0.0.1:18080/sent | jq '.[-1].Request.Message.Segments[0].Data.text'
-# "你好，外部插件: hi"
-```
-
-示例插件的参数：`-listen`（自身监听地址）、`-core-addr`（核心 BotService 地址）、
-`-token`（与配置一致）、`-name`、`-greeting`，以及连接核心时使用的
-`-tls-ca`/`-tls-cert`/`-tls-key`。它监听 `PluginService`，通过核心的
-`BotService.SendMessage` 回复，因此自身不需要任何平台凭证。
-
-`permissions` 决定插件能做什么：`send_message` 才能主动发送，`storage` 才能读写存储，
-`network` 才会拿到 HTTP 客户端；`*` 表示全部。
-
 ## 可观测性
 
 - `GET /metrics`（`metrics.addr`）暴露 Prometheus 文本指标：
@@ -686,8 +575,6 @@ curl -sS 127.0.0.1:18080/sent | jq '.[-1].Request.Message.Segments[0].Data.text'
   | `kei_messages_sent_total` | `platform`, `result` |
   | `kei_message_send_seconds`（直方图） | `platform` |
   | `kei_rules_matched_total` | `plugin`, `rule` |
-  | `kei_adapter_reconnects_total` | `adapter`, `result`（`ok`/`error`） |
-  | `kei_adapter_disabled_total` | `adapter`（重连失败达上限后停用） |
 
 - 日志用 `log/slog`，字段化输出（`plugin`/`rule`/`event_id`/`duration_ms`/`error`），
   `log.format: json` 可切换为 JSON。
@@ -699,7 +586,6 @@ nix develop --command go build ./...
 nix develop --command go vet ./...
 nix develop --command go test ./...
 nix develop --command go test -race ./...
-cd proto && nix develop --command buf lint        # proto 规范校验
 ```
 
 测试覆盖：命令/正则/关键词/事件触发、优先级与中间件顺序、panic 恢复、超时、
@@ -707,16 +593,15 @@ cd proto && nix develop --command buf lint        # proto 规范校验
 Mock→EventBus→Router→Plugin→Reply 全链路集成、飞书回调（challenge/签名/AES 解密/ACK）、
 OneBot 事件与 API、OneBot 反向 WebSocket（握手/Accept 校验、鉴权、事件上行与分片重组、
 按 echo 并行发送、role/self_id 过滤、心跳与半开连接回收、协议错误、停止时关闭连接）、
-OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 发送、断线重连）、
-gRPC 外部插件（bufconn + localhost TCP + mTLS）。
+OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 发送、断线重连）。
 
 ## 已知限制
 
 - 个人微信逆向协议不支持（`adapters/wecom` 尚未实现，企业微信可参考飞书适配器结构接入）。
 - `BotAPI` 没有 `reply_to` 参数：插件回复当前会话无法携带引用；需要引用时用
-  `Engine.SendRequest`（gRPC 通道已把 `reply_to` 透传到该入口）。
-- 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称
-  （gRPC 通道对应 `Target.bot_id`）；不指定则只有该平台仅有一个 bot 时才能自动选择。
+  `Engine.SendRequest`。
+- 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称；
+  不指定则只有该平台仅有一个 bot 时才能自动选择。
 - `Storage` 为内存实现，重启即丢失；生产可替换为 Redis/SQLite（实现 `bot.Storage` 即可）。
 - OneBot 一个 bot 实例同一时刻只启用一种接入方式（`mode`）：HTTP 双向用
   `forward_http`/`reverse_http`，`reverse_ws` 由 OneBot 实现连入，`forward_ws` 由 kei

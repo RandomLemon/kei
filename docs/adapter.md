@@ -1,14 +1,14 @@
 # kei 平台适配器
 
 覆盖 `pkg/bot` 中的适配器契约（`Adapter`/`EventSink`/`SendRequest`/`Target`/`SendResult`/`Capabilities`/`Degrade`）、注册表与工厂（`AdapterFactory`/`AdapterContext`/`AdapterMetadata`/`RegisterAdapter`/`RegisteredAdapters`/`AdapterRegistrationErrors`/`LookupAdapter`）、元信息与权限裁剪、能力降级规则、第三方适配器接入方式，以及 `internal/adaptermgr` 的装配行为和 `adapters/` 下三个内置适配器的现状。
-不覆盖：`Event`/`Message`/`Segment`/`Target` 等消息段类型的逐字段定义（见 [domain-model.md](domain-model.md)）、发送侧限流/重试与 Engine 生命周期（见 [engine.md](engine.md)）、外部适配器的 gRPC 协议与重连语义（见 [grpc.md](grpc.md)）、`bots`/`adapters` 配置键全表（见 [configuration.md](configuration.md)）。
-插件侧的 `Permission`/`Metadata` 与权限模型见 [plugin.md](plugin.md)；面向用户的适配器编写教程与示例配置见 [../README.md](../README.md) 的「写一个适配器」「外部适配器（gRPC）」小节。
+不覆盖：`Event`/`Message`/`Segment`/`Target` 等消息段类型的逐字段定义（见 [domain-model.md](domain-model.md)）、发送侧限流/重试与 Engine 生命周期（见 [engine.md](engine.md)）、`bots`/`adapters` 配置键全表（见 [configuration.md](configuration.md)）。
+插件侧的 `Permission`/`Metadata` 与权限模型见 [plugin.md](plugin.md)；面向用户的适配器编写教程与示例配置见 [../README.md](../README.md) 的「写一个适配器」小节。
 
 ---
 
 ## 6. Adapter 平台适配层
 
-适配器与插件同等对待：都可以由第三方开发（进程内注册，或作为独立进程经 gRPC 接入），核心只通过注册表 + 工厂按配置装配，不为任何平台写死代码分支。装配逻辑集中在 `internal/adaptermgr`（`internal/adaptermgr/external` 负责外部进程代理），`internal/adaptermgr` 与 `cmd/` 中不存在任何平台名分支（`switch adapter`）。
+适配器与插件同等对待：都可以由第三方开发（在自己的包或独立 module 内注册），核心只通过注册表 + 工厂按配置装配，不为任何平台写死代码分支。装配逻辑集中在 `internal/adaptermgr`，`internal/adaptermgr` 与 `cmd/` 中不存在任何平台名分支（`switch adapter`）。
 
 ### 6.1 适配器接口
 
@@ -252,8 +252,8 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 - `RegisterAdapter` 的签名不返回错误（公开 SDK 稳定性），因此被拒绝的注册不会当场失败，也不会静默失效：空注册名与 nil 工厂分别以 `"注册名为空"`、`"工厂为 nil"` 记入独立的拒绝列表（`adapterReject`，与 `adapterRegistry` 分开），`AdapterRegistrationErrors` 按注册顺序返回快照；启动校验 `internal/adaptermgr.ValidateRegistry` 在列表非空时报错 `adaptermgr: 适配器注册被拒绝: <名字或<空名>>（<原因>）；RegisterAdapter 要求 Name 非空且 factory 非 nil`（名字为空时显示 `<空名>`，多条拒绝以 `, ` 连接）。
 - `RegisteredAdapters` 按注册顺序返回；`LookupAdapter` 线性查找，重复注册时返回**首次**注册者的元信息与工厂，但重复本身会被启动校验判为错误。
 - 保留键常量是 `bot.OptListenAddr`（值为 `"listen_addr"`），核心只把它与非保留权限 `PermNetListen` 做核对，不解释其取值。
-- 适配器不持有 `BotAPI`（`AdapterContext` 中刻意没有该字段）：事件只能经 `EventSink` 上行、消息只能经 `Adapter.Send` 下行，避免平台层反向进入引擎造成递归与死锁。外部适配器代理的 `Start(ctx, sink)` 仅用 `sink` 满足接口（要求非 nil），事件实际经 `BotService.EmitEvent` 上行，由核心侧完成授权与入队。
-- 注册表还提供面向审计的只读视图：`AdapterInfo{BotID, Metadata, External}` 与 `AdapterCatalog interface { Adapters() []AdapterInfo }`（`AdapterInfo.External` 表示该实例由外部 gRPC 适配器进程提供）。管理插件 `/adapters` 同时展示注册表（`RegisteredAdapters`）与绑定信息（`AdapterCatalog`）。
+- 适配器不持有 `BotAPI`（`AdapterContext` 中刻意没有该字段）：事件只能经 `EventSink` 上行、消息只能经 `Adapter.Send` 下行，避免平台层反向进入引擎造成递归与死锁。
+- 注册表还提供面向审计的只读视图：`AdapterInfo{BotID, Metadata}` 与 `AdapterCatalog interface { Adapters() []AdapterInfo }`。管理插件 `/adapters` 同时展示注册表（`RegisteredAdapters`）与绑定信息（`AdapterCatalog`），每个绑定一行 `- <botID> → <adapterName>`。
 - 元信息的字符集约束 `[a-z0-9_-]` 不在注册表中校验，而由配置解析校验（`internal/config` 对 `bots[].adapter` 与 `adapters.<name>` 校验，报错文案 `只允许 [a-z0-9_-]`）；注册表校验只管「被拒绝的注册」、重名、`Platforms` 非空与 `PermAll`。
 
 ### 6.3 元信息与权限
@@ -275,7 +275,7 @@ const (
 	PermStorage Permission = "storage"
 	// PermNetListen 允许启动入站监听（webhook / 长连接），适配器使用。
 	PermNetListen Permission = "net_listen"
-	// PermReceiveEvent 允许向核心投递事件（外部适配器的 BotService.EmitEvent）。
+	// PermReceiveEvent 允许向核心投递事件。
 	PermReceiveEvent Permission = "receive_event"
 	// PermAdmin 允许执行管理员命令（配合 Auth 中间件）。
 	PermAdmin Permission = "admin"
@@ -291,29 +291,28 @@ const (
 | `AdapterMetadata.HasPermission(p)` | 精确匹配 `Permissions` 切片；**不**把 `PermAll` 当作通配 |
 | `Metadata.HasPermission(p)`（插件侧） | `x == p || x == PermAll`，即 `PermAll` 视为拥有全部权限 |
 
-核心按 `AdapterMetadata.Permissions` 在装配期裁剪依赖（`internal/adaptermgr.buildInProcess`），并把权限透出给 `/adapters` 审计：
+核心按 `AdapterMetadata.Permissions` 在装配期裁剪依赖（`internal/adaptermgr`），并把权限透出给 `/adapters` 审计：
 
 | 权限 | 含义 | 未声明时核心的行为 |
 | --- | --- | --- |
-| `send_message` | 出站发送（适配器自己的 `Send`） | 仅审计；权限模型与插件共用。进程内适配器路径上没有任何 `PermSendMessage` 检查，`Send` 始终可用（唯一例外是 gRPC `BotService.SendMessage`，它对插件与适配器令牌都要求该权限，见 [grpc.md](grpc.md)） |
+| `send_message` | 出站发送（适配器自己的 `Send`） | 仅审计；权限模型与插件共用。进程内适配器路径上没有任何 `PermSendMessage` 检查，`Send` 始终可用 |
 | `network` | 出站网络请求 | `AdapterContext.HTTPClient` 为 nil |
 | `storage` | 读写去重/状态缓存 | 注入拒绝式 `Storage`（`internal/storage.Denied()`，全部方法返回 `ErrPermissionDenied`） |
 | `net_listen` | 启动入站监听（webhook / 长连接） | 配置里出现保留键 `listen_addr` 时启动失败 |
-| `receive_event` | 向核心投递事件（外部适配器经 `BotService.EmitEvent`） | 外部适配器调用被拒绝 |
+| `receive_event` | 保留权限，仅作声明与审计 | 核心当前不据此裁剪任何依赖 |
 | `*` | 不适用于适配器（声明即启动失败） | — |
 
 要求：
 
 1. 权限必须如实声明；适配器不得声明 `*`（注册表校验直接报错），`*` 只对内置插件有意义。
-2. 声明与授予取交集：外部适配器实际可用权限 = `AdapterMetadata.Permissions` ∩ `adapters.<name>.permissions`。
+2. 声明与核心授予的依赖一一对应：未声明 `network` 则拿不到 `HTTPClient`，未声明 `storage` 则拿到拒绝式存储。
 3. 未声明 `network` 却发起出站请求、未声明 `storage` 却写缓存，属于适配器缺陷；核心只保证不为其提供依赖，不做事后拦截。
 
 各条的落地位置：
 
-- 注册表校验：`internal/adaptermgr.ValidateRegistry` = `validateRegistryOf` + `validateRegistrationRejects`。报错条件为「存在被拒绝的注册（空注册名或 nil 工厂）」「注册名重复」「元信息缺 `Platforms`」「声明了 `PermAll`」，文案分别是 `适配器注册被拒绝: <名字或<空名>>（<原因>）…`、`适配器注册名重复: …`、`适配器 %s 未声明 Platforms`、`适配器 %s 不得声明 * 权限（仅插件可用）`。外部适配器在 `Init` 应答中上报 `PermAll` 同样被拒（`internal/adaptermgr/external`）。
+- 注册表校验：`internal/adaptermgr.ValidateRegistry` = `validateRegistryOf` + `validateRegistrationRejects`。报错条件为「存在被拒绝的注册（空注册名或 nil 工厂）」「注册名重复」「元信息缺 `Platforms`」「声明了 `PermAll`」，文案分别是 `适配器注册被拒绝: <名字或<空名>>（<原因>）…`、`适配器注册名重复: …`、`适配器 %s 未声明 Platforms`、`适配器 %s 不得声明 * 权限（仅插件可用）`。
 - 依赖裁剪：`PermStorage` 且 `Deps.Storage != nil` 时注入真实存储，否则一律注入 `storage.Denied()`（未授予、或授予了但核心没有可用存储，结果相同）；只有声明了 `PermNetwork` 才注入 `Deps.HTTPClient`，未声明时该字段保持 nil。`PermSendMessage` 不参与任何裁剪。
-- 保留键校验：`checkReservedOptions(botID, settings, adapter, perms)` 在 `adaptermgr.Validate`（进程内适配器）与 `external.Client.Instance`（外部适配器实例）两处执行；`listen_addr` 值为 nil 或去空白后为空时视为未配置。报错文案：`配置了保留键 listen_addr，但适配器 %s 未声明 net_listen 权限`。
-- 权限交集：`intersectPermissions(declared, granted)` 保留 `declared` 的顺序；`granted` 为空时返回 nil。生效集合写入 `Client.Metadata().Permissions`，因此 `/adapters` 展示的是交集后的结果，外部实例的保留键校验也基于它。`adapters.<name>.permissions` 缺省为 `[receive_event]`（`internal/config`），只对声明了 `grpc_addr` 的外部适配器生效。
+- 保留键校验：`checkReservedOptions(botID, settings, adapter, perms)` 在 `adaptermgr.Validate` 执行；`listen_addr` 值为 nil 或去空白后为空时视为未配置。报错文案：`配置了保留键 listen_addr，但适配器 %s 未声明 net_listen 权限`。
 - `net_listen` 的校验只覆盖保留键 `listen_addr`：适配器是否真的监听、监听在哪个地址，核心不检查也不拦截；换用别的配置键做入站监听则完全不受该权限约束。
 - 适配器元信息的 `Options` 只影响未知键告警（见 6.5），不影响权限。
 
@@ -352,8 +351,8 @@ func Degrade(msg *Message, caps Capabilities) *Message
 3. 降级必须记录日志与指标；整条消息因降级变为空时发送失败并返回错误，不得静默丢消息。实现现状：
 
    - 空消息、或降级后 `len(degraded.Segments) == 0`，`internal/engine.SendRequest` 直接返回错误 `engine: 消息在按平台能力降级后没有可发送的段（bot %s, platform %s）`，不会调用 `Adapter.Send`。
-   - 降级过程本身不产生日志，也没有专门的降级指标；发送结果由 `kei_messages_sent_total{platform,result}` 与 `kei_message_send_seconds{platform}` 记录（`internal/metrics`），重试时只记 `Debug` 日志 `send failed, retrying`。上述「降级后为空」的错误在引擎内既不记日志也不记指标，只在向上返回后由调用方（插件中间件的 error 日志、gRPC `SendResponse.Error` 等）体现。
-4. 外部适配器的能力以 `AdapterStartResponse.capabilities` 为唯一权威来源；缺失或全零按「仅文本」处理并告警。实现于 `internal/adaptermgr/external/adapter.go`：`Start` 应答到达前 `Capabilities()` 返回零值（引擎只在发送前查询，此时实例必然已启动）；`capsFromProto` 转换后若结果等于零值，则改写为 `bot.Capabilities{Text: true}` 并记 warn 日志 `外部适配器未声明实例能力，按仅文本处理`。进程内适配器没有该兜底：能力完全由适配器的 `Capabilities()` 决定。
+   - 降级过程本身不产生日志，也没有专门的降级指标；发送结果由 `kei_messages_sent_total{platform,result}` 与 `kei_message_send_seconds{platform}` 记录（`internal/metrics`），重试时只记 `Debug` 日志 `send failed, retrying`。上述「降级后为空」的错误在引擎内既不记日志也不记指标，只在向上返回后由调用方（插件中间件的 error 日志等）体现。
+4. 能力完全由适配器的 `Capabilities()` 决定：引擎只在发送前查询，不做任何兜底改写。
 
 ### 6.5 第三方适配器示例
 
@@ -409,9 +408,9 @@ bots:
 - `AdapterContext` 的字段就是全部可用依赖：`BotID`（实例名，必须写进 `Event.BotID` 与 `SendRequest.BotID`）、`Config`、`Logger`、`Storage`、`HTTPClient`。`Config` 是 `bot.NewConfig(bots[] 条目中除 name/adapter/enabled/plugins 外的键)`，`Get`/`String`/`Bool`/`Int`/`Duration`/`Strings` 都支持 `"a.b.c"` 多级键，键缺失或类型不符时返回默认值。（`pkg/bot` 中 `AdapterContext.Config` 的注释仍写作「除 name/adapter/plugins 外」，`enabled` 是后加的实例级开关。）
 - 实例级开关：`bots[]` 条目上的 `enabled: false` 跳过该实例（见 6.7），此时该实例的 `Settings` 不参与任何校验，也不会产生未知键告警。
 - 声明了 `PermNetListen` 的适配器才允许在实例配置里出现保留键 `listen_addr`（见 6.3）；`Options` 非空时应把 `listen_addr` 一并列入，否则会被当作未知键告警。
-- 未知键告警：`internal/adaptermgr.warnUnknownOptions` 对「不在 `AdapterMetadata.Options` 中的私有键」记 warn 日志 `适配器不认识的配置键`，字段为 `bot`/`adapter`/`key`。`Options` 为空表示不校验、静默跳过（此时连 `listen_addr` 也不会告警）；只告警不报错，以支持第三方适配器独立演进。外部适配器的键集来自 `AdapterInitResponse.info.options`（见 [grpc.md](grpc.md)）。
-- 进程内适配器与外部适配器在配置上等价：`bots[].adapter` 引用注册名即可，无需 `adapters:` 段声明；`adapters.<name>` 只用于显式启用/禁用或（声明了 `grpc_addr` 时）接入外部进程（见 [configuration.md](configuration.md)）。
-- 独立的 module/包布局、`go.mod`、空导入与配置写法见 [../README.md](../README.md) 的「写一个适配器」小节；其他语言的外部进程形态见同文件的「外部适配器（gRPC）」小节。
+- 未知键告警：`internal/adaptermgr.warnUnknownOptions` 对「不在 `AdapterMetadata.Options` 中的私有键」记 warn 日志 `适配器不认识的配置键`，字段为 `bot`/`adapter`/`key`。`Options` 为空表示不校验、静默跳过（此时连 `listen_addr` 也不会告警）；只告警不报错，以支持第三方适配器独立演进。
+- `adapters.<name>` 段只用于显式启用/禁用：`bots[].adapter` 引用注册名即可工作，无需在此声明（见 [configuration.md](configuration.md)）。
+- 独立的 module/包布局、`go.mod`、空导入与配置写法见 [../README.md](../README.md) 的「写一个适配器」小节。
 
 ### 6.6 实现要求
 
@@ -419,14 +418,13 @@ bots:
 2. 适配器必须在自己的 `init()` 中调用 `RegisterAdapter`；主程序通过空导入启用，是否实例化由配置中的 `bots[].adapter` 决定。**已实现**：三个内置适配器的 `register.go` 都在 `init()` 注册；`cmd/bot/main.go` 空导入 feishu/mock/onebot。注册名或工厂不合法的注册不会静默失效：`RegisterAdapter` 拒绝该次注册并记入 `AdapterRegistrationErrors`，启动校验（`adaptermgr.ValidateRegistry`）据此报错，而不是让它在运行时表现为「未注册」。
 3. Adapter 负责签名校验、协议解析、事件转换为统一 `Event`、把统一 `Message` 转为平台消息并发送。**已实现**：飞书的签名/解密/token 校验与开放平台调用、OneBot 的 `Authorization` 校验与 HTTP 上报解析均在各适配器包内。
 4. 必须声明 `Capabilities` 与 `Permissions`，声明必须与实现一致；错报能力会导致发送失败或内容丢失。**已实现**：内置适配器的能力位与权限见 6.7，并与发送路径逐一对齐（例如 OneBot 不声明 `Markdown`/`Card`）。
-5. 工厂必须支持同平台多实例：状态只能挂在实例上，`New` 每次返回互相隔离的实例。**已实现**：三个内置适配器的可变状态都在 `Adapter` 结构体上；`adaptermgr` 对每个 bot 调一次工厂，外部适配器代理的实例状态也按 `bot_id` 隔离。
-6. `Event.ID` 必须稳定且平台内唯一（用于去重），`Event.Platform` 必须属于 `AdapterMetadata.Platforms`，`Event.BotID` 必须等于 `AdapterContext.BotID`。**已实现（含以下边界）**：核心只在装配期用 warn 日志提示不一致——若 `adapter.Name()` 非空但不在 `meta.Platforms` 中，记 `适配器返回的平台名未在元信息中声明`，但不再报错；`adapter.Name()` 为空则装配失败。事件被投递后，去重由事件总线按 `Event.ID` + TTL 完成（`internal/eventbus` 与 `internal/dedup`），未知段类型等字段不做校验。外部适配器路径另有一层归属校验：`Bindings.EmitFunc` 拒绝未配置的适配器名与不属于该适配器的 `Event.BotID`。
+5. 工厂必须支持同平台多实例：状态只能挂在实例上，`New` 每次返回互相隔离的实例。**已实现**：三个内置适配器的可变状态都在 `Adapter` 结构体上；`adaptermgr` 对每个 bot 调一次工厂。
+6. `Event.ID` 必须稳定且平台内唯一（用于去重），`Event.Platform` 必须属于 `AdapterMetadata.Platforms`，`Event.BotID` 必须等于 `AdapterContext.BotID`。**已实现（含以下边界）**：核心只在装配期用 warn 日志提示不一致——若 `adapter.Name()` 非空但不在 `meta.Platforms` 中，记 `适配器返回的平台名未在元信息中声明`，但不再报错；`adapter.Name()` 为空则装配失败。事件被投递后，去重由事件总线按 `Event.ID` + TTL 完成（`internal/eventbus` 与 `internal/dedup`），未知段类型等字段不做校验。
 7. `Start` 返回前必须完成监听/连接；`Stop` 必须幂等并等待已接收事件投递完毕；适配器内部 goroutine 必须有退出机制，不得泄漏。**已实现**：OneBot `Start` 只在当前 `mode` 需要监听时（`forward_http`/`reverse_http`/`reverse_ws`）先 `net.Listen` 再进入 `Serve`，`forward_ws` 不监听端口而是主动拨号；飞书 `Start` 同样先监听、退出前 `Shutdown` + 等 worker（`wg.Wait`）、并给队列剩余事件 5s 排空预算；OneBot 在退出时显式收尾 hijacked 的反向 WebSocket 连接并取消正向重连循环。
 8. 平台回调必须快速 ACK：先 ACK 平台，再异步投递到核心；`EventSink.Emit` 返回只表示已入队。入队失败必须记录日志与指标，不得静默丢弃。**已实现（日志层面）**：飞书校验通过后先回 `200 {"code":0}` 再入队（队列容量 1024、2 个 worker，满时丢弃并记 warn `飞书事件队列已满，丢弃事件`）；OneBot 上报先回 `204` 再 `Emit`，失败记 warn `onebot: 投递事件失败`。**指标缺口**：上述丢弃与投递失败都没有对应指标，只有日志。
 9. 配置与密钥只能经 `AdapterContext.Config` 读取，不得直接读环境变量或文件。**已实现**：`adapters/` 下没有 `os.Getenv`/`os.ReadFile`/`os.Open` 调用；环境变量覆盖由配置加载层统一完成。
 10. 重复投递同一事件必须安全（核心按 `Event.ID` 去重），但适配器不得依赖去重来掩盖自身的重复投递。**已实现**：事件总线在 `Publish` 时用 TTL + 容量上限的去重集合丢弃重复 ID；内置适配器生成稳定 ID（飞书优先 `header.event_id`、缺失时用平台名 + bot 名 + 纳秒时间 + 自增序号兜底；OneBot 消息事件优先 `message_id`，其余类型用 `self_id`/`post_type`/时间/子类型确定性拼接）。
 11. Mock Adapter 必须实现，用于本地测试和事件回放。**已实现**：`adapters/mock`（见 6.7）。
-12. 适配器的外部进程形态（gRPC）见第 12 章（[grpc.md](grpc.md)），行为要求与本章完全一致。协议、`Init`/`Start`/`Stop`/`Shutdown`/`Send` 语义、能力与平台名协商、崩溃隔离与重连见该文档；核心侧代理实现是 `internal/adaptermgr/external`，重连与停用指标（`kei_adapter_reconnects_total{adapter,result}`、`kei_adapter_disabled_total{adapter}`）经 `adaptermgr.Deps.Recorder` 注入。
 
 ### 6.7 内置适配器现状
 
@@ -470,5 +468,4 @@ bots:
 
 - [domain-model.md](domain-model.md)：`Event`、`Message`、`Segment`、`Target`、`Capabilities` 等公开领域模型的定义与 `Key*` 常量。
 - [engine.md](engine.md)：发送前的降级、限流与重试，适配器装配与生命周期、`/adapters` 相关的管理路径。
-- [grpc.md](grpc.md)：外部适配器进程的 `AdapterService`/`BotService` 协议、能力与平台名协商、权限交集与断连重连。
 - [configuration.md](configuration.md)：`bots`/`adapters` 段的键、默认值、保留键校验与环境变量覆盖规则。

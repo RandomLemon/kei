@@ -35,9 +35,9 @@ func buildConfig(opts Options) (*config.Config, error) {
 // selectPlugins 返回需要加载的进程内插件：先注入实例（Options 顺序），再是配置启用
 // 且已注册的插件（注册顺序）。返回顺序即 Setup 顺序（Stop 逆序）。
 //
-// 注入实例一律启用：同名配置键必须 enabled 且不得是外部插件声明；不存在的键补一条
-// enabled: true，使后续「已启用但未注册」的告警不会对注入实例误报。同名时注入优先，
-// 注册表实例跳过而不是报错——注入是更明确的意图。
+// 注入实例一律启用：同名配置键必须 enabled；不存在的键补一条 enabled: true，使
+// 后续「已启用但未注册」的告警不会对注入实例误报。同名时注入优先，注册表实例跳过
+// 而不是报错——注入是更明确的意图。
 func selectPlugins(cfg *config.Config, injected []bot.Plugin, logger *slog.Logger) ([]bot.Plugin, error) {
 	injectedNames := make(map[string]bool, len(injected))
 	for i, p := range injected {
@@ -56,9 +56,6 @@ func selectPlugins(cfg *config.Config, injected []bot.Plugin, logger *slog.Logge
 		pc, ok := cfg.Plugins[name]
 		if ok && !pc.Enabled {
 			return nil, fmt.Errorf("kei: 插件 %q 在配置中 enabled: false，与注入的实例冲突", name)
-		}
-		if external, _ := pc.Settings["grpc_addr"].(string); strings.TrimSpace(external) != "" {
-			return nil, fmt.Errorf("kei: 插件 %q 已注入实例，不能同时声明为外部插件（grpc_addr）", name)
 		}
 		if !ok {
 			cfg.Plugins[name] = config.PluginConfig{Enabled: true}
@@ -79,10 +76,6 @@ func selectPlugins(cfg *config.Config, injected []bot.Plugin, logger *slog.Logge
 			continue
 		}
 		pc, ok := cfg.Plugins[name]
-		if external, _ := pc.Settings["grpc_addr"].(string); strings.TrimSpace(external) != "" {
-			logger.Info("plugin is configured as external, skipping in-process", "plugin", name)
-			continue
-		}
 		if !ok || !pc.Enabled {
 			logger.Info("plugin disabled", "plugin", name)
 			continue
@@ -91,9 +84,7 @@ func selectPlugins(cfg *config.Config, injected []bot.Plugin, logger *slog.Logge
 	}
 	for name, pc := range cfg.Plugins {
 		if pc.Enabled && !seen[name] && !injectedNames[name] {
-			if external, _ := pc.Settings["grpc_addr"].(string); strings.TrimSpace(external) == "" {
-				logger.Warn("enabled plugin is not registered", "plugin", name)
-			}
+			logger.Warn("enabled plugin is not registered", "plugin", name)
 		}
 	}
 	return out, nil

@@ -60,7 +60,7 @@ const (
 	PermStorage Permission = "storage"
 	// PermNetListen 允许启动入站监听（webhook / 长连接），适配器使用。
 	PermNetListen Permission = "net_listen"
-	// PermReceiveEvent 允许向核心投递事件（外部适配器的 BotService.EmitEvent）。
+	// PermReceiveEvent 允许向核心投递事件（适配器使用）。
 	PermReceiveEvent Permission = "receive_event"
 	// PermAdmin 允许执行管理员命令（配合 Auth 中间件）。
 	PermAdmin Permission = "admin"

@@ -41,8 +41,8 @@ type Options struct {
 	// Config 是 YAML 配置内容（适合 go:embed）；与 ConfigFile 二选一必填。
 	Config []byte
 	// Plugins 是直接注入的插件实例（如 *bot.FuncPlugin）。注入的实例一律启用：
-	// 配置里没有同名键时补一条 enabled: true；同名键必须 enabled 且不得是外部插件
-	// （grpc_addr），其设置键原样传给实例。
+	// 配置里没有同名键时补一条 enabled: true；同名键必须 enabled，其设置键原样
+	// 传给实例。
 	Plugins []bot.Plugin
 	// Logger 是根日志器；nil 时按配置的 log.level/log.format 新建（并设为 slog 默认）。
 	Logger *slog.Logger
@@ -86,28 +86,15 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
-	clientTLS, err := clientTLSConfig(cfg.Grpc)
-	if err != nil {
-		return err
-	}
-
-	// 适配器一律经注册表装配：进程内适配器来自 pkg/bot 注册表，外部适配器由
-	// adapters 段声明并走 gRPC 通道；本包不出现任何平台名分支。
-	bindings, err := adaptermgr.Build(ctx, cfg, adaptermgr.Deps{
+	// 适配器一律经注册表装配：本包不出现任何平台名分支。
+	bindings, err := adaptermgr.Build(cfg, adaptermgr.Deps{
 		Logger:     logger,
 		Storage:    store,
 		HTTPClient: httpClient,
-		TLS:        clientTLS,
-		Recorder:   registry,
 	})
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := bindings.Close(); err != nil {
-			logger.Warn("adapter channel close failed", "error", err)
-		}
-	}()
 
 	list := bindings.List()
 	if len(list) == 0 {
@@ -119,7 +106,6 @@ func Run(ctx context.Context, opts Options) error {
 			BotID:    b.BotID,
 			Adapter:  b.Adapter,
 			Metadata: b.Info.Metadata,
-			External: b.Info.External,
 		})
 	}
 
@@ -128,21 +114,14 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	external, err := setupExternal(cfg, logger, httpClient, bindings)
-	if err != nil {
-		return err
-	}
-	defer external.close()
-
 	eng, err := engine.New(engine.Options{
-		Config:          cfg,
-		Logger:          logger,
-		Metrics:         registry,
-		Storage:         store,
-		HTTPClient:      httpClient,
-		Adapters:        adapters,
-		Plugins:         plugins,
-		ExternalPlugins: external.hook,
+		Config:     cfg,
+		Logger:     logger,
+		Metrics:    registry,
+		Storage:    store,
+		HTTPClient: httpClient,
+		Adapters:   adapters,
+		Plugins:    plugins,
 	})
 	if err != nil {
 		return err

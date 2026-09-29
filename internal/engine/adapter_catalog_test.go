@@ -14,16 +14,14 @@ import (
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
-// catalogProbePlugin 在 Setup 中捕获 PluginContext.Adapters，并把事件写入 seen。
+// catalogProbePlugin 在 Setup 中捕获 PluginContext.Adapters。
 type catalogProbePlugin struct {
 	catalog chan bot.AdapterCatalog
-	seen    chan *bot.Event
 }
 
 func newCatalogProbePlugin() *catalogProbePlugin {
 	return &catalogProbePlugin{
 		catalog: make(chan bot.AdapterCatalog, 1),
-		seen:    make(chan *bot.Event, 4),
 	}
 }
 
@@ -31,7 +29,7 @@ func (p *catalogProbePlugin) Metadata() bot.Metadata {
 	return bot.Metadata{Name: "catalog-probe", Version: "v1"}
 }
 
-func (p *catalogProbePlugin) Setup(ctx context.Context, reg bot.Registrar) error {
+func (p *catalogProbePlugin) Setup(ctx context.Context, _ bot.Registrar) error {
 	pc, ok := bot.PluginContextFrom(ctx)
 	if !ok {
 		return errors.New("缺少 PluginContext")
@@ -40,13 +38,6 @@ func (p *catalogProbePlugin) Setup(ctx context.Context, reg bot.Registrar) error
 	case p.catalog <- pc.Adapters:
 	default:
 	}
-	reg.OnAll(func(_ context.Context, e *bot.Event, _ bot.Reply) error {
-		select {
-		case p.seen <- e:
-		default:
-		}
-		return nil
-	}, bot.WithPriority(-100))
 	return nil
 }
 
@@ -99,7 +90,7 @@ func runEngineWith(t *testing.T, opts engine.Options) *engine.Engine {
 }
 
 // testBinding 构造一个带元信息的 mock 适配器绑定。
-func testBinding(t *testing.T, botID string, external bool) (engine.AdapterBinding, *mock.Adapter) {
+func testBinding(t *testing.T, botID string) (engine.AdapterBinding, *mock.Adapter) {
 	t.Helper()
 	ad := newMock(botID)
 	return engine.AdapterBinding{
@@ -112,12 +103,11 @@ func testBinding(t *testing.T, botID string, external bool) (engine.AdapterBindi
 			Permissions: []bot.Permission{bot.PermNetListen},
 			Options:     []string{"platform", bot.OptListenAddr},
 		},
-		External: external,
 	}, ad
 }
 
 func TestEngineAdapterCatalog(t *testing.T) {
-	binding, ad := testBinding(t, "mock-main", true)
+	binding, ad := testBinding(t, "mock-main")
 	plugin := newCatalogProbePlugin()
 
 	eng := runEngineWith(t, engine.Options{
@@ -131,7 +121,7 @@ func TestEngineAdapterCatalog(t *testing.T) {
 		t.Fatalf("Adapters() = %+v", infos)
 	}
 	info := infos[0]
-	if info.BotID != "mock-main" || !info.External || info.Metadata.Name != "mock" {
+	if info.BotID != "mock-main" || info.Metadata.Name != "mock" {
 		t.Fatalf("绑定信息 = %+v", info)
 	}
 	if got := strings.Join(info.Metadata.Platforms, ","); got != "mock" {
@@ -161,41 +151,5 @@ func TestEngineAdapterCatalog(t *testing.T) {
 
 	if ad.Name() != "mock" {
 		t.Fatalf("适配器平台名 = %q", ad.Name())
-	}
-}
-
-func TestEngineEmitFeedsEventBusAndPlugins(t *testing.T) {
-	binding, _ := testBinding(t, "myim-main", true)
-	plugin := newCatalogProbePlugin()
-
-	eng := runEngineWith(t, engine.Options{
-		Config:   mockConfig(config.BotConfig{Name: "myim-main", Adapter: "mock"}),
-		Adapters: []engine.AdapterBinding{binding},
-		Plugins:  []bot.Plugin{plugin},
-	})
-
-	before := eng.Bus().Stats().Published
-	ev := &bot.Event{
-		ID:       "ext-1",
-		Type:     bot.EventMessage,
-		Platform: "mock",
-		BotID:    "myim-main",
-		Sender:   &bot.User{ID: "u1"},
-		Message:  &bot.Message{Kind: bot.MessageGroup, Segments: []bot.Segment{{Type: bot.SegText, Data: map[string]any{bot.KeyText: "hello"}}}},
-	}
-	if err := eng.Emit(context.Background(), ev); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
-	if got := eng.Bus().Stats().Published; got != before+1 {
-		t.Fatalf("Published = %d, want %d", got, before+1)
-	}
-
-	select {
-	case got := <-plugin.seen:
-		if got.ID != "ext-1" || got.Text() != "hello" {
-			t.Fatalf("插件收到的事件 = %+v", got)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("事件未送达插件")
 	}
 }

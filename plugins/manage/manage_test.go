@@ -113,13 +113,13 @@ func TestAdapterListing(t *testing.T) {
 	t.Run("注册表与绑定信息", func(t *testing.T) {
 		catalog := fakeAdapterCatalog{infos: []bot.AdapterInfo{
 			{BotID: "test-internal", Metadata: bot.AdapterMetadata{Name: name, Platforms: []string{"testplat"}}},
-			{BotID: "test-external", Metadata: bot.AdapterMetadata{Name: "ext-adapter"}, External: true},
+			{BotID: "test-other", Metadata: bot.AdapterMetadata{Name: "other-adapter"}},
 		}}
 		reg := setupWithAdapters(t, nil, nil, catalog)
 		got := invoke(t, reg, "adapters")
 
 		for _, want := range []string{name, "testplat", "network,net_listen", "测试适配器",
-			"test-internal → " + name + "（进程内）", "test-external → ext-adapter（外部 gRPC）"} {
+			"test-internal → " + name, "test-other → other-adapter"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("回复缺少 %q:\n%s", want, got)
 			}

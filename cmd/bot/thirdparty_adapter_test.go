@@ -109,7 +109,7 @@ func TestThirdPartyAdapterEndToEnd(t *testing.T) {
 	}
 
 	logger, _ := testLogger()
-	bindings, err := adaptermgr.Build(context.Background(), cfg, adaptermgr.Deps{
+	bindings, err := adaptermgr.Build(cfg, adaptermgr.Deps{
 		Logger:     logger,
 		Storage:    storage.NewMemory(),
 		HTTPClient: http.DefaultClient,
@@ -117,7 +117,6 @@ func TestThirdPartyAdapterEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("adaptermgr.Build: %v", err)
 	}
-	t.Cleanup(func() { _ = bindings.Close() })
 
 	list := bindings.List()
 	if len(list) != 1 {
@@ -130,7 +129,6 @@ func TestThirdPartyAdapterEndToEnd(t *testing.T) {
 			BotID:    list[0].BotID,
 			Adapter:  list[0].Adapter,
 			Metadata: list[0].Info.Metadata,
-			External: list[0].Info.External,
 		}},
 		Plugins: []bot.Plugin{&echo.Plugin{}},
 	})
@@ -174,7 +172,7 @@ func TestThirdPartyAdapterEndToEnd(t *testing.T) {
 	}
 
 	infos := eng.Adapters()
-	if len(infos) != 1 || infos[0].Metadata.Name != adapterName || infos[0].External {
+	if len(infos) != 1 || infos[0].Metadata.Name != adapterName {
 		t.Fatalf("适配器目录 = %+v", infos)
 	}
 }

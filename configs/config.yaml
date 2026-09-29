@@ -26,32 +26,14 @@ limits:
 auth:
   admin_users: []
 
-# 外部插件（gRPC）通道：addr 非空时启动 BotService，供外部插件与外部适配器回调核心。
-grpc:
-  addr: ""
-  cert_file: ""
-  key_file: ""
-  ca_file: ""
-
-# 适配器声明（可选）：用 enabled 控制启用（缺省 true）；声明 grpc_addr 即视为外部适配器，
-# 只写 enabled 则用于禁用进程内适配器。可用 KEI_ADAPTERS_MYIM_ENABLED / KEI_ADAPTERS_MYIM_TOKEN 覆盖。
-# 被禁用的适配器不会建立通道，其 bots[] 条目也会跳过（日志会记警告）。
+# 适配器声明（可选）：只用 enabled 控制启用（缺省 true）。
+# 可用 KEI_ADAPTERS_FEISHU_ENABLED 覆盖。
+# 被禁用的适配器不装配，其 bots[] 条目也会跳过（日志会记警告）。
 # bots[] 条目上的 enabled 是实例级开关（缺省 true），只跳过该 bot，可用 KEI_BOTS_<NAME>_ENABLED 覆盖。
 adapters:
-  # 示例一：临时停用内置平台（不需要删掉下面的 feishu bot）
+  # 临时停用内置平台（不需要删掉下面的 feishu bot）
   # feishu:
   #   enabled: false
-
-  # 示例二：外部适配器进程（适配器进程见 cmd/example-adapter，需要 grpc.addr 非空）
-  # myim:
-  #   enabled: true                # 缺省 true
-  #   grpc_addr: 127.0.0.1:50071   # 适配器 AdapterService 监听地址
-  #   token: change-me             # 适配器反向调用核心的令牌
-  #   platform: myim               # 适配器上报多个平台时必填
-  #   timeout: 10s                 # 单次 RPC 超时与就绪等待上限
-  #   permissions: [receive_event, network, net_listen]
-  #   # 其余键作为进程级配置下发给适配器进程
-  #   listen_addr: 127.0.0.1:18091
 
 bots:
   # Mock 适配器：本地联调用，通过 HTTP 控制面手动注入事件并观察发送结果。
@@ -108,10 +90,3 @@ plugins:
   manage:
     enabled: true
     plugins_admin_only: true   # /plugins 改为仅管理员可用（需配置 auth.admin_users）
-
-  # 外部插件示例（需要 grpc.addr 非空，插件进程见 cmd/example-plugin）：
-  # external-echo:
-  #   enabled: true
-  #   grpc_addr: 127.0.0.1:19071
-  #   token: change-me
-  #   greeting: 你好

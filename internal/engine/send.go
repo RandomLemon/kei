@@ -22,8 +22,8 @@ func (e *Engine) Send(ctx context.Context, target bot.Target, msg *bot.Message) 
 
 // SendRequest 发送一条完整的发送请求，支持引用回复（ReplyTo）。
 //
-// 这是 Send 的底层入口，供需要 reply_to 的调用方（例如 gRPC BotService）
-// 使用；req.BotID 与 req.Target.BotID 都可指定机器人。
+// 这是 Send 的底层入口，供需要 reply_to 的调用方使用；
+// req.BotID 与 req.Target.BotID 都可指定机器人。
 func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.SendResult, error) {
 	if req == nil {
 		return nil, errors.New("engine: nil send request")

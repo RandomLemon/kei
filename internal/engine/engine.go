@@ -1,6 +1,6 @@
 // Package engine 串联适配器、事件总线、路由与插件，并对外提供 BotAPI。
 //
-// 启动顺序：注册插件 -> 连接外部插件 -> 初始化适配器 -> 启动事件总线 worker
+// 启动顺序：注册插件 -> 初始化适配器 -> 启动事件总线 worker
 // -> 启动插件 -> 启动适配器。
 // 关闭顺序：停止接收 -> 等待已入队事件处理完 -> 停止适配器 -> 停止插件。
 package engine
@@ -52,8 +52,6 @@ type AdapterBinding struct {
 	Adapter bot.Adapter
 	// Metadata 是适配器的注册元信息，用于管理命令展示；可为零值。
 	Metadata bot.AdapterMetadata
-	// External 表示该实例由外部 gRPC 适配器进程提供。
-	External bool
 }
 
 // Options 是引擎的构造参数。
@@ -72,11 +70,6 @@ type Options struct {
 	Adapters []AdapterBinding
 	// Plugins 是编译期内置插件，按顺序 Setup/Start、逆序 Stop。
 	Plugins []bot.Plugin
-	// ExternalPlugins 是外部插件装配钩子，在 New 返回前被调用一次，入参是
-	// 引擎自身（实现 bot.BotAPI）。cmd/bot 用它在拿到 BotAPI 之后启动
-	// BotService gRPC 服务并加载外部插件；返回的插件与 Plugins 一同管理。
-	// 为 nil 表示不加载外部插件。
-	ExternalPlugins func(api bot.BotAPI) ([]bot.Plugin, error)
 	// CommandPrefixes 是命令前缀，默认 ["/"]。
 	CommandPrefixes []string
 
@@ -190,7 +183,6 @@ func New(opts Options) (*Engine, error) {
 		e.adapterInfos = append(e.adapterInfos, bot.AdapterInfo{
 			BotID:    b.BotID,
 			Metadata: b.Metadata,
-			External: b.External,
 		})
 
 		if rate := opts.Config.Limits.SendRate; rate > 0 {
@@ -252,18 +244,6 @@ func New(opts Options) (*Engine, error) {
 		if err := e.plugins.Add(p); err != nil {
 			return nil, err
 		}
-	}
-	if opts.ExternalPlugins != nil {
-		external, err := opts.ExternalPlugins(e)
-		if err != nil {
-			return nil, err
-		}
-		for _, p := range external {
-			if err := e.plugins.Add(p); err != nil {
-				return nil, err
-			}
-		}
-		e.log.Info("external plugins registered", "count", len(external))
 	}
 	return e, nil
 }
@@ -503,14 +483,6 @@ func (e *Engine) Adapters() []bot.AdapterInfo {
 		out = append(out, info)
 	}
 	return out
-}
-
-// Emit 把外部适配器投递的事件写入事件总线。
-//
-// 这是外部适配器上行通道（BotService.EmitEvent）的落点，与 eventSink.Emit
-// 同语义：返回值只表示事件是否成功入队，不表示已被处理。
-func (e *Engine) Emit(ctx context.Context, ev *bot.Event) error {
-	return e.sink.Emit(ctx, ev)
 }
 
 // eventSink 是适配器投递事件的入口，负责埋点后写入事件总线。

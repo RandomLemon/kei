@@ -1,7 +1,8 @@
 package kei
 
 import (
-	"context"
+	"bytes"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -21,6 +22,12 @@ import (
 
 // mockBotYAML 是各校验测试使用的最小合法配置：一个 mock bot。
 const mockBotYAML = "bots:\n  - name: b\n    adapter: mock\n"
+
+// testLogger 返回写入 buffer 的测试日志器，便于断言日志文案。
+func testLogger() (*slog.Logger, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})), buf
+}
 
 func mustConfig(t *testing.T, yaml string) *config.Config {
 	t.Helper()
@@ -77,7 +84,7 @@ func TestAdaptermgrBuild(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			bindings, err := adaptermgr.Build(context.Background(), &config.Config{Bots: []config.BotConfig{tc.bot}}, adaptermgr.Deps{
+			bindings, err := adaptermgr.Build(&config.Config{Bots: []config.BotConfig{tc.bot}}, adaptermgr.Deps{
 				Logger:     logger,
 				Storage:    storage.NewMemory(),
 				HTTPClient: httpClient,
@@ -91,7 +98,6 @@ func TestAdaptermgrBuild(t *testing.T) {
 			if err != nil {
 				t.Fatalf("adaptermgr.Build: %v", err)
 			}
-			t.Cleanup(func() { _ = bindings.Close() })
 
 			list := bindings.List()
 			if len(list) != 1 || list[0].BotID != tc.bot.Name {
@@ -103,9 +109,6 @@ func TestAdaptermgrBuild(t *testing.T) {
 			if list[0].Info.Metadata.Name != tc.bot.Adapter {
 				t.Fatalf("元信息名 = %q, want %q", list[0].Info.Metadata.Name, tc.bot.Adapter)
 			}
-			if list[0].Info.External {
-				t.Fatal("进程内适配器不应标记为外部")
-			}
 		})
 	}
 }
@@ -116,7 +119,6 @@ func TestSelectPlugins(t *testing.T) {
 		"echo":       {Enabled: true},
 		"disabled-x": {Enabled: false},
 		"not-loaded": {Enabled: true},
-		"external-x": {Enabled: true, Settings: map[string]any{"grpc_addr": "127.0.0.1:1"}},
 		"manage":     {Enabled: true},
 		"unlisted":   {Enabled: false},
 	}}
@@ -126,7 +128,7 @@ func TestSelectPlugins(t *testing.T) {
 		t.Fatalf("selectPlugins: %v", err)
 	}
 	got := strings.Join(pluginNames(plugins), ",")
-	// 只有已注册且启用的内置插件被加载；被禁用、未注册与外部插件都不加载。
+	// 只有已注册且启用的内置插件被加载；被禁用与未注册的都不加载。
 	if !strings.Contains(got, "echo") || !strings.Contains(got, "manage") {
 		t.Fatalf("已启用插件 = %v", pluginNames(plugins))
 	}
@@ -233,12 +235,6 @@ func TestSelectPluginsErrors(t *testing.T) {
 			yaml:    mockBotYAML + "plugins:\n  inline:\n    enabled: false\n",
 			plugins: []bot.Plugin{&bot.FuncPlugin{Meta: bot.Metadata{Name: "inline"}}},
 			want:    "enabled: false，与注入的实例冲突",
-		},
-		{
-			name:    "注入实例与外部插件声明冲突",
-			yaml:    mockBotYAML + "plugins:\n  inline:\n    enabled: true\n    grpc_addr: 127.0.0.1:1\n    token: t\n",
-			plugins: []bot.Plugin{&bot.FuncPlugin{Meta: bot.Metadata{Name: "inline"}}},
-			want:    "不能同时声明为外部插件",
 		},
 	}
 	for _, tc := range tests {
