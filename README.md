@@ -55,7 +55,7 @@ kei/
 │   └── feishu/            飞书开放平台（事件订阅回调 + 消息发送）
 ├── plugins/
 │   ├── echo/              示例插件：/echo
-│   └── manage/            管理命令：/ping、/version、/plugins、/adapters、/admin
+│   └── manage/            管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin
 ├── examples/
 │   └── kei-adapter-myim/  独立 module 的第三方适配器示例（只依赖 pkg/bot）
 ├── configs/
@@ -228,7 +228,7 @@ plugins:
 ```
 
 - 注入一次事件，确认 `/sent`（mock）或平台侧收到回复。
-- 用管理命令检查装配：`/plugins`（已加载插件）、`/adapters`（适配器与每个 bot 的绑定）；五条管理命令的契约与配置见 [`docs/plugins/manage.md`](docs/plugins/manage.md)。
+- 用管理命令检查装配：`/manage plugins`（已加载插件）、`/manage adapters`（适配器与每个 bot 的绑定）；五条管理子命令的契约与配置见 [`docs/plugins/manage.md`](docs/plugins/manage.md)。
 - 插件单测无需启动引擎：`bot.NewRecordingRegistrar()` + `bot.NewNoopReply()`，
   见「写一个插件」末尾。
 - 同一平台配多个 bot（多账号）时，主动发送必须显式指定 `Target.BotID`。
@@ -398,7 +398,7 @@ kei.Run(ctx, kei.Options{ConfigFile: "configs/mybot.yaml", Plugins: []bot.Plugin
   | `Storage` | 键值存储（未声明 `PermStorage` 时返回拒绝访问的实现） |
   | `HTTPClient` | 带超时的 HTTP 客户端（未声明 `PermNetwork` 时为 nil） |
   | `Bot` | 唯一的平台出口（`Send` 需要 `PermSendMessage`，`Reply` 始终可用） |
-  | `Catalog` | 已加载插件元信息（`/plugins` 这类管理命令用） |
+  | `Catalog` | 已加载插件元信息（`/manage plugins` 这类管理命令用） |
 
 插件可以只用 `pkg/bot` 做单元测试，无需启动引擎：
 
@@ -534,7 +534,7 @@ bots:
 | `storage` | `AdapterContext.Storage` | 注入拒绝式存储（`ErrPermissionDenied`） |
 | `net_listen` | 允许监听入站端口 | 配置里出现保留键 `listen_addr` 时启动失败 |
 
-`/adapters` 会列出已注册适配器与每个 bot 的绑定关系（每个绑定一行 `- <botID> → <adapterName>`；两段列表可以不一致，原因见 [`docs/plugins/manage.md`](docs/plugins/manage.md) 3.4 节）。
+`/manage adapters` 会列出已注册适配器与每个 bot 的绑定关系（每个绑定一行 `- <botID> → <adapterName>`；两段列表可以不一致，原因见 [`docs/plugins/manage.md`](docs/plugins/manage.md) 3.4 节）。
 
 临时停用某个平台不用删配置，加一行即可（其 `bots[]` 条目一并跳过）：
 

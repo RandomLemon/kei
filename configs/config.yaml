@@ -89,4 +89,4 @@ plugins:
 
   manage:
     enabled: true
-    plugins_admin_only: true   # /plugins 改为仅管理员可用（需配置 auth.admin_users）
+    plugins_admin_only: true   # /manage plugins 改为仅管理员可用（需配置 auth.admin_users）

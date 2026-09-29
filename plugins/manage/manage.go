@@ -1,4 +1,5 @@
-// Package manage 提供管理命令：/ping、/version、/plugins、/adapters、/admin。
+// Package manage 提供管理命令：/manage ping、/manage version、/manage plugins、
+// /manage adapters、/manage admin。
 //
 // 它同时演示了插件目录（PluginContext.Catalog）与管理员规则（WithAdmin +
 // Auth 中间件）的用法。
@@ -29,11 +30,14 @@ func (p *Plugin) Metadata() bot.Metadata {
 		Name:        "manage",
 		Version:     "v0.1.0",
 		Author:      "core",
-		Description: "管理命令：/ping、/version、/plugins、/adapters、/admin",
+		Description: "管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin",
 	}
 }
 
-// Setup 注册管理命令。
+// Setup 注册 /manage 命令及其子命令。
+//
+// 五条子命令共用命令名 "manage"，各自用 withSubcommand 限定第一个参数：
+// /manage ping、/manage version、/manage plugins、/manage adapters、/manage admin。
 func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 	pc, ok := bot.PluginContextFrom(ctx)
 	if !ok {
@@ -42,33 +46,46 @@ func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 	p.cfg = pc.Config
 	p.start = time.Now()
 
-	reg.OnCommand("ping", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		uptime := time.Since(p.start).Truncate(time.Millisecond)
 		return r.Text("pong · 已运行 " + uptime.String()).Send(ctx)
-	}, bot.WithPriority(100), bot.WithID("manage:ping"))
+	}, bot.WithPriority(100), bot.WithID("manage:ping"), withSubcommand("ping"))
 
-	reg.OnCommand("version", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		meta := p.Metadata()
 		return r.Text("kei v" + bot.Version + " · " + meta.Name + " " + meta.Version).Send(ctx)
-	}, bot.WithPriority(100), bot.WithID("manage:version"))
+	}, bot.WithPriority(100), bot.WithID("manage:version"), withSubcommand("version"))
 
-	pluginOpts := []bot.Option{bot.WithPriority(100), bot.WithID("manage:plugins")}
+	pluginOpts := []bot.Option{bot.WithPriority(100), bot.WithID("manage:plugins"), withSubcommand("plugins")}
 	if p.cfg.Bool("plugins_admin_only", false) {
 		pluginOpts = append(pluginOpts, bot.WithAdmin())
 	}
-	reg.OnCommand("plugins", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		return r.Text(p.describePlugins(pc.Catalog)).Send(ctx)
 	}, pluginOpts...)
 
-	reg.OnCommand("adapters", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		return r.Text(p.describeAdapters(pc.Adapters, bot.RegisteredAdapters())).Send(ctx)
-	}, bot.WithPriority(100), bot.WithID("manage:adapters"))
+	}, bot.WithPriority(100), bot.WithID("manage:adapters"), withSubcommand("adapters"))
 
-	reg.OnCommand("admin", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		return r.Text("管理员校验通过").Send(ctx)
-	}, bot.WithPriority(100), bot.WithID("manage:admin"), bot.WithAdmin())
+	}, bot.WithPriority(100), bot.WithID("manage:admin"), withSubcommand("admin"), bot.WithAdmin())
 
 	return nil
+}
+
+// withSubcommand 限定规则只在命令的第一个参数等于 name 时命中（忽略大小写）。
+//
+// 命令名已在 Rule.Command 层限定为 "manage"，因此它把 /manage 的五个子命令
+// 拆成五条独立规则：优先级、规则 ID 与管理员门槛（WithAdmin）仍按子命令各自生效。
+func withSubcommand(name string) bot.Option {
+	return bot.WithMatch(func(e *bot.Event) bool {
+		if e == nil || e.Command == nil || len(e.Command.Args) == 0 {
+			return false
+		}
+		return strings.EqualFold(e.Command.Args[0], name)
+	})
 }
 
 // Start 无后台任务。

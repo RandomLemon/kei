@@ -225,11 +225,11 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 
 适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。
 
-### 7.9 管理命令 `/adapters`
+### 7.9 管理命令 `/manage adapters`
 
-`/adapters` 由内置 `plugins/manage` 插件注册，是「插件经 `PluginContext.Adapters` 读取装配结果」的最小示例：注册表部分来自 `bot.RegisteredAdapters()`（编译期注册表），绑定部分来自 `Engine.Adapters()`（引擎实现 `bot.AdapterCatalog`），因此两段可以不一致（注册表含未启用/未引用的适配器）。
+`/manage adapters` 由内置 `plugins/manage` 插件注册，是「插件经 `PluginContext.Adapters` 读取装配结果」的最小示例：注册表部分来自 `bot.RegisteredAdapters()`（编译期注册表），绑定部分来自 `Engine.Adapters()`（引擎实现 `bot.AdapterCatalog`），因此两段可以不一致（注册表含未启用/未引用的适配器）。
 
-输出格式、分支条件与实测样例见 [`plugins/manage.md`](plugins/manage.md) 3.4 节；`plugins/manage` 的五条命令及其优先级、管理员门槛见同文档第 2 节。
+输出格式、分支条件与实测样例见 [`plugins/manage.md`](plugins/manage.md) 3.4 节；`plugins/manage` 的五条子命令及其优先级、管理员门槛见同文档第 2 节。
 
 ---
 

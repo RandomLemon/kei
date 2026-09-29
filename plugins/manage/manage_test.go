@@ -38,18 +38,59 @@ func setupWithAdapters(t *testing.T, cfg map[string]any, catalog bot.PluginCatal
 	return reg
 }
 
-func invoke(t *testing.T, reg *bot.RecordingRegistrar, cmd string) string {
+// bySubcommand 返回 /manage 指定子命令对应的规则。
+func bySubcommand(t *testing.T, reg *bot.RecordingRegistrar, sub string) *bot.Rule {
 	t.Helper()
-	rule, ok := reg.Command(cmd)
+	rule, ok := reg.Find(func(r *bot.Rule) bool { return r.ID == "manage:"+sub })
 	if !ok {
-		t.Fatalf("未注册命令 %s", cmd)
+		t.Fatalf("未注册 /manage 子命令 %s", sub)
 	}
-	ev := &bot.Event{Type: bot.EventMessage, Command: &bot.Command{Name: cmd}, Message: &bot.Message{Kind: bot.MessagePrivate}}
+	return rule
+}
+
+func invoke(t *testing.T, reg *bot.RecordingRegistrar, sub string) string {
+	t.Helper()
+	rule := bySubcommand(t, reg, sub)
+	ev := &bot.Event{
+		Type:    bot.EventMessage,
+		Command: &bot.Command{Name: "manage", Args: []string{sub}},
+		Message: &bot.Message{Kind: bot.MessagePrivate},
+	}
 	reply := bot.NewNoopReply()
 	if err := rule.Handler(context.Background(), ev, reply); err != nil {
-		t.Fatalf("Handler(%s): %v", cmd, err)
+		t.Fatalf("Handler(/manage %s): %v", sub, err)
 	}
 	return reply.PlainText()
+}
+
+func TestSubcommandMatching(t *testing.T) {
+	reg := setup(t, nil, nil)
+	cases := []struct {
+		sub   string
+		args  []string
+		match bool
+	}{
+		{"ping", []string{"ping"}, true},
+		{"ping", []string{"PING", "extra"}, true},
+		{"ping", []string{"version"}, false},
+		{"ping", nil, false},
+		{"plugins", []string{"plugins"}, true},
+		{"plugins", []string{"plug"}, false},
+	}
+	for _, tc := range cases {
+		rule := bySubcommand(t, reg, tc.sub)
+		if rule.Command != "manage" {
+			t.Fatalf("%s 子命令规则的命令名 = %q, 应为 manage", tc.sub, rule.Command)
+		}
+		ev := &bot.Event{
+			Type:    bot.EventMessage,
+			Command: &bot.Command{Name: "manage", Args: tc.args},
+			Message: &bot.Message{Kind: bot.MessagePrivate},
+		}
+		if got := rule.Matches(ev); got != tc.match {
+			t.Fatalf("/manage %s 对 args=%v 匹配 = %v, 期望 %v", tc.sub, tc.args, got, tc.match)
+		}
+	}
 }
 
 func TestPingAndVersion(t *testing.T) {
@@ -142,37 +183,32 @@ func TestAdapterListing(t *testing.T) {
 }
 
 func TestAdminRules(t *testing.T) {
-	t.Run("默认仅 /admin 需要管理员", func(t *testing.T) {
+	t.Run("默认仅 /manage admin 需要管理员", func(t *testing.T) {
 		reg := setup(t, nil, nil)
 
-		admin, ok := reg.Command("admin")
-		if !ok || !admin.AdminOnly {
-			t.Fatalf("/admin 规则应标记 AdminOnly: %+v", admin)
+		admin := bySubcommand(t, reg, "admin")
+		if !admin.AdminOnly {
+			t.Fatalf("/manage admin 规则应标记 AdminOnly: %+v", admin)
 		}
-		plugins, _ := reg.Command("plugins")
-		if plugins.AdminOnly {
-			t.Fatal("默认 /plugins 不需要管理员")
+		if plugins := bySubcommand(t, reg, "plugins"); plugins.AdminOnly {
+			t.Fatal("默认 /manage plugins 不需要管理员")
 		}
 	})
 
 	t.Run("plugins_admin_only 生效", func(t *testing.T) {
 		reg := setup(t, map[string]any{"plugins_admin_only": true}, nil)
-		plugins, _ := reg.Command("plugins")
-		if !plugins.AdminOnly {
-			t.Fatal("开启 plugins_admin_only 后 /plugins 应需要管理员")
+		if plugins := bySubcommand(t, reg, "plugins"); !plugins.AdminOnly {
+			t.Fatal("开启 plugins_admin_only 后 /manage plugins 应需要管理员")
 		}
 	})
 }
 
 func TestPriorityBeatsFallbackPlugins(t *testing.T) {
 	reg := setup(t, nil, nil)
-	for _, cmd := range []string{"ping", "version", "plugins", "adapters", "admin"} {
-		rule, ok := reg.Command(cmd)
-		if !ok {
-			t.Fatalf("缺少命令 %s", cmd)
-		}
+	for _, sub := range []string{"ping", "version", "plugins", "adapters", "admin"} {
+		rule := bySubcommand(t, reg, sub)
 		if rule.Priority <= 0 {
-			t.Fatalf("%s 优先级 = %d, 应大于 0", cmd, rule.Priority)
+			t.Fatalf("/manage %s 优先级 = %d, 应大于 0", sub, rule.Priority)
 		}
 	}
 }

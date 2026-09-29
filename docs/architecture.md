@@ -125,7 +125,7 @@ kei/
 │   └── feishu/                   # 飞书开放平台：事件订阅回调 + 消息发送
 ├── plugins/
 │   ├── echo/                     # 示例插件：/echo
-│   └── manage/                   # 管理命令：/ping、/version、/plugins、/adapters、/admin
+│   └── manage/                   # 管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin
 ├── configs/
 │   └── config.yaml               # 示例配置（log、metrics、limits、auth、adapters、bots、plugins）
 └── docs/                         # 设计文档集，入口为 docs/README.md 文档索引

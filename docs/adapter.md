@@ -253,7 +253,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 - `RegisteredAdapters` 按注册顺序返回；`LookupAdapter` 线性查找，重复注册时返回**首次**注册者的元信息与工厂，但重复本身会被启动校验判为错误。
 - 保留键常量是 `bot.OptListenAddr`（值为 `"listen_addr"`），核心只把它与非保留权限 `PermNetListen` 做核对，不解释其取值。
 - 适配器不持有 `BotAPI`（`AdapterContext` 中刻意没有该字段）：事件只能经 `EventSink` 上行、消息只能经 `Adapter.Send` 下行，避免平台层反向进入引擎造成递归与死锁。
-- 注册表还提供面向审计的只读视图：`AdapterInfo{BotID, Metadata}` 与 `AdapterCatalog interface { Adapters() []AdapterInfo }`。管理插件 `/adapters` 同时展示注册表（`RegisteredAdapters`）与绑定信息（`AdapterCatalog`），其行格式与分支见 [plugins/manage.md](plugins/manage.md) 3.4。
+- 注册表还提供面向审计的只读视图：`AdapterInfo{BotID, Metadata}` 与 `AdapterCatalog interface { Adapters() []AdapterInfo }`。管理插件 `/manage adapters` 同时展示注册表（`RegisteredAdapters`）与绑定信息（`AdapterCatalog`），其行格式与分支见 [plugins/manage.md](plugins/manage.md) 3.4。
 - 元信息的字符集约束 `[a-z0-9_-]` 不在注册表中校验，而由配置解析校验（`internal/config` 对 `bots[].adapter` 与 `adapters.<name>` 校验，报错文案 `只允许 [a-z0-9_-]`）；注册表校验只管「被拒绝的注册」、重名、`Platforms` 非空与 `PermAll`。
 
 ### 6.3 元信息与权限
@@ -267,7 +267,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 | `AdapterMetadata.HasPermission(p)` | 精确匹配 `Permissions` 切片；**不**把 `PermAll` 当作通配 |
 | `Metadata.HasPermission(p)`（插件侧） | `x == p || x == PermAll`，即 `PermAll` 视为拥有全部权限 |
 
-核心按 `AdapterMetadata.Permissions` 在装配期裁剪依赖（`internal/adaptermgr`），并把权限透出给 `/adapters` 审计：
+核心按 `AdapterMetadata.Permissions` 在装配期裁剪依赖（`internal/adaptermgr`），并把权限透出给 `/manage adapters` 审计：
 
 | 权限 | 含义 | 未声明时核心的行为 |
 | --- | --- | --- |
@@ -445,5 +445,5 @@ bots:
 ## 相关文档
 
 - [domain-model.md](domain-model.md)：`Event`、`Message`、`Segment`、`Target`、`Capabilities` 等公开领域模型的定义与 `Key*` 常量。
-- [engine.md](engine.md)：发送前的降级、限流与重试，适配器装配与生命周期、`/adapters` 相关的管理路径。
+- [engine.md](engine.md)：发送前的降级、限流与重试，适配器装配与生命周期、`/manage adapters` 相关的管理路径。
 - [configuration.md](configuration.md)：`bots`/`adapters` 段的键、默认值、保留键校验与环境变量覆盖规则。

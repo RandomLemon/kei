@@ -114,10 +114,10 @@
   - 证据：`internal/ratelimit/ratelimit.go:13`、`:32`、`:54`，`internal/middleware/middleware.go:216`（RateLimit 中间件）；令牌桶语义与接线见 [engine.md](engine.md) 7.7、10.5，配置键见 [configuration.md](configuration.md) 12.1。测试 7 个。
 - [x] 已完成：实现消息去重 TTL 缓存。
   - 证据：`internal/dedup/dedup.go:13`、`:26`、`:42`；总线层与中间件层两层去重的关系见 [engine.md](engine.md) 8.5、10.6。测试 7 个。
-- [x] 已完成：实现管理命令 `/ping`、`/version`、`/plugins`、`/adapters`，另有阶段清单之外的 `/admin`。
-  - 证据：`plugins/manage/manage.go:45`、`:50`、`:59`、`:63`、`:67`。测试 5 个。命令契约、规则 ID/优先级/管理员门槛、配置键与实测输出见 [plugins/manage.md](plugins/manage.md) 第 2–4 节。
-- [x] 已完成：验收：指标可暴露，限流可测试，`/adapters` 能列出注册表与绑定关系。
-  - 证据：`pkg/kei/assemble.go`（serveMetrics 注册 `/metrics` 与 `/healthz`，开关为 `metrics.addr`）、`plugins/manage/manage.go:63`（`describeAdapters`）；两段来源、不一致原因与样例输出见 [engine.md](engine.md) 7.9 与 [plugins/manage.md](plugins/manage.md) 3.4；端点开关语义见 [configuration.md](configuration.md) 12.1。
+- [x] 已完成：实现管理命令 `/manage ping`、`/manage version`、`/manage plugins`、`/manage adapters`，另有阶段清单之外的 `/manage admin`。
+  - 证据：`plugins/manage/manage.go:49`、`:54`、`:63`、`:67`、`:71`。测试 6 个。命令契约、规则 ID/优先级/管理员门槛、配置键与实测输出见 [plugins/manage.md](plugins/manage.md) 第 2–4 节。
+- [x] 已完成：验收：指标可暴露，限流可测试，`/manage adapters` 能列出注册表与绑定关系。
+  - 证据：`pkg/kei/assemble.go`（serveMetrics 注册 `/metrics` 与 `/healthz`，开关为 `metrics.addr`）、`plugins/manage/manage.go:133`（`describeAdapters`）；两段来源、不一致原因与样例输出见 [engine.md](engine.md) 7.9 与 [plugins/manage.md](plugins/manage.md) 3.4；端点开关语义见 [configuration.md](configuration.md) 12.1。
 
 交付物：`internal/metrics/`、`internal/ratelimit/`、`internal/dedup/`、`plugins/manage/`，以及 `internal/middleware/` 中的 Metrics/RateLimit/Auth 中间件。
 
