@@ -91,7 +91,7 @@
 
 ```text
 kei/
-├── AGENTS.md                     # 全局硬性规则与文档索引
+├── AGENTS.md                     # 全局硬性规则与文档入口（指向 docs/README.md）
 ├── README.md                     # 面向用户的介绍、安装与快速开始
 ├── LICENSE                       # 开源许可证
 ├── go.mod                        # module github.com/RandomLemon/kei

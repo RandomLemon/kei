@@ -113,10 +113,7 @@
 
 - 代码已实现并合并到主分支。
 - 有单元测试或集成测试覆盖。
-- `go build ./...` 通过。
-- `go test ./...` 通过。
-- `go test -race ./...` 通过。
-- `go vet ./...` 通过。
+- 合并前硬性门槛四条全部通过（`go build`/`go vet`/`go test`/`go test -race`，见 [`../AGENTS.md`](../AGENTS.md) 第 2.4 节）。
 - 公开接口有注释。
 - 示例配置可运行。
 - 文档或注释说明如何使用。
@@ -124,7 +121,7 @@
 - 不破坏 `pkg/bot` 的向后兼容性。
 - 新适配器可在不修改核心代码的前提下接入：进程内注册（独立包/独立 module），并有测试覆盖。
 
-**合并前硬性门槛**：`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 四条必须全部通过，缺一不可；仓库无 CI workflow，这四条在 devShell 内手动执行。
+**合并前硬性门槛**：四条必须全部通过，缺一不可；命令清单见 [`../AGENTS.md`](../AGENTS.md) 第 2.4 节，仓库无 CI workflow，这四条在 devShell 内手动执行。
 
 ### 逐条可自动化验证情况
 
@@ -148,4 +145,5 @@
 - [项目概述与架构](architecture.md)
 - [核心引擎与事件总线](engine.md)
 - [实现阶段与交付物](roadmap.md)
+- [内置管理插件 manage](plugins/manage.md)
 - [文档索引](README.md)

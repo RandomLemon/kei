@@ -1,6 +1,6 @@
 # kei 插件系统与 BotAPI
 
-覆盖 `pkg/bot` 中的插件契约（`Plugin`/`Metadata`/`Permission`）、`Registrar` 与全部注册 API、`Reply` 构建器、`BotAPI`/`Storage`/`PluginContext` 及其权限降级行为，并给出仓库内 `plugins/echo`、`plugins/manage` 的真实实现。
+覆盖 `pkg/bot` 中的插件契约（`Plugin`/`Metadata`/`Permission`）、`Registrar` 与全部注册 API、`Reply` 构建器、`BotAPI`/`Storage`/`PluginContext` 及其权限降级行为，并给出仓库内 `plugins/echo` 的真实实现（内置管理插件 `plugins/manage` 见 [plugins/manage.md](plugins/manage.md)）。
 不覆盖：路由匹配与中间件链的实现（见 [engine.md](engine.md)）、适配器契约（见 [adapter.md](adapter.md)）、配置键表（见 [configuration.md](configuration.md)）。
 面向用户的插件编写教程与完整示例见 [../README.md](../README.md)。
 
@@ -82,12 +82,7 @@ func RegisteredPlugins() []Plugin      // 按注册顺序的快照
 
 生命周期由 `internal/pluginmgr.Manager` 执行：按注册顺序 `Setup` 与 `Start`、逆序 `Stop`，每阶段在独立 `context.WithTimeout` 中运行（默认各 15s，`Deps.SetupTimeout/StartTimeout/StopTimeout` 可覆盖），并带 `recover` 隔离，插件 panic 或阶段失败不会拖垮进程，只终止本次启动。
 
-要求：
-
-1. 插件只依赖 `pkg/bot`，不得依赖 `internal/`。
-2. 插件通过 `init()` 注册，主程序通过空导入启用。
-3. 插件必须声明权限。
-4. 插件 Handler 必须可被 recover（引擎的全局中间件链保证，见 [engine.md](engine.md)）。
+插件开发必须遵守的通用硬性规则（只依赖 `pkg/bot`、经 `init()` 注册、必须声明权限、Handler 必须可被 recover）见 [`../AGENTS.md`](../AGENTS.md) 第 2 章；本章只描述插件的接口契约与运行期语义。插件加载的完整顺序与权限裁剪的落地位置见 11.4 与 [architecture.md](architecture.md) 3.1。
 
 ### 9.2 注册器
 
@@ -136,7 +131,7 @@ type Option func(*Rule)
 
 `Use` 只影响调用 `Use` 之后为该插件注册的规则：每条规则在注册时把当前的插件中间件列表复制进 `Rule.Middlewares`，此前已注册的规则保持不变。折叠顺序由内到外为 handler → 插件 `Use` 中间件 → 全局中间件；同一组内按注册顺序由外到内包裹，即「先注册的先执行」。
 
-全局中间件中的 `middleware.Metrics(rec)`（`internal/middleware`）是规则命中与处理结果的唯一指标上报点：进入该中间件即表示所在规则已匹配当前事件（路由器只为命中的规则构造处理链），因此先调用 `rec.RuleMatched(plugin, rule)`，再在 `next` 返回后调用 `rec.EventHandled(plugin, rule, 耗时, err)`——规则随后是否被 Auth/RateLimit 等拒绝只体现在 `EventHandled` 的 result 标签里，命中计数仍然递增。`metrics.Recorder` 另有 `EventPublished`、`EventDropped`、`MessageSent`，中间件链上报的指标族与全局链顺序见 [engine.md](engine.md)。
+全局中间件中的 `middleware.Metrics(rec)`（`internal/middleware`）是规则命中与处理结果的唯一指标上报点；`RuleMatched`/`EventHandled` 的先后语义、被拒绝调用的计数差异与完整指标族见 [engine.md](engine.md) 10.5。
 
 `Option` 是 `func(*Rule)`，仓库提供全部 8 个构造器（`pkg/bot/registrar.go`）：
 
@@ -159,31 +154,9 @@ func WithEventType(t EventType) Option
 func WithMatch(fn func(*Event) bool) Option
 ```
 
-`WithBotIDs` 与引擎的每 bot 插件白名单配合：`Rule.BotIDs` 为 `nil` 时不做机器人过滤，非 `nil`（含空切片）表示白名单，`BotIDs` 为空的规则任何机器人都命中不了。`bots[].plugins` 非空时引擎在启动事件处理前调用 `Router.UpdateRules` 把每条规则的 `BotIDs` 收窄为允许它的 bot 名字；`WithPlatforms`、`WithKind`、`WithMatch` 的结果与之取「与」。判断逻辑在 `(*Rule).Matches`，匹配语义与优先级排序见 [engine.md](engine.md)。
+`Rule.BotIDs` 的 nil/空切片语义、`WithBotIDs` 与每 bot 插件白名单的配合（引擎启动时经 `Router.UpdateRules` 收窄 `BotIDs`）以及 `WithPlatforms`/`WithKind`/`WithMatch` 的取「与」关系见 [engine.md](engine.md) 第 7、10 章。
 
-规则结构（`Option` 的作用对象，完整定义在 `pkg/bot/registrar.go`）：
-
-```go
-type Rule struct {
-	ID          string           // 未显式指定时由注册器生成 plugin:kind:index
-	Priority    int              // 数值越大越先执行
-	Platforms   []string         // 空表示全部平台
-	BotIDs      []string         // nil 表示不过滤；非 nil 表示白名单
-	EventType   EventType        // 空表示全部类型
-	Kind        MessageKind      // 空表示全部会话类型
-	Command     string           // 不含前缀，比较忽略大小写
-	Regex       *regexp.Regexp   // 对消息纯文本做 FindStringSubmatch
-	Keywords    []string         // 命中任意一个（忽略大小写的子串匹配）即触发
-	Match       func(*Event) bool
-	AdminOnly   bool             // 需要 Auth 中间件配合
-	Handler     Handler
-	Plugin      string           // 由注册器填充
-	Middlewares []Middleware     // 该插件通过 Registrar.Use 声明的中间件
-}
-
-// Matches 判断规则是否命中事件（不包含 AdminOnly 与自定义断言之外的中间件逻辑）。
-func (r *Rule) Matches(e *Event) bool
-```
+`Rule` 的完整字段定义与 `Matches` 的匹配判定见 [engine.md](engine.md) 10.1；本节只描述注册 API 与 `Option` 的语义。
 
 路由信息通过 ctx 传给 Handler（`pkg/bot/context.go`）。源码中不存在名为 `RuleContext` 的类型，路由信息的载体是 `bot.Route`：
 
@@ -329,33 +302,7 @@ type FuncPlugin struct {
 
 `Metadata`/`Setup`/`Start`/`Stop` 对 nil 接收者安全：nil 或对应函数为 nil 时是空实现（`Metadata` 返回零值，空名最终由 `pluginmgr.Add` 拒绝），与 `pkg/bot.Config` 的取值方法风格一致。它不调用 `RegisterPlugin`，因此不在注册表快照里；只能经 `pkg/kei.Options.Plugins` 注入，注入实例一律启用，与同名配置冲突（`enabled: false`）时启动失败。装配门面见 [architecture.md](architecture.md) 3.1。
 
-需要 `PluginContext`（配置、日志、存储、插件目录）的插件在 `Setup` 阶段用 `bot.PluginContextFrom(ctx)` 取出并保存，`plugins/manage` 就是这么做的：
-
-```go
-func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
-	pc, ok := bot.PluginContextFrom(ctx)
-	if !ok {
-		return fmt.Errorf("manage: missing plugin context")
-	}
-	p.cfg = pc.Config
-	p.start = time.Now()
-
-	pluginOpts := []bot.Option{bot.WithPriority(100), bot.WithID("manage:plugins")}
-	if p.cfg.Bool("plugins_admin_only", false) {
-		pluginOpts = append(pluginOpts, bot.WithAdmin())
-	}
-	reg.OnCommand("plugins", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
-		return r.Text(p.describePlugins(pc.Catalog)).Send(ctx)
-	}, pluginOpts...)
-
-	reg.OnCommand("admin", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
-		return r.Text("管理员校验通过").Send(ctx)
-	}, bot.WithPriority(100), bot.WithID("manage:admin"), bot.WithAdmin())
-	return nil
-}
-```
-
-`plugins/manage` 的完整命令集为 `/ping`、`/version`、`/plugins`、`/adapters`、`/admin`；`/adapters` 把 `PluginContext.Adapters`（绑定信息）与 `bot.RegisteredAdapters()`（注册表）合并展示，是「插件与适配器同构注册」的直接示例。
+需要 `PluginContext`（配置、日志、存储、插件目录）的插件在 `Setup` 阶段用 `bot.PluginContextFrom(ctx)` 取出后保存到实例上——Handler 执行期的 ctx 不含 `PluginContext`（见 11.3）。`plugins/manage` 就是这么做的：保存 `pc.Config` 供命令读取，把 `pc.Catalog`/`pc.Adapters` 交给 Handler 闭包，取不到上下文时让 `Setup` 返回 `manage: missing plugin context`。其实现与五条命令的契约（规则 ID、优先级、管理员门槛、输出格式、配置键）见 [`plugins/manage.md`](plugins/manage.md)，本节不再重复其代码。
 
 ---
 

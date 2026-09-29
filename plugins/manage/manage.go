@@ -1,4 +1,4 @@
-// Package manage 提供管理命令：/ping、/version、/plugins、/admin。
+// Package manage 提供管理命令：/ping、/version、/plugins、/adapters、/admin。
 //
 // 它同时演示了插件目录（PluginContext.Catalog）与管理员规则（WithAdmin +
 // Auth 中间件）的用法。

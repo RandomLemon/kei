@@ -253,36 +253,12 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 - `RegisteredAdapters` 按注册顺序返回；`LookupAdapter` 线性查找，重复注册时返回**首次**注册者的元信息与工厂，但重复本身会被启动校验判为错误。
 - 保留键常量是 `bot.OptListenAddr`（值为 `"listen_addr"`），核心只把它与非保留权限 `PermNetListen` 做核对，不解释其取值。
 - 适配器不持有 `BotAPI`（`AdapterContext` 中刻意没有该字段）：事件只能经 `EventSink` 上行、消息只能经 `Adapter.Send` 下行，避免平台层反向进入引擎造成递归与死锁。
-- 注册表还提供面向审计的只读视图：`AdapterInfo{BotID, Metadata}` 与 `AdapterCatalog interface { Adapters() []AdapterInfo }`。管理插件 `/adapters` 同时展示注册表（`RegisteredAdapters`）与绑定信息（`AdapterCatalog`），每个绑定一行 `- <botID> → <adapterName>`。
+- 注册表还提供面向审计的只读视图：`AdapterInfo{BotID, Metadata}` 与 `AdapterCatalog interface { Adapters() []AdapterInfo }`。管理插件 `/adapters` 同时展示注册表（`RegisteredAdapters`）与绑定信息（`AdapterCatalog`），其行格式与分支见 [plugins/manage.md](plugins/manage.md) 3.4。
 - 元信息的字符集约束 `[a-z0-9_-]` 不在注册表中校验，而由配置解析校验（`internal/config` 对 `bots[].adapter` 与 `adapters.<name>` 校验，报错文案 `只允许 [a-z0-9_-]`）；注册表校验只管「被拒绝的注册」、重名、`Platforms` 非空与 `PermAll`。
 
 ### 6.3 元信息与权限
 
-`Permission` 类型与常量全集定义在 `pkg/bot/plugin.go`，插件与适配器共用同一类型：
-
-```go
-type Permission string
-
-// 支持的权限；插件与适配器共用同一类型，适配器侧的裁剪规则见 AdapterMetadata。
-const (
-	// PermSendMessage 允许插件主动发送消息（而不仅是回复当前会话）。
-	PermSendMessage Permission = "send_message"
-	// PermReadUser 允许读取用户信息。
-	PermReadUser Permission = "read_user"
-	// PermNetwork 允许发起外部网络请求。
-	PermNetwork Permission = "network"
-	// PermStorage 允许读写 Storage。
-	PermStorage Permission = "storage"
-	// PermNetListen 允许启动入站监听（webhook / 长连接），适配器使用。
-	PermNetListen Permission = "net_listen"
-	// PermReceiveEvent 允许向核心投递事件。
-	PermReceiveEvent Permission = "receive_event"
-	// PermAdmin 允许执行管理员命令（配合 Auth 中间件）。
-	PermAdmin Permission = "admin"
-	// PermAll 表示全部权限，仅内置插件可用；适配器不得声明。
-	PermAll Permission = "*"
-)
-```
+`Permission` 类型与常量全集（8 个常量：`send_message`、`read_user`、`network`、`storage`、`net_listen`、`receive_event`、`admin`、`*`）定义在 `pkg/bot/plugin.go`，插件与适配器共用同一类型；常量清单与插件侧语义见 [plugin.md](plugin.md) 9.1（本节不重复其定义），适配器侧只有下面两处差异：
 
 两个 `HasPermission` 语义不同，适配器一律使用前者：
 
@@ -413,6 +389,8 @@ bots:
 - 独立的 module/包布局、`go.mod`、空导入与配置写法见 [../README.md](../README.md) 的「写一个适配器」小节。
 
 ### 6.6 实现要求
+
+第 6 章对适配器的要求与实现证据。通用硬性规则（分层与依赖、运行时契约、质量门）以 [`../AGENTS.md`](../AGENTS.md) 第 2 章为唯一规则本体，本节不重复其条款，只列适配器侧的落地要求与证据。
 
 1. 内置适配器放 `adapters/<platform>`；第三方适配器放独立包或独立 module，只依赖 `pkg/bot`，不得依赖 `internal/`，也不得要求核心侧改动。**已实现**：`adapters/mock`、`adapters/onebot`、`adapters/feishu` 的非测试源码只 import 标准库与 `github.com/RandomLemon/kei/pkg/bot`（测试另用 `pkg/message` 构造消息，同属公开 SDK）。
 2. 适配器必须在自己的 `init()` 中调用 `RegisterAdapter`；主程序通过空导入启用，是否实例化由配置中的 `bots[].adapter` 决定。**已实现**：三个内置适配器的 `register.go` 都在 `init()` 注册；`cmd/bot/main.go` 空导入 feishu/mock/onebot。注册名或工厂不合法的注册不会静默失效：`RegisterAdapter` 拒绝该次注册并记入 `AdapterRegistrationErrors`，启动校验（`adaptermgr.ValidateRegistry`）据此报错，而不是让它在运行时表现为「未注册」。

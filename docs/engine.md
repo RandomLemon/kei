@@ -227,12 +227,9 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 
 ### 7.9 管理命令 `/adapters`
 
-`/adapters` 由内置 `plugins/manage` 插件注册（`bot.WithPriority(100)`、`bot.WithID("manage:adapters")`，非管理员专属）。输出分两段：
+`/adapters` 由内置 `plugins/manage` 插件注册，是「插件经 `PluginContext.Adapters` 读取装配结果」的最小示例：注册表部分来自 `bot.RegisteredAdapters()`（编译期注册表），绑定部分来自 `Engine.Adapters()`（引擎实现 `bot.AdapterCatalog`），因此两段可以不一致（注册表含未启用/未引用的适配器）。
 
-- 已注册适配器：来自 `bot.RegisteredAdapters()`（注册表，含第三方适配器），按名排序，逐行 `- <名称> <版本> (<平台1,平台2>) [<权限1,权限2>] — <描述>`，缺省字段省略；无注册项时输出「没有已注册的适配器」。
-- 已绑定实例：来自 `Engine.Adapters()`（`bot.AdapterCatalog`），按 bot 名排序，逐行 `- <bot 名> → <适配器名>`；`AdapterCatalog` 缺失时追加「绑定信息不可用」，无实例时输出「没有已绑定的适配器实例」。
-
-`plugins/manage` 还提供 `/ping`、`/version`、`/plugins`（可经插件配置 `plugins_admin_only` 改为管理员专属）、`/admin`（`WithAdmin`，演示 Auth 中间件）。命令与插件生命周期的其余细节见 [plugin.md](plugin.md)。
+输出格式、分支条件与实测样例见 [`plugins/manage.md`](plugins/manage.md) 3.4 节；`plugins/manage` 的五条命令及其优先级、管理员门槛见同文档第 2 节。
 
 ---
 
@@ -368,22 +365,11 @@ type Rule struct {
 
 ### 10.2 Option 全集
 
-`pkg/bot` 暴露 8 个 Option，均为 `func(*Rule)`，按 `opts` 顺序在注册器默认值之后应用：
-
-| Option | 签名 | 作用 |
-| --- | --- | --- |
-| `WithPriority` | `WithPriority(p int) Option` | 设置 `Priority`，数值越大越先执行 |
-| `WithID` | `WithID(id string) Option` | 显式设置 `Rule.ID`（重复时报注册错误） |
-| `WithPlatforms` | `WithPlatforms(platforms ...string) Option` | 设置 `Platforms`（复制入参） |
-| `WithKind` | `WithKind(k MessageKind) Option` | 设置 `Kind` |
-| `WithBotIDs` | `WithBotIDs(ids ...string) Option` | 设置 `BotIDs`；传空列表即任何 bot 都命中不了 |
-| `WithAdmin` | `WithAdmin() Option` | 置 `AdminOnly`，需 Auth 中间件配合 |
-| `WithEventType` | `WithEventType(t EventType) Option` | 设置 `EventType`，可用于 `OnAll`/`OnKeyword` 等 |
-| `WithMatch` | `WithMatch(fn func(*Event) bool) Option` | 设置自定义断言 `Match` |
+`pkg/bot` 暴露 8 个 `Option` 构造器，均为 `func(*Rule)`，按 `opts` 顺序在注册器默认值之后应用；清单、签名与逐项语义见 [plugin.md](plugin.md) 9.2，本节只讨论路由器如何使用这些字段。
 
 ### 10.3 匹配与优先级语义
 
-- 注册器（`Registrar`）提供 5 个注册入口 + 1 个中间件入口：`OnCommand`、`OnRegex`、`OnKeyword`、`OnEvent`、`OnAll`、`Use`。`OnCommand`/`OnRegex`/`OnKeyword` 默认把 `EventType` 设为 `bot.EventMessage`（可被 `WithEventType` 覆盖）；`OnEvent` 只设置事件类型；`OnAll` 不设置任何过滤条件，因此所有事件都会命中。
+- 注册器（`Registrar`）提供 5 个注册入口 + 1 个中间件入口：`OnCommand`、`OnRegex`、`OnKeyword`、`OnEvent`、`OnAll`、`Use`；各入口预置的规则字段与失败记录通道见 [plugin.md](plugin.md) 9.2 的入口表。`OnAll` 不设置任何过滤条件，因此所有事件都会命中。
 - 规则 ID 未显式指定时按 `plugin:kind:index` 生成（`kind` ∈ `command`/`regex`/`keyword`/`event`/`all`，由规则字段推断），序号按「插件 + 类别」独立递增；正则编译失败不占用序号也不注册规则。
 - 规则表按 `Priority` **降序**执行，同优先级按注册顺序（`slices.SortStableFunc`）。同一次事件命中的所有规则都会被完整执行，各自的错误用 `errors.Join` 聚合并包装为 `router: 规则 %s 执行失败: %w`；没有任何规则命中时 `Dispatch` 返回 nil。
 - `Dispatch` 在 `ev.Command == nil && ev.Message != nil` 时用配置的前缀（默认 `["/"]`）解析命令并写回 `ev`（`bot.ParseCommand`）。
@@ -392,12 +378,7 @@ type Rule struct {
 
 ### 10.4 中间件洋葱模型
 
-```go
-// Handler 是插件事件处理函数。
-type Handler func(ctx context.Context, e *Event, r Reply) error
-// Middleware 是洋葱模型中间件：返回的 Handler 负责在合适的时机调用 next。
-type Middleware func(next Handler) Handler
-```
+`Handler` 与 `Middleware` 的类型定义及 `Registrar` 语义见 [plugin.md](plugin.md) 9.2。
 
 `internal/router` 在规则注册时把「全局中间件 → 插件 `Use` 中间件 → Handler」折叠成单个 Handler 并固化进快照（`fold`/`wrap`）：每组内**先注册的在更外层**（即先注册的先执行）。因此一条事件的实际执行顺序由外到内是：全局中间件（见 10.5）→ 插件中间件（`Registrar.Use`，只影响调用 `Use` 之后为该插件注册的规则）→ 插件 Handler。
 

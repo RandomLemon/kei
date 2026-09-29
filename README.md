@@ -5,7 +5,7 @@
 ## Advantages
 
 - 高性能：依托于 `Go` 的高性能，`kei` 可以实现更快的处理速度、更低的内存占用、更少的环境依赖。
-- 易开发：文档齐全——用户指南见本文件，设计与实现说明见 [`docs/`](docs/README.md)，硬性规则与结构概览见 [`AGENTS.md`](AGENTS.md)。
+- 易开发：文档齐全——用户指南见本文件，设计与实现说明见 [`docs/`](docs/README.md)（含[目录结构与架构概览](docs/architecture.md)），硬性规则见 [`AGENTS.md`](AGENTS.md)。
 - 可闭源：编译式运行，可以仅发布二进制，不过我们还是希望您可以开源。
 
 ## Architecture
@@ -228,7 +228,7 @@ plugins:
 ```
 
 - 注入一次事件，确认 `/sent`（mock）或平台侧收到回复。
-- 用管理命令检查装配：`/plugins`（已加载插件）、`/adapters`（适配器与每个 bot 的绑定）。
+- 用管理命令检查装配：`/plugins`（已加载插件）、`/adapters`（适配器与每个 bot 的绑定）；五条管理命令的契约与配置见 [`docs/plugins/manage.md`](docs/plugins/manage.md)。
 - 插件单测无需启动引擎：`bot.NewRecordingRegistrar()` + `bot.NewNoopReply()`，
   见「写一个插件」末尾。
 - 同一平台配多个 bot（多账号）时，主动发送必须显式指定 `Target.BotID`。
@@ -534,7 +534,7 @@ bots:
 | `storage` | `AdapterContext.Storage` | 注入拒绝式存储（`ErrPermissionDenied`） |
 | `net_listen` | 允许监听入站端口 | 配置里出现保留键 `listen_addr` 时启动失败 |
 
-`/adapters` 会列出已注册适配器与每个 bot 的绑定关系（每个绑定一行 `- <botID> → <adapterName>`）。
+`/adapters` 会列出已注册适配器与每个 bot 的绑定关系（每个绑定一行 `- <botID> → <adapterName>`；两段列表可以不一致，原因见 [`docs/plugins/manage.md`](docs/plugins/manage.md) 3.4 节）。
 
 临时停用某个平台不用删配置，加一行即可（其 `bots[]` 条目一并跳过）：
 
