@@ -225,7 +225,7 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 
 适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。
 
-### 7.10 管理命令 `/adapters`
+### 7.9 管理命令 `/adapters`
 
 `/adapters` 由内置 `plugins/manage` 插件注册（`bot.WithPriority(100)`、`bot.WithID("manage:adapters")`，非管理员专属）。输出分两段：
 

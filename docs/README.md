@@ -4,7 +4,7 @@
 
 ## 章节与文件对应
 
-各文档沿用早期设计稿的章节号（1-20），便于跨文档引用（如「见 6.4」「见 13.1」）。
+各文档沿用早期设计稿的章节号（1-19），便于跨文档引用（如「见 6.4」「见 12.1」）。
 
 | 章 | 主题 | 文档 |
 | --- | --- | --- |
@@ -13,11 +13,11 @@
 | 6 | 适配器平台适配层：接口、注册表与工厂、权限、能力与降级、第三方接入、内置适配器现状 | [`adapter.md`](adapter.md) |
 | 7、8、10 | Engine、EventBus 事件总线、路由与中间件 | [`engine.md`](engine.md) |
 | 9、11 | 插件系统、BotAPI 与插件上下文（Storage/权限/测试辅助） | [`plugin.md`](plugin.md) |
-| 13 | 配置：结构、键语义、环境变量覆盖、校验与告警 | [`configuration.md`](configuration.md) |
-| 14、20 | 实现阶段回顾与交付物现状（含未实现项） | [`roadmap.md`](roadmap.md) |
-| 16、17、19 | 测试要求、构建与运行命令、完成定义（Definition of Done） | [`testing.md`](testing.md) |
+| 12 | 配置：结构、键语义、环境变量覆盖、校验与告警 | [`configuration.md`](configuration.md) |
+| 13、19 | 实现阶段回顾与交付物现状（含未实现项） | [`roadmap.md`](roadmap.md) |
+| 15、16、18 | 测试要求、构建与运行命令、完成定义（Definition of Done） | [`testing.md`](testing.md) |
 
-第 2 章（技术栈与约束）、第 15 章（代码约定）、第 18 章（实现守则）是硬性规则，保留在 [`AGENTS.md`](../AGENTS.md)。第 19 章的完成定义在 `testing.md`，`AGENTS.md` 只保留合并前必须通过的门槛命令。
+第 2 章（技术栈与约束）、第 14 章（代码约定）、第 17 章（实现守则）是硬性规则，保留在 [`AGENTS.md`](../AGENTS.md)。第 18 章的完成定义在 `testing.md`，`AGENTS.md` 只保留合并前必须通过的门槛命令。
 
 ## 建议阅读顺序
 

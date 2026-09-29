@@ -1,12 +1,12 @@
 # 测试、构建与完成定义
 
-本文覆盖 kei 的测试要求（第 16 章）、构建与运行命令（第 17 章）与完成定义（第 19 章）。
+本文覆盖 kei 的测试要求（第 15 章）、构建与运行命令（第 16 章）与完成定义（第 18 章）。
 不覆盖各功能模块的行为规格（见 `architecture.md`、`engine.md`、`adapter.md` 等），
 也不重复 `../README.md` 中的安装、快速开始与联调示例。
 
 ---
 
-## 16. 测试要求
+## 15. 测试要求
 
 1. 每个核心包必须有单元测试。
 2. 必须包含集成测试：Mock Adapter -> EventBus -> Router -> Echo 插件 -> Reply。
@@ -82,7 +82,7 @@
 
 ---
 
-## 17. 构建与运行命令
+## 16. 构建与运行命令
 
 工具链全部由 `flake.nix` 提供，无需在系统安装 Go：devShell 包含 `go`、`gopls`、`gotools`、`golangci-lint`、`delve`、`jq`、`curl`、`git`，并通过 `env.GOTOOLCHAIN = "local"` 禁止 `go` 自动下载其它 toolchain。进入环境有两种方式：`nix develop`，或 `direnv allow .` 后由 `.envrc` 的 `use flake` 在进入目录时自动加载。
 
@@ -92,7 +92,7 @@
 | `go build ./...` | 仓库根目录 | 构建全部包 |
 | `go vet ./...` | 仓库根目录 | 静态检查 |
 | `go test ./...` | 仓库根目录 | 单元测试与集成测试 |
-| `go test -race ./...` | 仓库根目录 | 竞态检测（第 16 章第 3 条） |
+| `go test -race ./...` | 仓库根目录 | 竞态检测（第 15 章第 3 条） |
 | `golangci-lint run ./...` | 仓库根目录 | 附加静态检查；仓库无 `.golangci.yml`，使用默认 linter 集 |
 | `go run ./cmd/bot -config configs/config.yaml` | 仓库根目录 | 运行入口；`-config` 相对当前目录，另有 `-version` |
 | `go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` | `examples/kei-adapter-myim/` | 独立 module 必须单独构建与测试；在仓库根目录执行上述命令不会覆盖它（`replace github.com/RandomLemon/kei => ../..` 指向本地根 module，无需先发布） |
@@ -107,7 +107,7 @@
 
 ---
 
-## 19. 完成定义（Definition of Done）
+## 18. 完成定义（Definition of Done）
 
 一个功能被认为完成，必须满足：
 

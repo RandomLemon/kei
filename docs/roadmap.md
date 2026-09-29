@@ -1,12 +1,12 @@
 # kei 实现阶段与交付物现状
 
-本文记录第 14 章（实现阶段与任务清单）与第 20 章（最终交付物）在仓库中的落地现状：逐条标注每个阶段任务与每项交付物的实际状态，并给出可核对证据（包路径、文件与行、符号名）。
+本文记录第 13 章（实现阶段与任务清单）与第 19 章（最终交付物）在仓库中的落地现状：逐条标注每个阶段任务与每项交付物的实际状态，并给出可核对证据（包路径、文件与行、符号名）。
 
 不覆盖：各模块的接口设计与实现细节（见 `docs/architecture.md`、`docs/domain-model.md`、`docs/adapter.md`、`docs/engine.md`、`docs/plugin.md`、`docs/configuration.md`），以及面向用户的使用方式（见 `../README.md`）。测试与构建的执行结果不在本文断言范围内，完成定义见 `docs/testing.md`，硬性规则见 `AGENTS.md`。
 
 ---
 
-## 14. 实现阶段与任务清单
+## 13. 实现阶段与任务清单
 
 ### 阶段 1：项目初始化与核心接口
 
@@ -103,7 +103,7 @@
 
 交付物：`internal/config/`（`config.go`、`env.go`）、`pkg/kei/`（`kei.go`、`assemble.go`）、`cmd/bot/main.go`、`configs/config.yaml`。
 
-### 阶段 7：可观测性与限流
+### 阶段 6：可观测性与限流
 
 - [x] 已完成：实现 Prometheus 指标。
   - 证据：`internal/metrics/registry.go:175`（Handler，输出 `text/plain; version=0.0.4` 的 Prometheus 文本格式）、`internal/metrics/metrics.go:20`（Recorder 接口）、`:81`（counter）、`:90`（histogram）；`go.mod` 未引入 prometheus 客户端库，文本暴露为手写实现。测试 9 个（`internal/metrics/metrics_test.go`）。指标族与标签见 `../README.md`「可观测性」。
@@ -121,7 +121,7 @@
 
 交付物：`internal/metrics/`、`internal/ratelimit/`、`internal/dedup/`、`plugins/manage/`，以及 `internal/middleware/` 中的 Metrics/RateLimit/Auth 中间件。
 
-### 阶段 8：第三方适配器支持（进程内注册与独立 module）
+### 阶段 7：第三方适配器支持（进程内注册与独立 module）
 
 - [x] 已完成：实现 `internal/adaptermgr`：注册表查表、`AdapterContext` 装配、按 `Permissions` 裁剪 Storage/HTTPClient、保留键校验。
   - 证据：`internal/adaptermgr/adaptermgr.go` 的 `Validate`/`ValidateRegistry`/`Build`/`Permissions`；保留键 `bot.OptListenAddr` 校验见同文件 `checkReservedOptions`（要求 `net_listen`）；权限裁剪测试 `internal/adaptermgr/adaptermgr_test.go`（TestBuildTrimsDependencies）。
@@ -137,7 +137,7 @@
 
 ---
 
-## 20. 最终交付物
+## 19. 最终交付物
 
 1. 完整 Go 项目源码。**存在**：根 module 的 `go list ./...` 解析出 `pkg/`、`internal/`、`adapters/`、`plugins/`、`cmd/` 下的全部包；另有独立 module `examples/kei-adapter-myim/`。
 2. `AGENTS.md`：全局硬性规则、代码约定、质量门、项目结构概览与文档索引（AGENTS.md 已不再承载设计与实现内容，详见 `docs/README.md`）。**存在**：仓库根 `AGENTS.md`。

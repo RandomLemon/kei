@@ -115,9 +115,9 @@ docs/                    设计文档集，入口 docs/README.md
 | [`docs/adapter.md`](docs/adapter.md) | 第 6 章：适配器接口、注册表与工厂、权限、能力与降级、第三方接入、内置适配器现状 |
 | [`docs/plugin.md`](docs/plugin.md) | 第 9、11 章：插件接口、Registrar/Option、Reply、BotAPI、PluginContext、Storage |
 | [`docs/engine.md`](docs/engine.md) | 第 7、8、10 章：Engine、EventBus、Router、中间件与限流 |
-| [`docs/configuration.md`](docs/configuration.md)| 第 13 章：配置结构、键语义、环境变量覆盖、校验与告警 |
-| [`docs/testing.md`](docs/testing.md) | 第 16、17、19 章：测试要求、构建与运行命令、完成定义 |
-| [`docs/roadmap.md`](docs/roadmap.md) | 第 14、20 章：实现阶段回顾与交付物现状（含未实现项） |
+| [`docs/configuration.md`](docs/configuration.md)| 第 12 章：配置结构、键语义、环境变量覆盖、校验与告警 |
+| [`docs/testing.md`](docs/testing.md) | 第 15、16、18 章：测试要求、构建与运行命令、完成定义 |
+| [`docs/roadmap.md`](docs/roadmap.md) | 第 13、19 章：实现阶段回顾与交付物现状（含未实现项） |
 
 独立 module 示例（不属于根 module，自带 `go.mod`）：`examples/kei-adapter-myim/` —— 只依赖 `pkg/bot` 的第三方适配器，注册与接入方式即第三方真实形态。改动注册表 API 时同步维护它。
 

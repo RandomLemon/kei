@@ -1,6 +1,6 @@
 # kei 配置
 
-本文即第 13 章，覆盖配置的来源与加载顺序、顶层各段的真实键名与默认值、`bots[]`/`plugins`/`adapters` 三段的解码与语义、环境变量覆盖规则、一份键名真实的示例，以及配置要求（逐条核对到 `internal/config`、`internal/adaptermgr`、`pkg/kei` 的具体代码位置）。
+本文即第 12 章，覆盖配置的来源与加载顺序、顶层各段的真实键名与默认值、`bots[]`/`plugins`/`adapters` 三段的解码与语义、环境变量覆盖规则、一份键名真实的示例，以及配置要求（逐条核对到 `internal/config`、`internal/adaptermgr`、`pkg/kei` 的具体代码位置）。
 
 不覆盖：面向用户的安装、快速开始与联调流程（见 [../README.md](../README.md) 的「配置」「环境变量覆盖」）；插件运行期 `Get/String/Bool/...` 的完整接口说明（见 [plugin.md](plugin.md)）与适配器装配细节（见 [adapter.md](adapter.md)）。
 
@@ -8,7 +8,7 @@
 
 ---
 
-## 13. 配置
+## 12. 配置
 
 在 `configs/config.yaml` 提供示例。
 
@@ -21,7 +21,7 @@ func LoadBytes(data []byte, env []string) (*Config, error)  // 解析内存数�
 
 `LoadBytes` 的固定顺序是：`decode`（YAML → 结构体，不做校验）→ `applyEnv`（环境变量覆盖）→ `applyDefaults`（填默认值）→ `validate`（校验）。因此环境变量覆盖同样受校验约束（例如 `KEI_LOG_LEVEL=trace` 会在 `log.level` 上报错），而默认值不会覆盖环境变量给出的空串以外的值。
 
-### 13.1 结构体与顶层键
+### 12.1 结构体与顶层键
 
 配置结构体位于 `internal/config`（`config.go`），顶层结构为：
 
@@ -37,7 +37,7 @@ type Config struct {
 }
 ```
 
-顶层只允许这 7 个键，其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins` 由自定义解码函数处理，条目上的未知键不会报错，而是收进各自的 `Settings`（见 13.2–13.3）；`adapters` 只接受 `enabled`，其余键报错（见 13.4）。
+顶层只允许这 7 个键，其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins` 由自定义解码函数处理，条目上的未知键不会报错，而是收进各自的 `Settings`（见 12.2–12.3）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。
 
 | 段 | 键 | 结构体字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- | --- |
@@ -49,9 +49,9 @@ type Config struct {
 | `limits` | `send_rate` | `LimitsConfig.SendRate` | float64 | `0` | 每个 bot 每秒允许发送的条数；`0` 表示不限流 |
 | `limits` | `send_burst` | `LimitsConfig.SendBurst` | int | `0` | 发送侧突发容量；`<=0` 时取 `send_rate`（同上，`Engine.New` 只在 `send_rate > 0` 时建限流器） |
 | `auth` | `admin_users` | `AuthConfig.AdminUsers` | []string | 空 | 管理员用户 ID 列表，供 `middleware.Auth`（`Engine.isAdmin`，按 `Event.Sender.ID` 精确比较）判定 |
-| `bots` | — | `[]BotConfig` | 序列 | 无默认，至少一个 | 见 13.2 |
-| `plugins` | — | `map[string]PluginConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 13.3 |
-| `adapters` | — | `map[string]AdapterConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 13.4 |
+| `bots` | — | `[]BotConfig` | 序列 | 无默认，至少一个 | 见 12.2 |
+| `plugins` | — | `map[string]PluginConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.3 |
+| `adapters` | — | `map[string]AdapterConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.4 |
 
 默认值由 `applyDefaults` 落地：`log.level`/`log.format` 为空时填 `info`/`text`；`Plugins`/`Adapters` 为 nil 时填空映射。`limits`、`auth.admin_users`、`metrics.addr` 的默认值就是 Go 零值，`applyDefaults` 不做处理。
 
@@ -64,7 +64,7 @@ type Config struct {
 
 加载失败的错误都包装了来源：`Load` 返回 `config: 读取配置文件 <path>: ...`（读文件失败）或 `config: 配置文件 <path>: ...`（解析/覆盖/校验失败），`Load` 内部对 `os.ErrNotExist` 做 `%w` 包装；YAML 语法错误为 `config: YAML 解析失败: ...`；段级解码错误会再包一层 `<段名> 段: ...`。
 
-### 13.2 `bots[]`
+### 12.2 `bots[]`
 
 `BotConfig` 有四个保留键，其余键全部进入 `Settings`：
 
@@ -89,13 +89,13 @@ type BotConfig struct {
 - 解码：`decodeBot` 识别 `name`/`adapter`/`enabled`/`plugins`，`enabled` 不进入 `Settings`；非布尔值报 `bots[i].enabled: ...`（错误信息里的索引即条目位置）。
 - 效果：停用实例不装配适配器、不接收事件，也不参与适配器校验（未知适配器名与保留键 `listen_addr` 都跳过），`internal/adaptermgr.Build` 记 info 日志 `bot 已禁用，跳过`（字段 `bot`、`adapter`）。
 - 环境变量覆盖：`KEI_BOTS_<BOTNAME>_ENABLED=false|true`（`internal/config/env.go` 的 `applyBotEnv` 新增 `enabled` 分支，用 `envBool` 解析；值无法解析为布尔时静默忽略）。
-- 与 `adapters.<name>.enabled` 的区别：`bots[].enabled` 只停用**一个实例**（跳过该实例的装配、监听端口与校验）；`adapters.<name>.enabled: false` 停用**整个平台适配器**，其全部 `bots[]` 条目一并跳过（见 13.4）。示例配置里 `feishu-main` 的 `enabled: false` 现在真的生效：该 bot 不再装配、不监听端口。
+- 与 `adapters.<name>.enabled` 的区别：`bots[].enabled` 只停用**一个实例**（跳过该实例的装配、监听端口与校验）；`adapters.<name>.enabled: false` 停用**整个平台适配器**，其全部 `bots[]` 条目一并跳过（见 12.4）。示例配置里 `feishu-main` 的 `enabled: false` 现在真的生效：该 bot 不再装配、不监听端口。
 
 **保留键 `listen_addr`**（常量 `bot.OptListenAddr`）：只允许出现在声明了 `net_listen` 权限的适配器实例上。`internal/adaptermgr.checkReservedOptions` 在 `Validate` 阶段检查，命中时报 `config: bot <name> 配置了保留键 listen_addr，但适配器 <adapter> 未声明 net_listen 权限`。判定「已配置」的规则是该键存在且 `fmt.Sprint` 后去空白非空；核心不解释它的取值，由适配器自行解析。被 `bots[].enabled: false` 停用的实例不参与该校验。
 
 **同平台多实例与 `Target.BotID`**：插件发送时构造 `bot.Target{Platform, BotID, ChannelID, ...}`。`Engine.resolve` 的行为是：`BotID` 非空时按 bot 名定位实例，并要求该实例的平台与 `Target.Platform` 一致（不一致报 `engine: bot %q is on platform %q, not %q`）；`BotID` 为空时，只有该平台恰好一个 bot 才自动选择，0 个报 `no adapter for platform %q`，多个报 `platform %q has %d bots, target.BotID is required`。因此同一平台配置多个 bot（例如两个飞书应用、同适配器的多个实例）时发送必须显式指定 `BotID`；回复当前会话用 `TargetFromEvent` 自动带上事件的 `BotID`。每个 `bots[]` 条目都会得到一个独立的适配器实例（由工厂构造），实例状态互不影响。
 
-### 13.3 `plugins.<name>`
+### 12.3 `plugins.<name>`
 
 ```go
 type PluginConfig struct {
@@ -110,7 +110,7 @@ type PluginConfig struct {
 - 读取方式（`pkg/bot/api.go`，`Config` 对 nil 接收者与缺失键都返回默认值）：`Raw() map[string]any`、`Get(key) (any, bool)`（支持 `"a.b.c"` 多级路径）、`String(key, def)`、`Bool(key, def)`、`Int(key, def)`、`Duration(key, def)`（字符串按 `time.ParseDuration`，数字按秒）、`Strings(key)`（缺失返回 nil）、`Unmarshal(v)`（依赖 `encoding/json` 标签）。
 - 「`enabled: true` 但没有任何已注册插件对应」只会得到 warn（`pkg/kei/assemble.go` 的 `selectPlugins`：`enabled plugin is not registered`）。
 
-### 13.4 `adapters.<name>`
+### 12.4 `adapters.<name>`
 
 ```go
 type AdapterConfig struct {
@@ -126,7 +126,7 @@ type AdapterConfig struct {
 - 装配期的其他告警：`adapters` 段声明了但未注册的适配器（`适配器已在 adapters 段声明但未注册（是否漏了空导入？）`）。
 - **禁用语义**：`enabled: false` 的适配器不装配，其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn：`适配器已禁用，跳过 bot`），不参与未知适配器名与保留键校验；核心仍可只运行插件（`pkg/kei.Run` 会记 warn：`没有启用的适配器，核心将只运行插件`）。
 
-### 13.5 环境变量覆盖
+### 12.5 环境变量覆盖
 
 规则在 `internal/config/env.go`（`applyEnv`、`applyEnvPath`、`canonicalName`、`canonicalSegments`）：
 
@@ -162,7 +162,7 @@ KEI_PLUGINS_ECHO_ENABLED=false           # 只对已列出的插件生效
 KEI_ADAPTERS_MYIM_ENABLED=false          # 只对 adapters 段已声明的适配器生效
 ```
 
-### 13.6 示例
+### 12.6 示例
 
 以下片段取自 `configs/config.yaml`（注释与未改动的部分已省略），键名与取值均为该文件中的真实键名；其中 `adapters.feishu` 在示例文件里处于注释状态，这里是展开后的形态：
 
@@ -221,16 +221,16 @@ plugins:
     plugins_admin_only: true
 ```
 
-### 13.7 配置要求（逐条核对）
+### 12.7 配置要求（逐条核对）
 
 1. 配置结构体放在 `internal/config`。
    核对：`internal/config/config.go` 定义 `Config`、`LogConfig`、`MetricsConfig`、`LimitsConfig`、`AuthConfig`、`BotConfig`、`PluginConfig`、`AdapterConfig`；环境变量覆盖在 `internal/config/env.go`；配置测试在 `internal/config/config_test.go`。
 2. 支持环境变量覆盖。
-   核对：`applyEnv`/`applyEnvPath`（`env.go`），规则见 13.5；`Load` 传入 `os.Environ()`。
+   核对：`applyEnv`/`applyEnvPath`（`env.go`），规则见 12.5；`Load` 传入 `os.Environ()`。
 3. 支持插件独立配置；适配器实例配置写在 `bots[]` 条目上。
    核对：`PluginConfig.Settings`（`decodePlugin`）、`BotConfig.Settings`（`decodeBot` 的 `default` 分支）；实例级经 `AdapterContext.Config` 读取。
 4. 配置加载失败必须返回明确错误。
-   核对：`Load`/`LoadBytes` 全程 `%w` 包装并带 `path`；`decode` 报未知顶层键、顶层非映射、YAML 语法错误；`Config.validate` 与 `LogConfig.validate`/`LimitsConfig.validate` 报带字段路径的错误（见 13.1）。
+   核对：`Load`/`LoadBytes` 全程 `%w` 包装并带 `path`；`decode` 报未知顶层键、顶层非映射、YAML 语法错误；`Config.validate` 与 `LogConfig.validate`/`LimitsConfig.validate` 报带字段路径的错误（见 12.1）。
 5. `adapters.<name>.enabled` 控制适配器是否启用，缺省为 **true**（与插件相反：适配器不需要声明即可用，声明只用于启用/禁用）。环境变量 `KEI_ADAPTERS_<NAME>_ENABLED` 可覆盖。
    核对：`AdapterConfig.IsEnabled`、`Config.AdapterEnabled`（未声明返回 true）、`decodeAdapter` 的 `enabled` 分支、`applyAdapterEnv` 的 `enabled` 分支。注意环境变量只对 `adapters` 段已声明的名字生效（`applyAdapterEnv` 遍历 `c.Adapters`）。
 6. `enabled: false` 的适配器不装配、其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn 日志），也不做字段校验；核心仍可只运行插件。
