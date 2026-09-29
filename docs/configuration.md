@@ -34,10 +34,11 @@ type Config struct {
 	Adapters map[string]AdapterConfig   `yaml:"adapters"`
 	Limits   LimitsConfig               `yaml:"limits"`
 	Auth     AuthConfig                 `yaml:"auth"`
+	Storage  StorageConfig              `yaml:"storage"`
 }
 ```
 
-顶层只允许这 7 个键，其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins` 由自定义解码函数处理，条目上的未知键不会报错，而是收进各自的 `Settings`（见 12.2–12.3）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。
+顶层只允许这 8 个键，其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins`/`storage` 由自定义解码函数处理，条目上的未知键不会报错，而是收进各自的 `Settings`/`Params`（见 12.2–12.3、12.5）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。
 
 | 段 | 键 | 结构体字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- | --- |
@@ -52,15 +53,19 @@ type Config struct {
 | `bots` | — | `[]BotConfig` | 序列 | 无默认，至少一个 | 见 12.2 |
 | `plugins` | — | `map[string]PluginConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.3 |
 | `adapters` | — | `map[string]AdapterConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.4 |
+| `storage` | `type` | `StorageConfig.Type` | string | `memory` | 存储后端类型；必须匹配 `^[a-z0-9_-]+$`，是否存在由装配期判定（见 12.5） |
+| `storage` | `dsn` | `StorageConfig.DSN` | string | `""` | 数据源，语义由后端定义；`memory` 忽略 |
+| `storage` | 其余键 | `StorageConfig.Params` | 映射 | `{}` | 原样传给后端，如 `cleanup_interval`、`max_open_conns` |
 
-默认值由 `applyDefaults` 落地：`log.level`/`log.format` 为空时填 `info`/`text`；`Plugins`/`Adapters` 为 nil 时填空映射。`limits`、`auth.admin_users`、`metrics.addr` 的默认值就是 Go 零值，`applyDefaults` 不做处理。
+默认值由 `applyDefaults` 落地：`log.level`/`log.format` 为空时填 `info`/`text`；`storage.type` 为空时填 `memory`；`Plugins`/`Adapters` 为 nil 时填空映射。`limits`、`auth.admin_users`、`metrics.addr` 的默认值就是 Go 零值，`applyDefaults` 不做处理。
 
-校验逐段进行，错误都带字段路径（`Config.validate` 及其方法 `LogConfig.validate`、`LimitsConfig.validate`）：
+校验逐段进行，错误都带字段路径（`Config.validate` 及其方法 `LogConfig.validate`、`StorageConfig.validate`、`LimitsConfig.validate`）：
 
 - `bots` 至少一个；`bots[i].name` 非空且全局唯一；`bots[i].adapter` 非空且匹配 `^[a-z0-9_-]+$`；`bots[i].enabled` 必须是布尔（解码阶段报错，不参与此处校验）。
 - `log.level` 必须属于 `{debug, info, warn, error}`，`log.format` 属于 `{text, json}`（比较前转小写；空值留给 `applyDefaults`）。
 - `limits.*` 的速率与突发容量都不能为负。
 - 插件名不能为空；适配器名不能为空且匹配 `^[a-z0-9_-]+$`。
+- `storage.type` 非空且匹配 `^[a-z0-9_-]+$`；类型是否存在不在配置层校验（由装配期负责），`dsn` 是否必填也不在此校验（由各后端负责）。
 
 加载失败的错误都包装了来源：`Load` 返回 `config: 读取配置文件 <path>: ...`（读文件失败）或 `config: 配置文件 <path>: ...`（解析/覆盖/校验失败），`Load` 内部对 `os.ErrNotExist` 做 `%w` 包装；YAML 语法错误为 `config: YAML 解析失败: ...`；段级解码错误会再包一层 `<段名> 段: ...`。
 
@@ -126,7 +131,25 @@ type AdapterConfig struct {
 - 装配期的其他告警：`adapters` 段声明了但未注册的适配器（`适配器已在 adapters 段声明但未注册（是否漏了空导入？）`）。
 - **禁用语义**：`enabled: false` 的适配器不装配，其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn：`适配器已禁用，跳过 bot`），不参与未知适配器名与保留键校验；核心仍可只运行插件（`pkg/kei.Run` 会记 warn：`没有启用的适配器，核心将只运行插件`）。
 
-### 12.5 环境变量覆盖
+### 12.5 `storage`
+
+```go
+type StorageConfig struct {
+	Type   string         `yaml:"type"`
+	DSN    string         `yaml:"dsn"`
+	Params map[string]any // 除 type/dsn 外的其余键
+}
+```
+
+存储后端由 `storage.type` 选择，`dsn` 与其余键进入 `Params` 后原样交给对应后端。`type` 默认 `memory`，`storage` 段整体可以省略。
+
+- **已注册类型**：`memory`（默认，进程内内存，重启即丢）、`sqlite`（GORM + cgo 版 `github.com/mattn/go-sqlite3`，`dsn` 是文件路径或 `file:...?params`）、`mysql`（GORM + `github.com/go-sql-driver/mysql`，`dsn` 形如 `user:pass@tcp(host:3306)/db?parseTime=true`）。`parseTime=true` 是过期时间列能扫描为 `time.Time` 的前提，核心不校验，缺失时由驱动报错。
+- **类型注册表在装配期**：`internal/storage` 提供 `Register`/`Open`/`Kinds`，各后端包在 `init()` 注册；`pkg/kei.buildStorage` 调用 `storage.Open`，未知类型在此报错并列出已注册类型：`kei: 初始化 storage: storage: 未知存储类型 "x"（已注册: memory, mysql, sqlite）`。配置层不维护类型白名单，第三方可注入 `Options.Storage` 使用自定义实现。
+- **通用后端参数**：`cleanup_interval`（过期行清理间隔，默认 `1m`，`0` 关闭后台清理；过期键在 `Get` 命中时也会被惰性删除并返回 `bot.ErrNotFound`）。
+- **MySQL 连接池参数**：`max_open_conns`、`max_idle_conns`、`conn_max_lifetime`（`time.ParseDuration` 字符串或秒数）；三者都缺失时不改动驱动默认值。SQLite 不使用这些键。
+- **注入优先**：`Options.Storage` 非 nil 时优先使用（由调用方拥有，`Run` 不关闭）；为 nil 时按 `storage.type` 构造，并在 `Run` 返回前关闭自有实例。
+
+### 12.6 环境变量覆盖
 
 规则在 `internal/config/env.go`（`applyEnv`、`applyEnvPath`、`canonicalName`、`canonicalSegments`）：
 
@@ -141,6 +164,8 @@ type AdapterConfig struct {
 | `KEI_LIMITS_HANDLER_RATE` / `KEI_LIMITS_SEND_RATE` | 浮点速率；空值表示不覆盖，非法值报错并点名变量 |
 | `KEI_LIMITS_HANDLER_BURST` / `KEI_LIMITS_SEND_BURST` | 整数突发容量；同样空值不覆盖、非法值报错 |
 | `KEI_AUTH_ADMIN_USERS` | 逗号分隔列表，忽略空白与空项；无有效项时为 nil |
+| `KEI_STORAGE_TYPE` / `KEI_STORAGE_DSN` | `storage.type` / `storage.dsn`（原样字符串） |
+| `KEI_STORAGE_PARAMS_<KEY>` | `storage.Params[<key>]`（键名按规范化规则映射，值按 YAML 规则推断类型） |
 
 - `KEI_BOTS_<BOT>_<KEY>`：`<BOT>` 按规范化名匹配**配置中已存在的** bot（快照于覆盖开始前，因此 `KEI_BOTS_X_NAME` 之后的其他变量仍按旧名匹配；同时命中多个 bot 时取规范化名最长者，长度相同则全部应用）。`<KEY>` 为 `name`/`adapter`/`plugins`（逗号分隔列表）时写入对应字段，为 `enabled` 时按布尔覆盖实例启用状态（值不可解析为布尔则**静默忽略**），其余键写入 `Settings`。
 - `KEI_PLUGINS_<NAME>_<KEY>`：只命中配置中已存在的插件名，未知插件名忽略。`<KEY>` 为 `enabled` 时按布尔覆盖（值不可解析为布尔则**静默忽略**），其余键写入该插件的 `Settings`。
@@ -160,9 +185,12 @@ KEI_AUTH_ADMIN_USERS=ou_xxx,123456
 KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx      # bot 名 feishu-main → Settings["app_secret"]
 KEI_PLUGINS_ECHO_ENABLED=false           # 只对已列出的插件生效
 KEI_ADAPTERS_MYIM_ENABLED=false          # 只对 adapters 段已声明的适配器生效
+KEI_STORAGE_TYPE=sqlite                  # 切换存储后端
+KEI_STORAGE_DSN=/var/lib/kei/storage.db
+KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=5m   # storage.Params["cleanup_interval"] = "5m"
 ```
 
-### 12.6 示例
+### 12.7 示例
 
 以下片段取自 `configs/config.yaml`（注释与未改动的部分已省略），键名与取值均为该文件中的真实键名；其中 `adapters.feishu` 在示例文件里处于注释状态，这里是展开后的形态：
 
@@ -219,18 +247,24 @@ plugins:
   manage:
     enabled: true
     plugins_admin_only: true
+
+# 可选：切换存储后端。缺省 memory（重启即丢）。
+# storage:
+#   type: sqlite
+#   dsn: /var/lib/kei/storage.db
+#   cleanup_interval: 1m
 ```
 
-### 12.7 配置要求（逐条核对）
+### 12.8 配置要求（逐条核对）
 
 1. 配置结构体放在 `internal/config`。
-   核对：`internal/config/config.go` 定义 `Config`、`LogConfig`、`MetricsConfig`、`LimitsConfig`、`AuthConfig`、`BotConfig`、`PluginConfig`、`AdapterConfig`；环境变量覆盖在 `internal/config/env.go`；配置测试在 `internal/config/config_test.go`。
+   核对：`internal/config/config.go` 定义 `Config`、`LogConfig`、`MetricsConfig`、`LimitsConfig`、`AuthConfig`、`StorageConfig`、`BotConfig`、`PluginConfig`、`AdapterConfig`；环境变量覆盖在 `internal/config/env.go`；配置测试在 `internal/config/config_test.go`。
 2. 支持环境变量覆盖。
-   核对：`applyEnv`/`applyEnvPath`（`env.go`），规则见 12.5；`Load` 传入 `os.Environ()`。
+   核对：`applyEnv`/`applyEnvPath`（`env.go`），规则见 12.6；`Load` 传入 `os.Environ()`。
 3. 支持插件独立配置；适配器实例配置写在 `bots[]` 条目上。
    核对：`PluginConfig.Settings`（`decodePlugin`）、`BotConfig.Settings`（`decodeBot` 的 `default` 分支）；实例级经 `AdapterContext.Config` 读取。
 4. 配置加载失败必须返回明确错误。
-   核对：`Load`/`LoadBytes` 全程 `%w` 包装并带 `path`；`decode` 报未知顶层键、顶层非映射、YAML 语法错误；`Config.validate` 与 `LogConfig.validate`/`LimitsConfig.validate` 报带字段路径的错误（见 12.1）。
+   核对：`Load`/`LoadBytes` 全程 `%w` 包装并带 `path`；`decode` 报未知顶层键、顶层非映射、YAML 语法错误；`Config.validate` 与 `LogConfig.validate`/`StorageConfig.validate`/`LimitsConfig.validate` 报带字段路径的错误（见 12.1）。
 5. `adapters.<name>.enabled` 控制适配器是否启用，缺省为 **true**（与插件相反：适配器不需要声明即可用，声明只用于启用/禁用）。环境变量 `KEI_ADAPTERS_<NAME>_ENABLED` 可覆盖。
    核对：`AdapterConfig.IsEnabled`、`Config.AdapterEnabled`（未声明返回 true）、`decodeAdapter` 的 `enabled` 分支、`applyAdapterEnv` 的 `enabled` 分支。注意环境变量只对 `adapters` 段已声明的名字生效（`applyAdapterEnv` 遍历 `c.Adapters`）。
 6. `enabled: false` 的适配器不装配、其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn 日志），也不做字段校验；核心仍可只运行插件。

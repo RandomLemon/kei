@@ -114,7 +114,10 @@ kei/
 │   ├── middleware/               # 中间件：Recover、Logger、Metrics、Timeout、Dedup、RateLimit、Auth
 │   ├── eventbus/                 # 事件总线：分片保序、去重、优雅关闭前排空队列
 │   ├── config/                   # YAML 配置加载、合并与校验，环境变量覆盖
-│   ├── storage/                  # bot.Storage 内存实现与权限拒绝实现
+│   ├── storage/                  # bot.Storage 内存实现、权限拒绝实现与类型注册表（Register/Open/Kinds）
+│   │   ├── sqlstore/             # GORM 通用 SQL 实现：Entry 模型、Get/Set/Delete/Close、后台过期清理、连接池
+│   │   ├── sqlite/               # SQLite 方言包：init 注册 "sqlite"（cgo 驱动，需 CGO_ENABLED=1）
+│   │   └── mysql/                # MySQL 方言包：init 注册 "mysql"（含连接池参数）
 │   ├── dedup/                    # 带 TTL 与容量上限的去重集合
 │   ├── ratelimit/                # 按 key 的令牌桶：非阻塞 Allow 与阻塞 Wait
 │   ├── metrics/                  # 指标注册表与 Recorder 实现（Prometheus 文本端点）
@@ -127,11 +130,13 @@ kei/
 │   ├── echo/                     # 示例插件：/echo
 │   └── manage/                   # 管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin
 ├── configs/
-│   └── config.yaml               # 示例配置（log、metrics、limits、auth、adapters、bots、plugins）
+│   └── config.yaml               # 示例配置（log、metrics、limits、auth、storage、adapters、bots、plugins）
 └── docs/                         # 设计文档集，入口为 docs/README.md 文档索引
 ```
 
 `pkg/bot`、`internal/`、`adapters/`、`plugins/` 的职责划分是硬约束：`cmd/` 与 `internal/` 中不得出现平台名分支，所有平台细节位于 `adapters/<platform>` 或第三方适配器包内。
+
+外部依赖（`go.mod` 直接依赖）：配置用 `gopkg.in/yaml.v3`，SQL 存储后端用 `gorm.io/gorm` + `gorm.io/driver/sqlite`、`gorm.io/driver/mysql`。SQLite 方言底层是 cgo 版 `github.com/mattn/go-sqlite3`，因此构建 SQLite 后端需要 `CGO_ENABLED=1`（devShell 与 `nix build` 已显式启用，并在 `flake.nix` 的 `devTools` 中提供 `gcc`）。除此之外优先标准库。
 
 ### 4.1 第三方适配器独立 module 布局
 

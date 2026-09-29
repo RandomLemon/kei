@@ -27,7 +27,8 @@ import (
 	"github.com/RandomLemon/kei/internal/adaptermgr"
 	"github.com/RandomLemon/kei/internal/engine"
 	"github.com/RandomLemon/kei/internal/metrics"
-	"github.com/RandomLemon/kei/internal/storage"
+	_ "github.com/RandomLemon/kei/internal/storage/mysql"
+	_ "github.com/RandomLemon/kei/internal/storage/sqlite"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
@@ -48,8 +49,8 @@ type Options struct {
 	Logger *slog.Logger
 	// HTTPClient 是适配器与插件共用的 HTTP 客户端；nil 时为 15s 超时的客户端。
 	HTTPClient *http.Client
-	// Storage 是插件存储；nil 时新建内存实现并在 Run 返回前关闭。
-	// 传入的 Storage 由调用方拥有，Run 不关闭它。
+	// Storage 是插件存储；非 nil 时优先使用（由调用方拥有，Run 不关闭）。
+	// 为 nil 时按配置 storage.type 构造（默认 memory），并在 Run 返回前关闭。
 	Storage bot.Storage
 }
 
@@ -67,12 +68,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	slog.SetDefault(logger)
 
-	store := opts.Storage
-	if store == nil {
-		owned := storage.NewMemory()
-		defer func() { _ = owned.Close() }()
-		store = owned
+	store, closeStore, err := buildStorage(opts, cfg)
+	if err != nil {
+		return err
 	}
+	defer closeStore()
 
 	httpClient := opts.HTTPClient
 	if httpClient == nil {

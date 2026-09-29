@@ -12,8 +12,34 @@ import (
 	"time"
 
 	"github.com/RandomLemon/kei/internal/config"
+	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
+
+// buildStorage 解析存储：Options.Storage 显式注入优先；否则按 cfg.Storage 构造。
+//
+// 第二返回值是关闭自有存储的清理函数（注入时为 no-op），总是非 nil。
+func buildStorage(opts Options, cfg *config.Config) (bot.Storage, func(), error) {
+	if opts.Storage != nil {
+		return opts.Storage, func() {}, nil
+	}
+	params := make(map[string]any, len(cfg.Storage.Params)+1)
+	for k, v := range cfg.Storage.Params {
+		params[k] = v
+	}
+	if cfg.Storage.DSN != "" {
+		params["dsn"] = cfg.Storage.DSN
+	}
+	store, err := storage.Open(cfg.Storage.Type, bot.NewConfig(params))
+	if err != nil {
+		return nil, nil, fmt.Errorf("kei: 初始化 storage: %w", err)
+	}
+	closeStore := func() {}
+	if c, ok := store.(interface{ Close() error }); ok {
+		closeStore = func() { _ = c.Close() }
+	}
+	return store, closeStore, nil
+}
 
 // buildConfig 解析配置来源；两个来源互斥且必填其一。
 //

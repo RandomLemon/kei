@@ -855,3 +855,59 @@ bots:
 		}
 	})
 }
+
+const storageBaseYAML = "bots:\n  - name: b\n    adapter: mock\n"
+
+func TestStorageSection(t *testing.T) {
+	t.Run("解码 type/dsn/params", func(t *testing.T) {
+		cfg := mustLoadBytes(t, storageBaseYAML+`
+storage:
+  type: sqlite
+  dsn: /tmp/k.db
+  cleanup_interval: 1m
+  max_open_conns: 10
+`)
+		if cfg.Storage.Type != "sqlite" || cfg.Storage.DSN != "/tmp/k.db" {
+			t.Fatalf("storage = %+v", cfg.Storage)
+		}
+		if cfg.Storage.Params["cleanup_interval"] != "1m" {
+			t.Fatalf("params.cleanup_interval = %#v, want \"1m\"", cfg.Storage.Params["cleanup_interval"])
+		}
+		if cfg.Storage.Params["max_open_conns"] != 10 {
+			t.Fatalf("params.max_open_conns = %#v, want 10", cfg.Storage.Params["max_open_conns"])
+		}
+	})
+
+	t.Run("缺省与 null 都填 memory", func(t *testing.T) {
+		for _, yaml := range []string{storageBaseYAML, storageBaseYAML + "storage:\n"} {
+			cfg := mustLoadBytes(t, yaml)
+			if cfg.Storage.Type != "memory" {
+				t.Fatalf("storage.type = %q, want memory", cfg.Storage.Type)
+			}
+		}
+	})
+}
+
+func TestStorageEnvOverride(t *testing.T) {
+	cfg := mustLoadBytes(t, storageBaseYAML,
+		"KEI_STORAGE_TYPE=sqlite",
+		"KEI_STORAGE_DSN=/tmp/x.db",
+		"KEI_STORAGE_PARAMS_MAX_OPEN_CONNS=5",
+	)
+	if cfg.Storage.Type != "sqlite" {
+		t.Fatalf("storage.type = %q, want sqlite", cfg.Storage.Type)
+	}
+	if cfg.Storage.DSN != "/tmp/x.db" {
+		t.Fatalf("storage.dsn = %q", cfg.Storage.DSN)
+	}
+	if cfg.Storage.Params["max_open_conns"] != 5 {
+		t.Fatalf("params.max_open_conns = %#v, want 5", cfg.Storage.Params["max_open_conns"])
+	}
+}
+
+func TestStorageValidateErrors(t *testing.T) {
+	_, err := LoadBytes([]byte(storageBaseYAML+"storage:\n  type: \"Bad Type\"\n"), nil)
+	if err == nil || !strings.Contains(err.Error(), "storage.type") {
+		t.Fatalf("错误 = %v", err)
+	}
+}

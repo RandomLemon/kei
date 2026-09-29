@@ -22,7 +22,7 @@
 
 - Go 1.25+（`go.mod` 为 `go 1.25.0`）。工具链、`gopls`、`golangci-lint`、`dlv` 由 `flake.nix` + direnv 提供（`GOTOOLCHAIN=local`），可用命令见 [`docs/testing.md`](docs/testing.md) 第 16 章。
 - 优先标准库：`context`、`log/slog`、`net/http`、`encoding/json`、`sync`、`time`。
-- 允许的第三方依赖仅 `gopkg.in/yaml.v3`（配置）。新增依赖必须先说明理由，并同步更新 [`docs/architecture.md`](docs/architecture.md) 与 [`README.md`](README.md)。
+- 允许的第三方依赖为 `gopkg.in/yaml.v3`（配置）与 `gorm.io/gorm`、`gorm.io/driver/sqlite`、`gorm.io/driver/mysql`（SQL 存储后端）。`gorm.io/driver/sqlite` 底层是 cgo 版 `github.com/mattn/go-sqlite3`，构建需 `CGO_ENABLED=1`（devShell 与 `nix build` 已启用）。新增依赖必须先说明理由，并同步更新 [`docs/architecture.md`](docs/architecture.md) 与 [`README.md`](README.md)。
 - 禁止用 Go `plugin` 作为插件机制：适配器与插件都在编译期注册到各自注册表，由配置驱动装配。
 
 ### 2.3 运行时契约

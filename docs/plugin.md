@@ -350,7 +350,8 @@ var ErrNotFound = errors.New("bot: storage: key not found")
 
 // Storage 是插件可用的键值存储。
 //
-// MVP 使用内存实现，后续可替换为 Redis/SQLite；实现必须并发安全。
+// 默认内存实现；可经配置 storage.type 切换为 sqlite/mysql，或注入自定义实现。
+// 实现必须并发安全。
 type Storage interface {
 	// Get 读取键值，键不存在时返回 ErrNotFound。
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -367,7 +368,9 @@ type Storage interface {
 - `Get` 返回值的副本，键不存在或已过期返回 `bot.ErrNotFound`；`Set` 拷贝入参切片，`ttl <= 0` 表示永不过期；`Delete` 对不存在的键返回 nil；`Len()` 返回当前条目数（含尚未清理的过期条目）。入参 ctx 已取消时立即返回 `ctx.Err()`。
 - `storage.Denied() bot.Storage`：拒绝一切访问的实现，`Get`/`Set`/`Delete` 都返回 `storage.ErrPermissionDenied`。未声明 `PermStorage` 的插件（`internal/engine.pluginAPI`）与适配器（`internal/adaptermgr`）拿到的就是它。`ErrPermissionDenied` 定义在 `internal/storage`，插件只依赖 `pkg/bot` 时无法引用该变量，只能按「错误非 nil」或错误文本处理；可比较的公开哨兵只有 `bot.ErrNotFound`。
 
-替换方式：`engine.Options.Storage` 传入自定义 `bot.Storage`；为 nil 时引擎内部新建 `storage.NewMemory()` 并在关闭时调用其 `Close`。`internal/pluginmgr.Deps.Storage` 则接收引擎注入的实例，按插件权限分发。
+替换方式：配置 `storage.type`/`storage.dsn` 选择内置后端（`memory` 默认、`sqlite`、`mysql`，见 [configuration.md](configuration.md) 12.5），或 `kei.Options.Storage` 注入自定义 `bot.Storage`（非 nil 优先，由调用方拥有，`Run` 不关闭）。`pkg/kei.buildStorage` 为 nil 时按配置构造，并在 `Run` 返回前关闭自有实例。`internal/pluginmgr.Deps.Storage` 则接收最终解析出的实例，按插件权限分发。
+
+SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参，`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。
 
 ### 11.3 PluginContext
 
@@ -454,7 +457,7 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 要点：
 
 1. `BotAPI` 是插件与平台交互的唯一入口，`Send` 需要 `PermSendMessage`，`Reply` 始终可用。
-2. `Storage` 的 MVP 为内存实现，可通过 `engine.Options.Storage` 替换为 Redis/SQLite 等实现。
+2. `Storage` 默认内存实现，可经配置 `storage.type` 切换为 `sqlite`/`mysql`，或经 `kei.Options.Storage` 注入自定义实现。
 3. 插件通过 `PluginContext` 获取配置、日志、HTTP Client、Storage、插件目录与适配器目录。
 4. 插件默认不能任意发消息（需 `PermSendMessage`）、不能读写存储（需 `PermStorage`）、不能发起出站请求（需 `PermNetwork`）；核心不提供文件访问能力。
 

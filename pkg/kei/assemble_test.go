@@ -2,8 +2,10 @@ package kei
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +247,59 @@ func TestSelectPluginsErrors(t *testing.T) {
 				t.Fatalf("err = %v, want 包含 %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildStorageInjected(t *testing.T) {
+	injected := storage.NewMemory()
+	defer func() { _ = injected.Close() }()
+
+	cfg := mustConfig(t, mockBotYAML)
+	got, closeStore, err := buildStorage(Options{Storage: injected}, cfg)
+	if err != nil {
+		t.Fatalf("buildStorage: %v", err)
+	}
+	if got != bot.Storage(injected) {
+		t.Fatalf("应返回注入的实例")
+	}
+	closeStore() // 注入时清理函数为 no-op
+	if err := got.Set(context.Background(), "k", []byte("v"), 0); err != nil {
+		t.Fatalf("注入的存储不应被关闭: %v", err)
+	}
+}
+
+func TestBuildStorageConfiguredSQLite(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "k.db")
+	cfg := mustConfig(t, "bots:\n  - name: b\n    adapter: mock\nstorage:\n  type: sqlite\n  dsn: "+dsn)
+	ctx := context.Background()
+
+	first, closeFirst, err := buildStorage(Options{}, cfg)
+	if err != nil {
+		t.Fatalf("buildStorage: %v", err)
+	}
+	if err := first.Set(ctx, "k", []byte("v"), 0); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	closeFirst()
+
+	second, closeSecond, err := buildStorage(Options{}, cfg)
+	if err != nil {
+		t.Fatalf("第二次 buildStorage: %v", err)
+	}
+	defer closeSecond()
+	got, err := second.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got) != "v" {
+		t.Fatalf("Get = %q, want v（sqlite 应持久化）", got)
+	}
+}
+
+func TestBuildStorageUnknownType(t *testing.T) {
+	cfg := mustConfig(t, "bots:\n  - name: b\n    adapter: mock\nstorage:\n  type: nosuch\n")
+	_, _, err := buildStorage(Options{}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "未知存储类型") {
+		t.Fatalf("错误 = %v", err)
 	}
 }

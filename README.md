@@ -25,7 +25,7 @@ flowchart TD
   `事件 ID + TTL` 去重；优雅关闭前排空已入队事件。
 - **中间件**：Recover / Logger / Metrics / Timeout / Auth / RateLimit / Dedup 可组合，洋葱模型。
 - **插件**：插件通过 `init()` 注册、配置启用，只依赖 `pkg/bot`，核心不因插件崩溃而退出。
-- **零第三方运行时依赖**：仅 `gopkg.in/yaml.v3`。
+- **运行时依赖**：仅 `gopkg.in/yaml.v3` 与 GORM（`gorm.io/gorm` + SQLite/MySQL 方言驱动）。
 
 ## 目录结构
 
@@ -46,7 +46,7 @@ kei/
 │   ├── pluginmgr/         插件生命周期管理
 │   ├── adaptermgr/        适配器装配：注册表查表、权限裁剪、保留键校验
 │   ├── config/            YAML 配置加载与环境变量覆盖
-│   ├── storage/           bot.Storage 内存实现
+│   ├── storage/           bot.Storage 内存实现 + 类型注册表（sqlstore/sqlite/mysql 为 SQL 后端）
 │   ├── dedup/             带 TTL 与容量的去重集合
 │   └── ratelimit/         按 key 的令牌桶（非阻塞 Allow + 阻塞 Wait）
 ├── adapters/
@@ -170,6 +170,10 @@ curl -sS 127.0.0.1:19090/metrics | grep kei_events
   `Options` 只提供依赖注入点（`Logger`/`HTTPClient`/`Storage`/`Plugins`），配置语义完全由 YAML
   决定，不新建第二套配置。`Options.Plugins` 可直接注入 `*bot.FuncPlugin`（见「写一个插件」的内联
   写法）。`ConfigFile` 与 `Config` 二选一必填：都不给时 `Run` 直接报错，不会静默回落默认路径。
+
+  `Options.Storage` 为 nil 时按配置 `storage` 段构造：`storage.type` 取 `memory`（默认）/`sqlite`/`mysql`，
+  `storage.dsn` 及段内其余键传给对应后端（见 [docs/configuration.md](docs/configuration.md) 12.5）；
+  未知 `storage.type` 在启动时直接报错并列出已注册类型。
 
 **1. 跑通环境与骨架**
 
@@ -297,6 +301,8 @@ KEI_LIMITS_SEND_RATE=5
 KEI_AUTH_ADMIN_USERS=ou_xxx,123456
 KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx      # bot 名 feishu-main → 其 app_secret
 KEI_PLUGINS_WEATHER_API_KEY=xxx
+KEI_STORAGE_TYPE=sqlite                  # 切换存储后端（默认 memory）
+KEI_STORAGE_DSN=/var/lib/kei/storage.db
 ```
 
 值的类型按 YAML 规则推断（`true`→bool、`3`→int、其余→string），所以 `enabled: "false"` 也能生效。
@@ -602,7 +608,7 @@ OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 
   `Engine.SendRequest`。
 - 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称；
   不指定则只有该平台仅有一个 bot 时才能自动选择。
-- `Storage` 为内存实现，重启即丢失；生产可替换为 Redis/SQLite（实现 `bot.Storage` 即可）。
+- `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。
 - OneBot 一个 bot 实例同一时刻只启用一种接入方式（`mode`）：HTTP 双向用
   `forward_http`/`reverse_http`，`reverse_ws` 由 OneBot 实现连入，`forward_ws` 由 kei
   主动连出且不监听端口。一个 bot 实例只服务一个账号（`self_id` 非空时按 `X-Self-ID`

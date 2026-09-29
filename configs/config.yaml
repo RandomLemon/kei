@@ -6,6 +6,8 @@
 #   KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx     # 替换 bots 中 name=feishu-main 的 app_secret
 #   KEI_PLUGINS_WEATHER_API_KEY=xxx
 #   KEI_AUTH_ADMIN_USERS=ou_xxx,123456
+#   KEI_STORAGE_TYPE=sqlite
+#   KEI_STORAGE_DSN=/var/lib/kei/storage.db
 
 log:
   level: info    # debug | info | warn | error
@@ -14,6 +16,15 @@ log:
 # Prometheus 指标与健康检查；addr 为空表示不暴露。
 metrics:
   addr: 127.0.0.1:19090
+
+# 插件与适配器共用的键值存储。type: memory | sqlite | mysql（默认 memory）。
+# memory 重启即丢；sqlite 的 dsn 是文件路径；mysql 的 dsn 必须带 parseTime=true。
+# 未知 type 在装配期报错并列出已注册类型。也可用 KEI_STORAGE_TYPE / KEI_STORAGE_DSN 覆盖。
+# storage:
+#   type: sqlite
+#   dsn: /var/lib/kei/storage.db
+#   cleanup_interval: 1m        # 过期行清理间隔，0 关闭后台清理
+#   max_open_conns: 10          # 仅 mysql
 
 # 限流：0 表示不限制。
 limits:

@@ -62,7 +62,7 @@
 | `adapters/onebot` | `onebot_test.go`、`mode_test.go`、`register_test.go`、`reverse_test.go`、`forward_test.go` | 40 | 群消息数组与私聊 CQ 串解析、事件类型与确定性 ID、鉴权与畸形请求、先响应后投递、发送降级（Markdown→文本、卡片→文本）、私聊与目标推断、发送错误、自定义路径与停止；`ws_path`/`ping_interval` 落到实例、缺 `network` 拒绝；`mode` 归一与必填键校验（`forward_http`/`reverse_http`/`forward_ws`/`reverse_ws`、大小写与空白不敏感、无关键忽略）、按拓扑只挂实际入口（HTTP 上报 204 且 `ws_path` 404、反向 WS 握手 101 且 `path` 404、`forward_ws` 不监听任何端口）；反向 WebSocket 握手与 `Accept` 校验、非法握手拒绝、鉴权、事件上行与分片、经连接发送、优先 WebSocket、并发响应按 echo 匹配、role 回退、`self_id` 过滤、多连接、心跳与半开连接回收、协议错误、停止关闭连接、客户端断开解除发送阻塞；正向 WebSocket 客户端握手（请求行与升级头、`Authorization`、`Sec-WebSocket-Accept` 校验失败的三类拒绝）、掩码方向、事件上行、按 echo 发送、断线重连后仍可发送、停止关闭连接 |
 | `cmd/bot` | `main_test.go`、`thirdparty_adapter_test.go` | 4 | CLI 薄壳（`TestVersionFlag` 打印 `kei v<version>` 且不加载配置、`TestUnknownFlag` 未知 flag 报错）、示例配置可加载且 mock bot 设置可用、示例配置飞书 bot 经 `enabled: false` 停用且 `enabled` 不落入 `Settings`；第三方适配器端到端（`TestThirdPartyAdapterEndToEnd`：进程内注册 + 配置，经 `adaptermgr.Build` + `engine` + `echo` 插件跑通事件→回复） |
 | `internal/adaptermgr` | `adaptermgr_test.go` | 18 | 注册表校验表驱动、未知适配器报错并列出已注册名、被拒注册报错（`TestValidateRegistrationRejects`）、保留键需 `net_listen`、权限裁剪、未知配置键与未声明平台告警、工厂失败与 nil 实例、禁用适配器跳过（其 bot 跳过 / 其他 bot 不受影响）、禁用条目跳过校验、实例级 `bots[].enabled` 停用（`TestBuildSkipsDisabledBot`、`TestValidateDisabledBotSkipsReservedOption`） |
-| `internal/config` | `config_test.go` | 25 | 完整 YAML 与默认值、插件标量简写与引号布尔、JSON 往返、环境变量覆盖与类型推断、最长 bot 名匹配、校验错误表驱动（缺 bot/空名/非法 adapter/重名/未知键）、日志级别、限流与 admin 环境覆盖、`adapters` 段默认/启用/环境覆盖/校验、实例级 `bots[].enabled`（`TestBotEnabled`：缺省启用、显式 false/true、`KEI_BOTS_<NAME>_ENABLED` 覆盖、`enabled` 不落入 `Settings`） |
+| `internal/config` | `config_test.go` | 28 | 完整 YAML 与默认值、插件标量简写与引号布尔、JSON 往返、环境变量覆盖与类型推断、最长 bot 名匹配、校验错误表驱动（缺 bot/空名/非法 adapter/重名/未知键）、日志级别、限流与 admin 环境覆盖、`adapters` 段默认/启用/环境覆盖/校验、实例级 `bots[].enabled`（`TestBotEnabled`：缺省启用、显式 false/true、`KEI_BOTS_<NAME>_ENABLED` 覆盖、`enabled` 不落入 `Settings`）、`storage` 段（`TestStorageSection`：type/dsn 与任意键进 `Params`、缺省与 `null` 都填 `memory`；`TestStorageEnvOverride`：`KEI_STORAGE_TYPE`/`KEI_STORAGE_DSN`/`KEI_STORAGE_PARAMS_<KEY>`；`TestStorageValidateErrors`：非法字符报错） |
 | `internal/dedup` | `dedup_test.go` | 7 | 重复检测、空 ID 不去重、TTL 过期复用、GC、容量淘汰最旧、nil 安全、并发无竞态 |
 | `internal/engine` | `engine_test.go`、`pluginapi_test.go`、`adapter_catalog_test.go` | 24 | Echo 全链路集成、优雅关闭排空、同会话保序、重复 ID 丢弃、panic 隔离、超时取消 ctx、每 bot 插件白名单、Options 校验、发送解析与重试、空消息/降级后为空报错、同平台多 bot 需显式 `BotID`、重复 `Run`、无事件回复失败、适配器启动失败上抛、实例级 `enabled: false` 的 bot 不参与白名单收窄也不进规则白名单（`TestDisabledBotExcludedFromPluginWhitelist`、`TestDisabledBotWhitelistNarrowing`）；权限门（`send_message`）、全局中间件顺序、管理员判定、发送限流、`Emit` 指标与 nil 拒绝、模板默认值；适配器目录快照隔离与插件可见目录、`Emit` 进入总线并送达插件 |
 | `internal/eventbus` | `bus_test.go` | 23 | 会话内保序、同会话落同一分片、不同会话并发、重复 ID 只处理一次、空 ID 不去重、TTL 过期、队列满不阻塞、`Close` 排空/幂等/遵守 ctx/等待 worker 退出、订阅顺序、nil 拒绝、panic 不影响 worker、`Emit` 等价 `Publish`、`Stats` 计数与快照、并发同 ID 只处理一次、分片路由确定且在范围内、`Publish` 不改事件、默认值 |
@@ -72,9 +72,12 @@
 | `internal/ratelimit` | `ratelimit_test.go` | 7 | 禁用放行、突发与补充、`AllowN`、`Wait` 阻塞与 ctx、桶回收、并发 `Allow` |
 | `internal/reply` | `reply_test.go` | 3 | 累积段发送、错误累积、默认私聊 |
 | `internal/router` | `router_test.go` | 27 | 命令解析与自定义前缀、优先级顺序、多规则命中、无匹配、注册校验与错误、正则/关键词（大小写不敏感）、事件类型与平台过滤、`OnAll` 兜底、中间件顺序与作用域、中间件读取路由、触发描述、正则捕获、per-rule Reply、Reply 工厂回退、错误聚合、自动 ID、规则副本隔离、`UpdateRules` 重排与 nil 拒绝、并发派发与注册 |
-| `internal/storage` | `memory_test.go` | 6 | 内存往返、TTL、ctx 取消、`Close` 幂等、拒绝式存储、并发访问 |
+| `internal/storage` | `memory_test.go`、`registry_test.go` | 9 | 内存往返、TTL、ctx 取消、`Close` 幂等、拒绝式存储、并发访问；注册表 `Kinds()` 升序为 memory/mysql/sqlite、`Open("memory")` 返回可用实现、未知类型报错并列出已注册名 |
+| `internal/storage/sqlstore` | — | 0 | 无独立测试文件；SQL 通用实现（往返与拷贝语义、TTL 惰性过期、后台清理、`Close` 幂等、upsert）由 `internal/storage/sqlite` 的同构用例经 `storage.Open("sqlite")` 间接覆盖（不直连数据库） |
+| `internal/storage/sqlite` | `sqlite_test.go` | 5 | 经 `storage.Open("sqlite")` 往返与入参/返回值拷贝语义、缺失键 `ErrNotFound`、`Delete` 缺键不报错、`Close` 幂等、同文件重开后持久化；`sqlstore.NewWithClock` 假时钟 TTL 惰性清理后表内无行、20ms 间隔后台清理在 2s 内删除过期行 |
+| `internal/storage/mysql` | `mysql_test.go` | 2 | 默认 `t.Skip`；设置 `KEI_TEST_MYSQL_DSN` 时执行往返与 TTL（需真实 MySQL 实例，CI 不启动） |
 | `pkg/bot` | `adapter_registry_test.go`、`api_test.go`、`event_test.go`、`func_plugin_test.go`、`registrar_test.go` | 17 | 非法注册被记录并由启动校验报错（`TestRegisterAdapterRejectsInvalid`：不入表但记录 Name/Reason）、注册表快照隔离（入参/出参均不污染）、权限判定（`PermAll` 不适用于适配器）、`Config` 访问器、`BotAPI`/`Storage` 接口满足、`PluginContext` 往返、`NoopReply`、`TargetFromEvent`、`SessionKey`/命令解析/事件文本、段支持判定、能力降级、规则匹配表驱动、元信息权限、插件注册忽略 nil、内联插件 `FuncPlugin`（函数委托与调用顺序、nil 接收者与缺省字段都是空实现） |
-| `pkg/kei` | `assemble_test.go`、`kei_test.go` | 14 | 装配表驱动（mock/onebot/feishu/未注册适配器）、插件启用筛选、注入实例优先（同名时跳过注册表实例、缺键补 `enabled: true`、不误报未注册）、`buildConfig` 来源冲突与缺来源报错、内联配置校验错误透出、注入冲突（nil 实例/空名/重名/配置 `enabled: false`）、权限解析、门面端到端（`TestRunEndToEndWithInlinePlugin`：内联 `FuncPlugin` + 内联 YAML，事件→回复→优雅退出） |
+| `pkg/kei` | `assemble_test.go`、`kei_test.go` | 17 | 装配表驱动（mock/onebot/feishu/未注册适配器）、插件启用筛选、注入实例优先（同名时跳过注册表实例、缺键补 `enabled: true`、不误报未注册）、`buildConfig` 来源冲突与缺来源报错、内联配置校验错误透出、注入冲突（nil 实例/空名/重名/配置 `enabled: false`）、权限解析、`buildStorage`（注入优先且清理函数为 no-op、配置 `type: sqlite` 时同文件重开读到同一键、未知类型报错）、门面端到端（`TestRunEndToEndWithInlinePlugin`：内联 `FuncPlugin` + 内联 YAML，事件→回复→优雅退出） |
 | `pkg/message` | `message_test.go` | 3 | 段构建器（文本/图片/At/表情/引用/卡片）、消息构建器、`New` 复制段 |
 | `plugins/echo` | `echo_test.go` | 3 | 拼接参数回复、无参数显示用法、元信息与生命周期 |
 | `plugins/manage` | `manage_test.go` | 6 | `/manage ping` 与 `/manage version`、`/manage plugins` 列表、`/manage adapters` 列表、子命令匹配、管理员规则、优先级胜过兜底插件 |
@@ -136,7 +139,7 @@
 | 公开接口有注释 | 人工评审；无启用的 lint 规则强制（仓库无 `.golangci.yml`） |
 | 示例配置可运行 | 部分自动：`cmd/bot/main_test.go` 的 `TestExampleConfigLoads` 校验 `configs/config.yaml` 可加载、含 `mock`/`feishu`/`onebot` 三个适配器示例与启用的 `echo`/`manage` 插件、且 mock bot 配了 `listen_addr` 与 `platform: mock` |
 | 文档或注释说明如何使用 | 人工评审 |
-| 不引入未声明的外部依赖 | 可自动核对：`go.mod` 直接依赖只有 `gopkg.in/yaml.v3`；测试不使用 `testify`，全部基于标准库 `testing` 与 `t.Run` |
+| 不引入未声明的外部依赖 | 可自动核对：`go.mod` 直接依赖只有 `gopkg.in/yaml.v3` 与 `gorm.io/gorm`、`gorm.io/driver/sqlite`、`gorm.io/driver/mysql`；测试不使用 `testify`，全部基于标准库 `testing` 与 `t.Run` |
 | 不破坏 `pkg/bot` 的向后兼容性 | 人工评审；仓库无 API 兼容性差异检查工具 |
 | 新适配器可在不修改核心代码的前提下接入 | 可自动化：`cmd/bot/thirdparty_adapter_test.go` 的 `TestThirdPartyAdapterEndToEnd`（进程内注册 + 配置）、`examples/kei-adapter-myim`（独立 module：只依赖 `pkg/bot`，`grep -rn "kei/internal" examples/` 无结果，含 11 个测试） |
 

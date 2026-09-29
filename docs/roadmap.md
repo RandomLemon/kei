@@ -11,7 +11,7 @@
 ### 阶段 1：项目初始化与核心接口
 
 - [x] 已完成：创建 `go.mod`，模块路径 `github.com/RandomLemon/kei`。
-  - 证据：`go.mod:1`（`module github.com/RandomLemon/kei`，`go 1.25.0`；直接依赖 `gopkg.in/yaml.v3`）。
+  - 证据：`go.mod:1`（`module github.com/RandomLemon/kei`，`go 1.25.0`；直接依赖 `gopkg.in/yaml.v3`、`gorm.io/gorm`、`gorm.io/driver/sqlite`、`gorm.io/driver/mysql`）。
 - [x] 已完成：创建目录结构。
   - 证据：`pkg/`、`internal/`、`adapters/`、`plugins/`、`cmd/`、`configs/`；各目录职责见 [architecture.md](architecture.md) 第 4 章。
 - [x] 已完成：在 `pkg/bot` 定义 Event、Message、Segment、User、Channel、Command。
@@ -81,28 +81,31 @@
 ### 阶段 5：配置与生命周期
 
 - [x] 已完成：实现 `internal/config`，加载 YAML，支持环境变量覆盖。
-  - 证据：`internal/config/config.go:125`（Load）、`:141`（LoadBytes），`internal/config/env.go:19`（applyEnv，前缀常量在 `:12`）；加载顺序、覆盖规则与环境变量全表见 [configuration.md](configuration.md) 12.1、12.5。测试 25 个。
+  - 证据：`internal/config/config.go:125`（Load）、`:141`（LoadBytes），`internal/config/env.go:19`（applyEnv，前缀常量在 `:12`）；加载顺序、覆盖规则与环境变量全表见 [configuration.md](configuration.md) 12.1、12.6。测试 28 个。
 - [x] 已完成：实现优雅启动和关闭（装配实现位于 `pkg/kei`，`cmd/bot/main.go` 只做信号处理与 `kei.Run` 调用）。
   - 证据：`cmd/bot/main.go`（`signal.NotifyContext`）、`pkg/kei/assemble.go`、`internal/engine/engine.go`（shutdown）；关闭顺序见 [engine.md](engine.md) 7.3、8.6，`TestGracefulShutdownDrainsQueuedEvents` 覆盖排空。
 - [x] 已完成：支持多 bot、多 adapter 配置；`bots[].adapter` 经注册表解析。
-  - 证据：`internal/adaptermgr/adaptermgr.go:73`（Validate 的未知适配器报错）、`:184`、`:188`（Build 逐 bot 查表与保护性报错）；装配与 `Target.BotID` 解析语义见 [configuration.md](configuration.md) 12.2、12.7 第 7 条与 [adapter.md](adapter.md) 6.2；测试 `internal/engine/engine_test.go:458`（TestMultiBotSamePlatformNeedsExplicitBotID）、`internal/adaptermgr/adaptermgr_test.go:130`（TestBuildTrimsDependencies）。
+  - 证据：`internal/adaptermgr/adaptermgr.go:73`（Validate 的未知适配器报错）、`:184`、`:188`（Build 逐 bot 查表与保护性报错）；装配与 `Target.BotID` 解析语义见 [configuration.md](configuration.md) 12.2、12.8 第 7 条与 [adapter.md](adapter.md) 6.2；测试 `internal/engine/engine_test.go:458`（TestMultiBotSamePlatformNeedsExplicitBotID）、`internal/adaptermgr/adaptermgr_test.go:130`（TestBuildTrimsDependencies）。
 - [x] 已完成：支持插件启用/禁用。
   - 证据：`pkg/kei/assemble.go`（`selectPlugins` 按 `plugins.<name>.enabled` 过滤）、`internal/engine/engine.go`（`applyBotPluginFilter` 按 `bots[].plugins` 白名单）；语义见 [configuration.md](configuration.md) 12.2–12.3 与 [engine.md](engine.md) 7.6；测试 `internal/engine/engine_test.go`（TestPerBotPluginWhitelist）。
 - [x] 已完成：支持 `adapters.<name>.enabled` 启用/禁用适配器（缺省启用，禁用则跳过其 bot，该段只支持 `enabled` 键）；未知适配器名、重复注册名、缺 `Name`/`Platforms` 必须启动报错。
   - 证据（启用/禁用）：`internal/config/config.go:338`（AdapterConfig）、`:347`（IsEnabled）、`:354`（AdapterEnabled）；`internal/adaptermgr/adaptermgr.go:68`（Validate 跳过被禁用实例/适配器）、`:154`（info `bot 已禁用，跳过`）、`:159`（warn `适配器已禁用，跳过 bot`）；测试 `internal/adaptermgr/adaptermgr_test.go:243`（TestBuildSkipsDisabledAdapter）、`:278`（TestBuildSkipsDisabledInProcessAdapter）、`:310`（TestValidateSkipsDisabledUnknownAdapter）。
   - 证据（未知适配器名报错并列出已注册名单）：`internal/adaptermgr/adaptermgr.go:73`；测试 `internal/adaptermgr/adaptermgr_test.go:93`（TestValidateUnknownAdapter）。
   - 证据（重复注册名、缺 `Platforms`、适配器声明 `PermAll` 报错）：`internal/adaptermgr/adaptermgr.go:87`（ValidateRegistry）、`:112`（validateRegistryOf）；测试 `internal/adaptermgr/adaptermgr_test.go:50`（TestValidateRegistryRules）。
-  - 语义与报错文案见 [configuration.md](configuration.md) 12.4、12.7 第 5–8 条与 [adapter.md](adapter.md) 6.3。
+  - 语义与报错文案见 [configuration.md](configuration.md) 12.4、12.8 第 5–8 条与 [adapter.md](adapter.md) 6.3。
 - [x] 已完成：缺 `Name`/`factory` 的注册必须在启动校验阶段报错。
   - 证据：`pkg/bot/adapter_registry.go:95`（AdapterRegistrationError）、`:120`（RegisterAdapter 的两条拒绝分支）、`:135`（recordAdapterReject）、`:145`（AdapterRegistrationErrors）；`internal/adaptermgr/adaptermgr.go:87`（ValidateRegistry）、`:95`（validateRegistrationRejects，非空即终止启动）；测试 `pkg/bot/adapter_registry_test.go:19`（TestRegisterAdapterRejectsInvalid）、`internal/adaptermgr/adaptermgr_test.go:415`（TestValidateRegistrationRejects）。机制与妥协原因见 [adapter.md](adapter.md) 6.2 与 [engine.md](engine.md) 附录第 1 条。
 - [x] 已完成：`bots[].enabled`（实例级开关，与 `adapters.<name>.enabled` 同向、作用范围只到单个实例）。
   - 证据：`internal/config/config.go:90`（BotConfig）、`:100`（`Enabled *bool`）、`:109`（IsEnabled）、`:255`（decodeBot 的 `case "enabled"`），`internal/config/env.go:110`（applyBotEnv 的 `case "enabled"`），`internal/adaptermgr/adaptermgr.go:68`（Validate 跳过条件）、`:152`、`:154`（Build 先判实例开关并记 info），`internal/engine/engine.go:402`、`:416`（applyBotPluginFilter 的 `if !b.IsEnabled()`）。
   - 测试：`internal/config/config_test.go:789`（TestBotEnabled）、`internal/adaptermgr/adaptermgr_test.go:353`（TestBuildSkipsDisabledBot）、`:389`（TestValidateDisabledBotSkipsReservedOption）、`internal/engine/engine_test.go`（TestDisabledBotExcludedFromPluginWhitelist、TestDisabledBotWhitelistNarrowing）、`cmd/bot/main_test.go`（TestExampleConfigLoads）。
-  - 语义、环境变量覆盖与两层开关的区别见 [configuration.md](configuration.md) 12.2、12.7 第 6 条与 [adapter.md](adapter.md) 6.7；示例配置 `configs/config.yaml` 的 `feishu-main: enabled: false` 即实测样本。
+  - 语义、环境变量覆盖与两层开关的区别见 [configuration.md](configuration.md) 12.2、12.8 第 6 条与 [adapter.md](adapter.md) 6.7；示例配置 `configs/config.yaml` 的 `feishu-main: enabled: false` 即实测样本。
+- [x] 已完成：可插拔存储后端 —— `storage.type` 选 `memory`（默认）/`sqlite`/`mysql`，新增类型只需一个包 + `init()` 注册，核心不改配置结构。
+  - 证据：`internal/storage/registry.go`（`Register`/`Open`/`Kinds`）、`internal/storage/memory.go`（`init()` 注册）、`internal/storage/sqlstore/`（GORM 通用实现）、`internal/storage/sqlite/`、`internal/storage/mysql/`、`internal/config/config.go`（`StorageConfig`/`decodeStorage`/`StorageConfig.validate`）、`internal/config/env.go`（`KEI_STORAGE_*`）、`pkg/kei/assemble.go`（`buildStorage` 注入优先、否则按配置构造）。
+  - 语义、参数与未知类型报错文案见 [configuration.md](configuration.md) 12.5；SQL 实现与内存实现的一致性见 [plugin.md](plugin.md) 11.2；测试 `internal/storage/registry_test.go`、`internal/storage/sqlite/sqlite_test.go`（`internal/storage/mysql/mysql_test.go` 默认跳过）。
 - [x] 已完成：验收：`go run ./cmd/bot -config configs/config.yaml` 可启动并优雅退出。
   - 证据：`configs/config.yaml` 可被加载并校验（`cmd/bot/main_test.go` TestExampleConfigLoads）；插件仅启用 `echo` 与 `manage`。
 
-交付物：`internal/config/`（`config.go`、`env.go`）、`pkg/kei/`（`kei.go`、`assemble.go`）、`cmd/bot/main.go`、`configs/config.yaml`。
+交付物：`internal/config/`（`config.go`、`env.go`）、`internal/storage/`（`registry.go` 与 `sqlstore`/`sqlite`/`mysql`）、`pkg/kei/`（`kei.go`、`assemble.go`）、`cmd/bot/main.go`、`configs/config.yaml`。
 
 ### 阶段 6：可观测性与限流
 
@@ -142,7 +145,7 @@
 1. 完整 Go 项目源码。**存在**：根 module 的 `go list ./...` 解析出 `pkg/`、`internal/`、`adapters/`、`plugins/`、`cmd/` 下的全部包（逐目录职责见 [architecture.md](architecture.md) 第 4 章）；另有独立 module `examples/kei-adapter-myim/`。
 2. `AGENTS.md`：全局硬性规则、代码约定与质量门，并指向 `docs/README.md` 作为唯一文档索引（设计与实现内容不在其中）。**存在**：仓库根 `AGENTS.md`。
 3. `README.md` 使用说明。**存在**：仓库根 `README.md`（安装与快速开始、写插件、写适配器、可观测性、测试与验证、已知限制）。
-4. `configs/config.yaml` 示例配置。**存在**：`configs/config.yaml`（`mock-main`、`feishu-main`、`qq-main` 三个 bot；`adapters:` 段示例以注释给出；`feishu-main` 经实例级 `enabled: false` 停用）。加载校验测试 `cmd/bot/main_test.go`（TestExampleConfigLoads）与 `pkg/kei/assemble_test.go`；bot 与键的语义见 [configuration.md](configuration.md) 12.2、12.6。
+4. `configs/config.yaml` 示例配置。**存在**：`configs/config.yaml`（`mock-main`、`feishu-main`、`qq-main` 三个 bot；`adapters:` 段示例以注释给出；`feishu-main` 经实例级 `enabled: false` 停用）。加载校验测试 `cmd/bot/main_test.go`（TestExampleConfigLoads）与 `pkg/kei/assemble_test.go`；bot 与键的语义见 [configuration.md](configuration.md) 12.2、12.7。
 5. `plugins/echo` 示例插件。**存在**：`plugins/echo/echo.go`（`:44` 注册，`:12` Plugin）；实现全文见 [plugin.md](plugin.md) 9.4，测试 3 个。
 6. `adapters/mock` Mock 适配器（经注册表接入）。**存在**：`adapters/mock/`（`register.go:15` 注册工厂、`mock.go` 实现）；行为见 [adapter.md](adapter.md) 6.7 › mock，测试 13 个。
 7. 至少一个真实平台适配器（飞书或 OneBot），经注册表接入。**存在且超额**：`adapters/feishu/`（`register.go:19`）与 `adapters/onebot/`（`register.go:19`）均已实现并注册；现状见 [adapter.md](adapter.md) 6.7。

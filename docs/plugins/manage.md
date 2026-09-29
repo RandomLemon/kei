@@ -149,7 +149,7 @@ kei v0.1.0 · manage v0.1.0
 | `plugins.manage.plugins_admin_only` | bool | `false` | 为真时给 `/manage plugins` 规则追加 `bot.WithAdmin()`（`manage.go:59`–`61` 读取 `p.cfg.Bool("plugins_admin_only", false)`） |
 
 - `enabled` 的解码与「未列出即不启用」语义由配置层统一处理（见 [`../configuration.md`](../configuration.md) 12.3），插件私有配置经 `PluginContext.Config` 读取。本节只记录 manage 自己的键。
-- 环境变量覆盖与 `plugins.<name>` 段的通用规则一致（只命中配置中**已存在**的插件名，见 `../configuration.md` 12.5）：`KEI_PLUGINS_MANAGE_ENABLED=false` 停用插件；`KEI_PLUGINS_MANAGE_PLUGINS_ADMIN_ONLY=true` 等效于 YAML 里写 `plugins_admin_only: true`。
+- 环境变量覆盖与 `plugins.<name>` 段的通用规则一致（只命中配置中**已存在**的插件名，见 `../configuration.md` 12.6）：`KEI_PLUGINS_MANAGE_ENABLED=false` 停用插件；`KEI_PLUGINS_MANAGE_PLUGINS_ADMIN_ONLY=true` 等效于 YAML 里写 `plugins_admin_only: true`。
 - 示例配置 `configs/config.yaml` 中 manage 是启用的，并把 `plugins_admin_only` 设为 `true`（见第 8 节第 3 条注意事项）。
 
 ## 5. 管理员校验链路

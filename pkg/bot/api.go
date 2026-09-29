@@ -19,7 +19,8 @@ var ErrNotFound = errors.New("bot: storage: key not found")
 
 // Storage 是插件可用的键值存储。
 //
-// MVP 使用内存实现，后续可替换为 Redis/SQLite；实现必须并发安全。
+// 默认内存实现；可经配置 storage.type 切换为 sqlite/mysql，或注入自定义实现。
+// 实现必须并发安全。
 type Storage interface {
 	// Get 读取键值，键不存在时返回 ErrNotFound。
 	Get(ctx context.Context, key string) ([]byte, error)

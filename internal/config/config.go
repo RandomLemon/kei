@@ -6,7 +6,7 @@
 // 名为 "feishu-main" 的 bot 的 Settings["app_id"]。未匹配任何已知路径的
 // KEI_* 变量会被忽略（不报错）。
 //
-// 顶层允许的键为 log、metrics、bots、plugins、adapters、limits、auth，
+// 顶层允许的键为 log、metrics、bots、plugins、adapters、limits、auth、storage，
 // 其余顶层键一律报错。
 package config
 
@@ -30,6 +30,9 @@ const (
 // adapterNamePattern 限制 adapter 名称的字符集。
 var adapterNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
+// storageTypePattern 限制存储类型名的字符集。
+var storageTypePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
 // validLogLevels 与 validLogFormats 是 log 段允许的取值（比较前统一转小写）。
 var (
 	validLogLevels  = map[string]struct{}{"debug": {}, "info": {}, "warn": {}, "error": {}}
@@ -52,6 +55,8 @@ type Config struct {
 	Limits LimitsConfig `yaml:"limits"`
 	// Auth 是权限配置。
 	Auth AuthConfig `yaml:"auth"`
+	// Storage 是存储后端配置。
+	Storage StorageConfig `yaml:"storage"`
 }
 
 // LogConfig 是日志配置。
@@ -84,6 +89,16 @@ type LimitsConfig struct {
 type AuthConfig struct {
 	// AdminUsers 是管理员用户 ID 列表，供 Auth 中间件判定。
 	AdminUsers []string `yaml:"admin_users"`
+}
+
+// StorageConfig 是存储后端配置。
+type StorageConfig struct {
+	// Type 是存储类型名，如 memory/sqlite/mysql，默认 memory。
+	Type string `yaml:"type"`
+	// DSN 是数据源，语义由各后端定义。
+	DSN string `yaml:"dsn"`
+	// Params 是除 type/dsn 外的其余键，原样传给后端。
+	Params map[string]any
 }
 
 // BotConfig 描述一个机器人实例。
@@ -194,6 +209,8 @@ func decode(data []byte) (*Config, error) {
 			err = val.Decode(&cfg.Limits)
 		case "auth":
 			err = val.Decode(&cfg.Auth)
+		case "storage":
+			cfg.Storage, err = decodeStorage(val)
 		case "bots":
 			cfg.Bots, err = decodeBots(val)
 		case "plugins":
@@ -270,6 +287,40 @@ func decodeBot(index int, node *yaml.Node) (BotConfig, error) {
 		}
 	}
 	return bot, nil
+}
+
+// decodeStorage 解析 storage 段；type/dsn 之外的键进入 Params。
+func decodeStorage(node *yaml.Node) (StorageConfig, error) {
+	if isNull(node) {
+		return StorageConfig{}, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return StorageConfig{}, errors.New("必须是映射")
+	}
+	var s StorageConfig
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, val := node.Content[i].Value, node.Content[i+1]
+		switch key {
+		case "type":
+			if err := val.Decode(&s.Type); err != nil {
+				return StorageConfig{}, fmt.Errorf("storage.type: %w", err)
+			}
+		case "dsn":
+			if err := val.Decode(&s.DSN); err != nil {
+				return StorageConfig{}, fmt.Errorf("storage.dsn: %w", err)
+			}
+		default:
+			var v any
+			if err := val.Decode(&v); err != nil {
+				return StorageConfig{}, fmt.Errorf("storage.%s: %w", key, err)
+			}
+			if s.Params == nil {
+				s.Params = make(map[string]any)
+			}
+			s.Params[key] = normalizeValue(v)
+		}
+	}
+	return s, nil
 }
 
 // decodePlugins 解析 plugins 映射，支持映射写法与布尔标量简写。
@@ -518,6 +569,9 @@ func applyDefaults(c *Config) {
 	if c.Adapters == nil {
 		c.Adapters = map[string]AdapterConfig{}
 	}
+	if c.Storage.Type == "" {
+		c.Storage.Type = "memory"
+	}
 }
 
 // validate 校验配置，返回带字段路径的错误。
@@ -555,10 +609,26 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: adapters.%s: 适配器名只允许 [a-z0-9_-]", name)
 		}
 	}
+	if err := c.Storage.validate(); err != nil {
+		return err
+	}
 	if err := c.Log.validate(); err != nil {
 		return err
 	}
 	return c.Limits.validate()
+}
+
+// validate 校验存储配置：类型名必须匹配 storageTypePattern。
+//
+// 不校验类型是否存在（由装配期负责），不校验 dsn 是否必填（由各后端负责）。
+func (s StorageConfig) validate() error {
+	if s.Type == "" {
+		return errors.New("config: storage.type: 不能为空")
+	}
+	if !storageTypePattern.MatchString(s.Type) {
+		return fmt.Errorf("config: storage.type: %q 只允许 [a-z0-9_-]", s.Type)
+	}
+	return nil
 }
 
 // validate 校验日志配置：级别与格式都必须在允许集合内（大小写不敏感）。

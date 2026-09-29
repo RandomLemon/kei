@@ -19,6 +19,7 @@
       devTools =
         pkgs: with pkgs; [
           go # 编译器 / go test / go vet
+          gcc # cgo 编译 mattn/go-sqlite3 需要
           gopls # LSP
           gotools # goimports / guru 等辅助工具
           golangci-lint # 静态检查（可选，见 README）
@@ -55,10 +56,14 @@
             src = self;
             subPackages = [
               "cmd/bot"
-              "cmd/example-plugin"
             ];
             # 依赖变化后运行 `nix build` 并按报错信息替换该哈希。
-            vendorHash = "sha256-32RD9Os/Pr6w0Ql+G2AoTpg/vqArJkY7lSfLZG0Sy1M=";
+            vendorHash = "sha256-t1W9LJ5//9sgEwl9OPNwZKQenIOqgK4RNiwz7CK7PAw=";
+            # sqlite 驱动依赖 cgo。nixpkgs 的 Go 工具链在 Linux/macOS 上默认
+            # CGO_ENABLED=1，这里显式固定，避免上游默认值变化导致构建失败。
+            env = {
+              CGO_ENABLED = "1";
+            };
             ldflags = [
               "-s"
               "-w"
@@ -80,10 +85,6 @@
         default = {
           type = "app";
           program = "${self.packages.${system}.kei}/bin/bot";
-        };
-        example-plugin = {
-          type = "app";
-          program = "${self.packages.${system}.kei}/bin/example-plugin";
         };
       });
 

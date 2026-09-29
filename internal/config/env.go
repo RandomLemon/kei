@@ -61,8 +61,16 @@ func applyEnvPath(c *Config, botNames []string, segments []string, key, value st
 	case "auth_admin_users":
 		c.Auth.AdminUsers = splitList(value)
 		return nil
+	case "storage_type":
+		c.Storage.Type = value
+		return nil
+	case "storage_dsn":
+		c.Storage.DSN = value
+		return nil
 	}
 	switch {
+	case strings.HasPrefix(full, "storage_params_"):
+		setSetting(&c.Storage.Params, full[len("storage_params_"):], value)
 	case strings.HasPrefix(full, "bots_"):
 		applyBotEnv(c, botNames, full[len("bots_"):], value)
 	case strings.HasPrefix(full, "plugins_"):

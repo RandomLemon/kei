@@ -32,6 +32,13 @@ type item struct {
 // 确保 Memory 满足 bot.Storage。
 var _ bot.Storage = (*Memory)(nil)
 
+// init 把内存实现注册为存储类型 "memory"。
+func init() {
+	Register("memory", func(*bot.Config) (bot.Storage, error) {
+		return NewMemory(), nil
+	})
+}
+
 // NewMemory 构造内存存储并启动过期清理 goroutine。
 //
 // 使用完必须调用 Close 释放后台 goroutine。
