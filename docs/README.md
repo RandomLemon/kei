@@ -16,7 +16,7 @@
 | 12 | 配置：结构、键语义、环境变量覆盖、校验与告警 | [`configuration.md`](configuration.md) |
 | 13、19 | 实现阶段回顾与交付物现状（含未实现项） | [`roadmap.md`](roadmap.md) |
 | 15、16、18 | 测试要求、构建与运行命令、完成定义（Definition of Done） | [`testing.md`](testing.md) |
-| —（第 9、10 章的补充） | 内置管理插件 `manage`：`/manage ping`、`/manage version`、`/manage plugins`、`/manage adapters`、`/manage admin`、`/manage help` 的命令契约、配置键、管理员校验链路与已知边界 | [`plugins/manage.md`](plugins/manage.md) |
+| —（第 9、10 章的补充） | 内置管理插件 `manage`：`/manage ping`、`/manage version`、`/manage plugins`、`/manage adapters`、`/manage admin`、`/manage status`、`/manage help` 的命令契约、配置键、管理员校验链路与已知边界 | [`plugins/manage.md`](plugins/manage.md) |
 
 第 2 章（技术栈与约束）、第 14 章（代码约定）、第 17 章（实现守则）是硬性规则，保留在 [`AGENTS.md`](../AGENTS.md)（第 14 章中与第 2 章重叠的条款已合并到第 2 章，只留风格类约定）。第 18 章的完成定义在 `testing.md`，`AGENTS.md` 只保留合并前必须通过的门槛命令。
 

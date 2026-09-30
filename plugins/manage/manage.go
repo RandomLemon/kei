@@ -1,5 +1,5 @@
 // Package manage 提供管理命令：/manage ping、/manage version、/manage plugins、
-// /manage adapters、/manage admin、/manage help。
+// /manage adapters、/manage admin、/manage status、/manage help。
 //
 // 它同时演示了插件目录（PluginContext.Catalog）与管理员规则（WithAdmin +
 // Auth 中间件）的用法。
@@ -37,6 +37,7 @@ var subcommands = []struct {
 	{name: "plugins", desc: "列出已加载插件"},
 	{name: "adapters", desc: "列出已注册适配器与已绑定实例"},
 	{name: "admin", desc: "管理员校验演示"},
+	{name: "status", desc: "显示主机 CPU/内存/磁盘/GPU 使用情况（仅管理员）"},
 	{name: "help", desc: "显示本帮助"},
 }
 
@@ -71,9 +72,9 @@ func (p *Plugin) Metadata() bot.Metadata {
 
 // Setup 注册 /manage 命令及其子命令。
 //
-// 六条子命令共用命令名 "manage"，各自用 withSubcommand 限定第一个参数：
+// 七条子命令共用命令名 "manage"，各自用 withSubcommand 限定第一个参数：
 // /manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、
-// /manage help。
+// /manage status、/manage help。
 func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 	pc, ok := bot.PluginContextFrom(ctx)
 	if !ok {
@@ -109,6 +110,14 @@ func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 	}, bot.WithPriority(100), bot.WithID("manage:admin"), withSubcommand("admin"), bot.WithAdmin())
 
 	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+		info, err := hostStatus(ctx)
+		if err != nil {
+			return r.Text("主机状态采集失败：" + err.Error()).Send(ctx)
+		}
+		return r.Text(formatHostInfo(info)).Send(ctx)
+	}, bot.WithPriority(100), bot.WithID("manage:status"), withSubcommand("status"), bot.WithAdmin())
+
+	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
 		return r.Text(helpText()).Send(ctx)
 	}, bot.WithPriority(100), bot.WithID("manage:help"), withSubcommand("help"))
 
@@ -117,8 +126,8 @@ func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 
 // withSubcommand 限定规则只在命令的第一个参数等于 name 时命中（忽略大小写）。
 //
-// 命令名已在 Rule.Command 层限定为 "manage"，因此它把 /manage 的六个子命令
-// 拆成六条独立规则：优先级、规则 ID 与管理员门槛（WithAdmin）仍按子命令各自生效。
+// 命令名已在 Rule.Command 层限定为 "manage"，因此它把 /manage 的七个子命令
+// 拆成七条独立规则：优先级、规则 ID 与管理员门槛（WithAdmin）仍按子命令各自生效。
 func withSubcommand(name string) bot.Option {
 	return bot.WithMatch(func(e *bot.Event) bool {
 		if e == nil || e.Command == nil || len(e.Command.Args) == 0 {

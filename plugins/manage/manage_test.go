@@ -79,6 +79,8 @@ func TestSubcommandMatching(t *testing.T) {
 		{"help", []string{"HELP"}, true},
 		{"help", []string{"help", "ping"}, true},
 		{"help", []string{"h"}, false},
+		{"status", []string{"status"}, true},
+		{"status", nil, false},
 	}
 	for _, tc := range cases {
 		rule := bySubcommand(t, reg, tc.sub)
@@ -186,12 +188,15 @@ func TestAdapterListing(t *testing.T) {
 }
 
 func TestAdminRules(t *testing.T) {
-	t.Run("默认仅 /manage admin 需要管理员", func(t *testing.T) {
+	t.Run("默认仅 /manage admin 与 /manage status 需要管理员", func(t *testing.T) {
 		reg := setup(t, nil, nil)
 
 		admin := bySubcommand(t, reg, "admin")
 		if !admin.AdminOnly {
 			t.Fatalf("/manage admin 规则应标记 AdminOnly: %+v", admin)
+		}
+		if status := bySubcommand(t, reg, "status"); !status.AdminOnly {
+			t.Fatal("/manage status 展示主机硬件信息，应始终需要管理员")
 		}
 		if plugins := bySubcommand(t, reg, "plugins"); plugins.AdminOnly {
 			t.Fatal("默认 /manage plugins 不需要管理员")
@@ -213,7 +218,7 @@ func TestHelpListing(t *testing.T) {
 	if !strings.HasPrefix(got, "可用子命令：") {
 		t.Fatalf("help 回复 = %q", got)
 	}
-	for _, sub := range []string{"ping", "version", "plugins", "adapters", "admin", "help"} {
+	for _, sub := range []string{"ping", "version", "plugins", "adapters", "admin", "status", "help"} {
 		if !strings.Contains(got, "- "+sub+" ") {
 			t.Fatalf("help 未列出子命令 %s:\n%s", sub, got)
 		}
@@ -225,7 +230,7 @@ func TestHelpListing(t *testing.T) {
 
 func TestPriorityBeatsFallbackPlugins(t *testing.T) {
 	reg := setup(t, nil, nil)
-	for _, sub := range []string{"ping", "version", "plugins", "adapters", "admin", "help"} {
+	for _, sub := range []string{"ping", "version", "plugins", "adapters", "admin", "status", "help"} {
 		rule := bySubcommand(t, reg, sub)
 		if rule.Priority <= 0 {
 			t.Fatalf("/manage %s 优先级 = %d, 应大于 0", sub, rule.Priority)

@@ -101,3 +101,4 @@ plugins:
   manage:
     enabled: true
     plugins_admin_only: true   # /manage plugins 改为仅管理员可用（需配置 auth.admin_users）
+    # 注：/manage status（主机硬件信息）与 /manage admin 始终仅管理员可用，同样需要 auth.admin_users。

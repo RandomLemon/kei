@@ -1,6 +1,6 @@
 # 内置管理插件 manage
 
-`plugins/manage` 是仓库内的内置管理插件：注册 `/manage ping`、`/manage version`、`/manage plugins`、`/manage adapters`、`/manage admin`、`/manage help` 六条子命令（命令名统一为 `manage`，第一个参数选择子命令），同时是「插件目录（`PluginContext.Catalog`/`Adapters`）+ 管理员规则（`WithAdmin` + Auth 中间件）」的参考实现。
+`plugins/manage` 是仓库内的内置管理插件：注册 `/manage ping`、`/manage version`、`/manage plugins`、`/manage adapters`、`/manage admin`、`/manage status`、`/manage help` 七条子命令（命令名统一为 `manage`，第一个参数选择子命令），同时是「插件目录（`PluginContext.Catalog`/`Adapters`）+ 管理员规则（`WithAdmin` + Auth 中间件）」的参考实现。
 
 本文是 `plugins/manage` 的**命令契约与行为说明**（逐条对照 `plugins/manage/manage.go`、`internal/router`、`internal/engine`、`internal/middleware` 的实现，并以实际运行输出为证）。第 9 章插件契约与第 11 章 BotAPI/PluginContext 见 [`../plugin.md`](../plugin.md)，`/manage plugins`、`/manage adapters` 的对比与 Auth 中间件见 [`../engine.md`](../engine.md)，配置键全表见 [`../configuration.md`](../configuration.md)。`plugins/echo` 的最简示例见 `plugin.md` 9.4。
 
@@ -8,7 +8,7 @@
 
 ## 1. 定位与启用
 
-- 包路径 `github.com/RandomLemon/kei/plugins/manage`，源码 `plugins/manage/manage.go`，在 `init()` 中调用 `bot.RegisterPlugin(&Plugin{})`（`manage.go:227`）；命令实现与包同构、无第三方依赖。
+- 包路径 `github.com/RandomLemon/kei/plugins/manage`，源码 `plugins/manage/manage.go`，在 `init()` 中调用 `bot.RegisterPlugin(&Plugin{})`（`manage.go:236`）；命令实现与包同构、无第三方依赖。
 - 空导入：`cmd/bot/main.go:27` 的 `_ "github.com/RandomLemon/kei/plugins/manage"`；第三方可仿此在 import 块加一行。
 - 启用：配置中必须显式启用（`plugins.<name>` 未列出即不启用，见 [`../configuration.md`](../configuration.md) 12.3）：
 
@@ -19,25 +19,27 @@ plugins:
     plugins_admin_only: true   # 可选，见第 4 节
 ```
 
-- 元信息（`manage.go:63`）：
+- 元信息（`manage.go:64`）：
 
 | 字段 | 值 |
 | --- | --- |
 | `Name` | `manage` |
 | `Version` | `v0.1.0` |
 | `Author` | `core` |
-| `Description` | 由子命令表拼出（`manage.go:31` 的 `subcommands` + `commandList`，`manage.go:68`）：`管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、/manage help` |
+| `Description` | 由子命令表拼出（`manage.go:31` 的 `subcommands` + `commandList`，`manage.go:69`）：`管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、/manage status、/manage help` |
 | `Permissions` | 未声明（空） |
 
 `Description` 与 `/manage help` 同源于包级只读表 `subcommands`（`manage.go:31`–`42`）：新增子命令只需在该表追加一行，元信息描述、help 文本与 `/manage help` 的 `- <name> — <desc>` 行自动跟随，避免两处清单漂移。
 
-**权限声明为空的原因与后果**：六条子命令全部只调用 `bot.Reply`（对任何插件始终可用），因此不需要 `PermSendMessage`；也不读 `Storage`、不发外部请求，因此不需要 `PermStorage`/`PermNetwork`。代价是插件不能主动发送（`BotAPI.Send` 返回 `engine: plugin manage lacks permission send_message`）、`PluginContext.Storage` 是拒绝式实现（`../plugin.md` 11.4）。`/manage plugins`、`/manage adapters` 读取 `PluginContext.Catalog`/`Adapters` **不需要**声明权限——目录是装配期注入的只读视图，与 `PermAdmin` 无关。
+**权限声明为空的原因与后果**：七条子命令全部只调用 `bot.Reply`（对任何插件始终可用），因此不需要 `PermSendMessage`；也不读 `Storage`、不发外部请求，因此不需要 `PermStorage`/`PermNetwork`。代价是插件不能主动发送（`BotAPI.Send` 返回 `engine: plugin manage lacks permission send_message`）、`PluginContext.Storage` 是拒绝式实现（`../plugin.md` 11.4）。`/manage plugins`、`/manage adapters` 读取 `PluginContext.Catalog`/`Adapters` **不需要**声明权限——目录是装配期注入的只读视图，与 `PermAdmin` 无关。
+
+**`/manage status` 与分层规则**：该子命令采集主机硬件信息，实现放在同包的 `status.go`（数据结构与渲染，可移植）/ `status_linux.go`（`//go:build linux`，读 `/proc`、`/sys`）/ `status_other.go`（`//go:build !linux`，返回不支持）。它只依赖标准库（`os` 读只读虚拟文件、`syscall.Statfs` 取文件系统用量），未引入第三方依赖；读取的是内核暴露的硬件状态，不属于「配置与密钥」（后者只能经 `PluginContext.Config`，见 `AGENTS.md` 2.1）。插件不得 import `internal/`（`AGENTS.md` 2.1），因此采集逻辑无法下沉到核心仓库，只能与插件同包。
 
 `Plugin` 只有两个实例字段（`manage.go:20`–`21`）：`cfg *bot.Config`（插件私有配置）与 `start time.Time`（`Setup` 时刻），无包级可变状态。
 
 ## 2. 命令契约
 
-`Setup` 注册六条规则（`manage.go:84`–`113`）：命令名统一为 `manage`（即 `/manage`），具体子命令由第一个参数选择。
+`Setup` 注册七条规则（`manage.go:86`–`122`）：命令名统一为 `manage`（即 `/manage`），具体子命令由第一个参数选择。
 
 | 命令 | 规则 ID | 优先级 | 管理员门槛 | 回复内容 |
 | --- | --- | --- | --- | --- |
@@ -46,20 +48,22 @@ plugins:
 | `/manage plugins` | `manage:plugins` | 100 | 由 `plugins_admin_only` 决定（默认无） | 插件目录多行文本 |
 | `/manage adapters` | `manage:adapters` | 100 | 无 | 适配器注册表 + 绑定关系多行文本 |
 | `/manage admin` | `manage:admin` | 100 | **始终**（`bot.WithAdmin()`） | `管理员校验通过` |
+| `/manage status` | `manage:status` | 100 | **始终**（`bot.WithAdmin()`） | 主机硬件状态多行文本 |
 | `/manage help` | `manage:help` | 100 | 无 | 子命令清单多行文本 |
 
 要点：
 
-- 六条规则都经 `reg.OnCommand("manage", …)` 注册同一命令名，子命令用 `withSubcommand`（`manage.go:122`）区分：它借助 `bot.WithMatch` 断言 `Event.Command.Args[0]` 与该子命令名忽略大小写相等。这样每条子命令仍各自持有优先级、规则 ID 与 `WithAdmin()` 门槛，无需把手写 dispatch 塞进单个 Handler。
+- 七条规则都经 `reg.OnCommand("manage", …)` 注册同一命令名，子命令用 `withSubcommand`（`manage.go:131`）区分：它借助 `bot.WithMatch` 断言 `Event.Command.Args[0]` 与该子命令名忽略大小写相等。这样每条子命令仍各自持有优先级、规则 ID 与 `WithAdmin()` 门槛，无需把手写 dispatch 塞进单个 Handler。
 - 子命令划分来自 `pkg/bot.ParseCommand`：`/manage ping` 解析为 `Command.Name == "manage"`、`Args == ["ping"]`；`/manage`（无参数）与 `/manage xyz`（未知子命令）不命中任何规则，因此不会有回复。命令名比较（`Rule.Command`）与子命令参数比较（`withSubcommand`）都忽略大小写，`/MANAGE PING`、`/manage HELP` 同样命中。
 - 全部使用 `bot.WithPriority(100)` 与 `bot.WithID("manage:<sub>")`：优先级 100 让管理命令先于兜底规则（例如 `WithPriority(-100)` 的 fallback）执行，规则 ID 用于日志与指标定位（`../plugin.md` 9.2）。
 - 命令名不含前缀；默认前缀为 `/`（`internal/engine/engine.go:73`、`:150`），可用引擎选项 `CommandPrefixes` 覆盖（例如改为 `!` 时命令变成 `!manage ping`）。
 - `WithAdmin()` 只设置 `Rule.AdminOnly`；真正的拦截者是全局中间件 `middleware.Auth`（第 5 节）。因此不存在「插件内部自己判管理员」的逻辑。
-- 六条子命令都是同步的纯文本回复，无 goroutine、无后台任务：`Start`/`Stop` 是空实现（`manage.go:132`、`:135`）。
+- `/manage status` **始终**带 `bot.WithAdmin()`：主机 CPU/内存/磁盘/GPU 等硬件与固件细节属于敏感信息，不随 `plugins_admin_only` 开关变化（后者只作用于 `/manage plugins`）。代价是示例配置（`auth.admin_users` 为空）下该命令对任何事件都返回未授权，需先配置管理员（第 8 节第 3 条）。
+- 七条子命令都是同步回复，无后台任务；`/manage status` 是唯一会短暂阻塞的 Handler（`/proc/stat` 两次采样间隔 200ms，见 3.6），其余为纯文本拼接。`Start`/`Stop` 是空实现（`manage.go:141`、`:144`）。
 
 ## 3. 输出格式
 
-以下格式串与分支顺序均取自 `describePlugins`（`manage.go:138`）、`describeAdapters`（`manage.go:173`）、`joinPermissions`（`manage.go:218`）与 `helpText`（`manage.go:53`）；示例为在 `mock` 适配器上实际注入命令后 `GET /sent` 得到的真实输出（`/manage ping` 的运行时长随进程不同）。
+以下格式串与分支顺序均取自 `describePlugins`（`manage.go:147`）、`describeAdapters`（`manage.go:182`）、`joinPermissions`（`manage.go:227`）、`formatHostInfo`（`status.go:51`）与 `helpText`（`manage.go:54`）；示例为在 `mock` 适配器上实际注入命令后 `GET /sent` 得到的真实输出（`/manage ping` 的运行时长与 `/manage status` 的硬件数值随机器/时刻不同）。
 
 ### 3.1 `/manage ping`
 
@@ -67,7 +71,7 @@ plugins:
 pong · 已运行 6.602s
 ```
 
-`p.start` 在 `Setup` 时记录（`manage.go:83`），`uptime = time.Since(p.start).Truncate(time.Millisecond)`（`manage.go:85`），因此显示的是**插件 Setup 以来**的时长，不是进程启动时间，精度毫秒（`Duration.String()` 的自然格式，例如 `1m23.456s`）。
+`p.start` 在 `Setup` 时记录（`manage.go:84`），`uptime = time.Since(p.start).Truncate(time.Millisecond)`（`manage.go:87`），因此显示的是**插件 Setup 以来**的时长，不是进程启动时间，精度毫秒（`Duration.String()` 的自然格式，例如 `1m23.456s`）。
 
 ### 3.2 `/manage version`
 
@@ -75,7 +79,7 @@ pong · 已运行 6.602s
 kei v0.1.0 · manage v0.1.0
 ```
 
-格式为 `"kei v" + bot.Version + " · " + meta.Name + " " + meta.Version`（`manage.go:92`）。`bot.Version` 是框架版本常量 `"0.1.0"`（`pkg/bot/version.go:4`），`manage v0.1.0` 来自本插件的 `Metadata()`。
+格式为 `"kei v" + bot.Version + " · " + meta.Name + " " + meta.Version`（`manage.go:93`）。`bot.Version` 是框架版本常量 `"0.1.0"`（`pkg/bot/version.go:4`），`manage v0.1.0` 来自本插件的 `Metadata()`。
 
 ### 3.3 `/manage plugins`
 
@@ -94,7 +98,7 @@ kei v0.1.0 · manage v0.1.0
 ```
 已加载 2 个插件：
 - echo v0.1.0 by core — 回显命令参数：/echo <文本>
-- manage v0.1.0 by core — 管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、/manage help
+- manage v0.1.0 by core — 管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、/manage status、/manage help
 ```
 
 未声明权限的插件（如 `echo`、`manage`）不会出现 `[...]` 段；声明了权限的插件显示权限常量原文（例如 `[network,net_listen]`）。
@@ -144,7 +148,41 @@ kei v0.1.0 · manage v0.1.0
 
 固定文本，只用于演示 Auth 中间件链路；规则带 `bot.WithAdmin()`，命中但身份不符时不回复（第 5 节）。
 
-### 3.6 `/manage help`
+### 3.6 `/manage status`
+
+```
+主机状态：
+CPU：AMD Ryzen AI 9 HX 370 w/ Radeon 890M（12 核 24 线程）
+CPU 使用率：2.9% · 负载 1.27 / 1.03 / 0.59（1/5/15 分钟）
+内存：已用 7.0 GiB / 30.5 GiB（22.9%）· 可用 23.5 GiB
+交换：无
+磁盘：
+- /dev/nvme1n1p2（btrfs）已用 379.5 GiB / 953.4 GiB（39.9%）· 挂载 / 等 6 处
+- /dev/nvme1n1p1（vfat）已用 285.4 MiB / 499.0 MiB（57.2%）· 挂载 /boot
+GPU：
+- NVIDIA GeForce RTX 4060 Laptop GPU（0x10de:0x28e0）
+- AMD（0x1002:0x150e）
+```
+
+固定六段（`主机状态：`、`CPU：`、`CPU 使用率：`、`内存：`、`交换：`、`磁盘：`、`GPU：`），渲染由 `formatHostInfo`（`status.go:51`）完成，采集由 `hostStatus`（`status_linux.go:34`）完成。逐段来源与退化分支：
+
+| 段 | 来源（Linux） | 退化/边界 |
+| --- | --- | --- |
+| `CPU：<型号>（N 核 M 线程）` | `/proc/cpuinfo`：首个 `model name`；物理核数 = `cpu cores` × `physical id` 去重插槽数；线程数 = `processor` 行数（`parseCPUInfo`，`status_linux.go:57`） | 缺 `cpu cores`（部分 ARM）时只显示逻辑处理器数；型号取不到显示 `未知型号` |
+| `CPU 使用率：X% · 负载 a / b / c` | 使用率：`/proc/stat` 汇总 `cpu` 行两次采样（间隔 `cpuSampleGap` = 200ms），`1 - Δidle/Δtotal`，idle 含 iowait；负载：`/proc/loadavg` 前三列 | 采样读失败或 `ctx` 在采样间隔内取消时使用率显示 `不可用`，负载仍展示 |
+| `内存：已用 X / Y（Z%）· 可用 W` | `/proc/meminfo`：`MemTotal`、`MemAvailable`；已用 = total − available | `MemAvailable` 缺失（旧内核）时用 `MemFree + Buffers + Cached`；`MemTotal` 取不到显示 `不可用` |
+| `交换：已用 X / Y（Z%）` | `/proc/meminfo`：`SwapTotal`、`SwapFree` | `SwapTotal == 0` 时显示 `交换：无` |
+| `磁盘：` + 每设备一行 | `/proc/mounts` 中 `device` 以 `/dev/` 开头或挂载点为 `/` 的条目，按设备合并（同设备多挂载点：主挂载点取最短路径，其余计入 `等 N 处`）；用量用 `syscall.Statfs` | `used = Blocks − Bfree`、`available = Bavail`、已用% = `used / (used + available)`（与 `df` 一致）；statfs 失败的挂载点跳过；无任何可用条目显示 `磁盘：无可用信息` |
+| `GPU：` + 每卡一行 | 枚举 `/sys/class/drm/card<N>`（排除 `card0-DP-1` 等连接器），`device/vendor`、`device/device` 取 PCI ID；型号优先 `/proc/driver/nvidia/gpus/<BDF>/information` 的 `Model`，否则取 `pciVendors` 厂商名 | 取不到型号与厂商显示 `未知厂商`；无卡或 `/sys/class/drm` 不存在显示 `GPU：未检测到` |
+
+其余要点：
+
+- 行格式：`- <device>（<fstype>）已用 X / Y（Z%）· 挂载 <挂载点>[ 等 N 处]`、`- <型号>（<vendorID>:<deviceID>）`；字节用 1 位小数的 KiB/MiB/GiB/TiB/PiB（`formatBytes`，`status.go:117`）。
+- 磁盘按主挂载点升序、GPU 按 `card<N>` 升序，输出稳定可读；单段 `SegText`，无分页。
+- 非 Linux 平台由 `status_other.go:14` 的 `hostStatus` 返回错误，输出 `主机状态采集失败：当前平台不支持主机硬件采集（仅 Linux）`。
+- **不展示 GPU 显存占用与 GPU 利用率**：Linux 没有跨厂商的通用 sysfs/procfs 接口（NVIDIA 需 NVML/nvidia-smi，AMD/Intel 需驱动私有接口），在「只用标准库、不 exec 外部命令、不引入第三方依赖」的约束下无法可靠获取，故只列出设备型号与 PCI ID。
+
+### 3.7 `/manage help`
 
 ```
 可用子命令：
@@ -153,17 +191,18 @@ kei v0.1.0 · manage v0.1.0
 - plugins — 列出已加载插件
 - adapters — 列出已注册适配器与已绑定实例
 - admin — 管理员校验演示
+- status — 显示主机 CPU/内存/磁盘/GPU 使用情况（仅管理员）
 - help — 显示本帮助
 ```
 
-`helpText`（`manage.go:53`）遍历包级只读表 `subcommands`（`manage.go:31`）生成：首行固定 `可用子命令：`，其后每个子命令一行 `- <name> — <desc>`，顺序与表中定义一致（`ping`→`version`→`plugins`→`adapters`→`admin`→`help`）。因此列表本身**必然自洽**——`help` 也在表内，故 `/manage help` 会列出自己；子命令或说明文本的任何改动只需改表一处。输出为单个 `SegText` 段，无分页，行为与其余子命令一致（第 8 节第 5、7 条）。
+`helpText`（`manage.go:54`）遍历包级只读表 `subcommands`（`manage.go:31`）生成：首行固定 `可用子命令：`，其后每个子命令一行 `- <name> — <desc>`，顺序与表中定义一致（`ping`→`version`→`plugins`→`adapters`→`admin`→`status`→`help`）。因此列表本身**必然自洽**——`help` 也在表内，故 `/manage help` 会列出自己；子命令或说明文本的任何改动只需改表一处。输出为单个 `SegText` 段，无分页，行为与其余子命令一致（第 8 节第 5、7 条）。
 
 ## 4. 配置键
 
 | 键 | 类型 | 默认 | 语义 |
 | --- | --- | --- | --- |
 | `plugins.manage.enabled` | bool | `false`（未列出即不启用） | 是否装配该插件；可用布尔标量简写 `manage: true` |
-| `plugins.manage.plugins_admin_only` | bool | `false` | 为真时给 `/manage plugins` 规则追加 `bot.WithAdmin()`（`manage.go:96`–`98` 读取 `p.cfg.Bool("plugins_admin_only", false)`） |
+| `plugins.manage.plugins_admin_only` | bool | `false` | 为真时给 `/manage plugins` 规则追加 `bot.WithAdmin()`（`manage.go:97`–`99` 读取 `p.cfg.Bool("plugins_admin_only", false)`） |
 
 - `enabled` 的解码与「未列出即不启用」语义由配置层统一处理（见 [`../configuration.md`](../configuration.md) 12.3），插件私有配置经 `PluginContext.Config` 读取。本节只记录 manage 自己的键。
 - 环境变量覆盖与 `plugins.<name>` 段的通用规则一致（只命中配置中**已存在**的插件名，见 `../configuration.md` 12.6）：`KEI_PLUGINS_MANAGE_ENABLED=false` 停用插件；`KEI_PLUGINS_MANAGE_PLUGINS_ADMIN_ONLY=true` 等效于 YAML 里写 `plugins_admin_only: true`。
@@ -186,11 +225,11 @@ level=WARN msg="中间件: 事件被拒绝" plugin=manage rule=manage:plugins pl
 level=WARN msg="event dispatch failed" event_id=b1 platform=mock bot=mock-main error="router: 规则 manage:plugins 执行失败: middleware: unauthorized: plugin=manage rule=manage:plugins"
 ```
 
-前置条件：Auth 是引擎全局链的固定成员，插件无需安装；只有绕过引擎、直接用 `internal/router` 且不挂 Auth 的嵌入/测试组合才不会被拦截。`auth.admin_users` 为空时，所有带管理员门槛的规则对**任何**事件都拒绝（第 8 节第 3 条）。
+前置条件：Auth 是引擎全局链的固定成员，插件无需安装；只有绕过引擎、直接用 `internal/router` 且不挂 Auth 的嵌入/测试组合才不会被拦截。`auth.admin_users` 为空时，所有带管理员门槛的规则（`/manage admin`、`/manage status` 以及开启 `plugins_admin_only` 后的 `/manage plugins`）对**任何**事件都拒绝（第 8 节第 3 条）。
 
 ## 6. 与 `PluginContext` 的关系
 
-`Setup` 开头取上下文，取不到直接报错（`manage.go:78`–`83`）：
+`Setup` 开头取上下文，取不到直接报错（`manage.go:79`–`84`）：
 
 ```go
 pc, ok := bot.PluginContextFrom(ctx)
@@ -207,7 +246,9 @@ p.start = time.Now()
 
 ## 7. 测试与手工验证
 
-单元测试 `plugins/manage/manage_test.go` 共 7 个，逐包统计与覆盖描述见 [`../testing.md`](../testing.md) 的「实际测试分布」表（`plugins/manage` 行），此处不再重复。测试手法即 `../plugin.md` 11.5 的插件测试辅助：`bot.NewRecordingRegistrar()` 记录规则、手工构造 `PluginContext`（含 `Catalog`/`Adapters` 假实现）注入 ctx；由于六条规则共用命令名 `manage`，测试按规则 ID（`manage:<sub>`）取规则，再构造 `Command{Name: "manage", Args: []string{"<sub>"}}` 直接调用 `rule.Handler`。`TestSubcommandMatching` 直接断言 `rule.Matches`：子命令忽略大小写命中、参数为空或不匹配时不命中；`TestHelpListing` 断言 `/manage help` 的输出逐行列出全部六条子命令（含 `help` 自身）且不带管理员门槛。
+单元测试 `plugins/manage` 共 21 个：`manage_test.go` 7 个（规则注册与匹配、管理员门槛、优先级）、`status_test.go` 5 个（渲染与格式化，可移植）、`status_linux_test.go` 9 个（`/proc`、`/sys` 解析与真实采集）。逐包统计与覆盖描述见 [`../testing.md`](../testing.md) 的「实际测试分布」表（`plugins/manage` 行），此处不再重复。测试手法即 `../plugin.md` 11.5 的插件测试辅助：`bot.NewRecordingRegistrar()` 记录规则、手工构造 `PluginContext`（含 `Catalog`/`Adapters` 假实现）注入 ctx；由于七条规则共用命令名 `manage`，测试按规则 ID（`manage:<sub>`）取规则，再构造 `Command{Name: "manage", Args: []string{"<sub>"}}` 直接调用 `rule.Handler`。`TestSubcommandMatching` 直接断言 `rule.Matches`：子命令忽略大小写命中、参数为空或不匹配时不命中；`TestHelpListing` 断言 `/manage help` 的输出逐行列出全部七条子命令（含 `help` 自身）且不带管理员门槛。
+
+`/manage status` 的测试分两层：解析器（`parseCPUInfo`/`parseLoadavg`/`parseStatCPU`/`parseMeminfo`/`parseMounts`/`isCardDir`）用固定文本断言，`formatHostInfo`/`formatBytes`/`percent` 用构造的 `hostInfo` 断言确定性输出；`TestStatusCommand` 走真实采集路径（`/proc`、`/sys` 在 Linux 恒存在），只断言与主机无关的结构性前缀（`主机状态：`、各段标题），不断言具体数值。
 
 手工验证（`mock` 适配器，无需真实平台）：用只含一个 mock bot 的配置启动 `./cmd/bot`，注入后读 `GET /sent`：
 
@@ -216,18 +257,25 @@ curl -sS -XPOST 127.0.0.1:18080/inject -H 'content-type: application/json' -d '{
 curl -sS 127.0.0.1:18080/sent | jq -r '.[].Request.Message.Segments[0].Data.text'
 ```
 
-本文第 3 节的示例输出即由此得到；管理员门槛可用 `user_id` 字段区分身份（`{"text":"/manage admin","user_id":"admin-user"}` 在 `auth.admin_users: ["admin-user"]` 下得到回复，其它 user_id 只得到第 5 节的两条 warn 日志）。
+本文第 3 节的示例输出即由此得到；管理员门槛可用 `user_id` 字段区分身份（`{"text":"/manage admin","user_id":"admin-user"}` 在 `auth.admin_users: ["admin-user"]` 下得到回复，其它 user_id 只得到第 5 节的两条 warn 日志）。`/manage status` 同理，且必须带管理员身份，例如：
+
+```bash
+KEI_AUTH_ADMIN_USERS=admin-user ./cmd/bot -config configs/config.yaml
+curl -sS -XPOST 127.0.0.1:18080/inject -H 'content-type: application/json' -d '{"text":"/manage status","id":"ev-s1","user_id":"admin-user"}'
+```
 
 ## 8. 已知边界与注意事项
 
-1. **`/manage ping` 的时长口径**是插件 `Setup` 以来的时长（`manage.go:83`），不是进程启动时间；引擎重启或进程重启才重置。
+1. **`/manage ping` 的时长口径**是插件 `Setup` 以来的时长（`manage.go:84`），不是进程启动时间；引擎重启或进程重启才重置。
 2. **`/manage plugins` 会列出 `manage` 自身**（引擎的插件目录包含所有已加载插件），且因未声明 `Permissions` 而不显示 `[...]` 段。
-3. **示例配置当前会挡住 `/manage plugins`**：`configs/config.yaml` 把 `plugins.manage.plugins_admin_only` 设为 `true`（`:92`）而 `auth.admin_users` 为空（`:27`），此时 `/manage plugins`、`/manage admin` 对任何事件都返回未授权（只打 warn 日志、不回复）。要使用管理命令需先在 `auth.admin_users` 中配置管理员 ID（或把 `plugins_admin_only` 置 false）。
+3. **示例配置当前会挡住带管理员门槛的子命令**：`configs/config.yaml` 把 `plugins.manage.plugins_admin_only` 设为 `true`（`:103`）而 `auth.admin_users` 为空（`:38`），此时 `/manage plugins`、`/manage admin`、`/manage status` 对任何事件都返回未授权（只打 warn 日志、不回复）。要使用这些命令需先在 `auth.admin_users` 中配置管理员 ID（或把 `plugins_admin_only` 置 false，`/manage status` 仍需管理员）。
 4. **两段适配器列表可以不一致**（第 3.4 节）：注册表含编译进二进制但未启用/未引用的适配器，绑定列表只含实际装配的实例。
 5. **输出是单个 `SegText` 段**（`Reply.Text`），不含 Markdown/卡片；能否送达取决于平台能力，降级链见 [`../adapter.md`](../adapter.md)。
 6. **`/manage adapters` 不显示适配器实例的私有配置**，只显示注册元信息与 `bot 名 → 适配器名`；实例私有键与保留键语义见 `../configuration.md` 12.2、12.4。
-7. `/manage plugins`、`/manage adapters` 的输出长度随插件/适配器数量线性增长，没有分页或截断，平台消息长度上限由适配器负责（见 `../adapter.md` 的能力与降级）。
-8. **`/manage` 不带子命令、或子命令不在 `ping`/`version`/`plugins`/`adapters`/`admin`/`help` 之内时不命中任何规则**，不会回复；`/manage help` 是唯一的自描述入口，其输出即 `subcommands` 表的逐行渲染（第 3.6 节）。子命令只在第一个参数上比较，多余参数被忽略（例如 `/manage help ping` 仍命中 `help`）。
+7. `/manage plugins`、`/manage adapters`、`/manage status` 的输出长度随条目数量线性增长，没有分页或截断，平台消息长度上限由适配器负责（见 `../adapter.md` 的能力与降级）。
+8. **`/manage` 不带子命令、或子命令不在 `ping`/`version`/`plugins`/`adapters`/`admin`/`status`/`help` 之内时不命中任何规则**，不会回复；`/manage help` 是唯一的自描述入口，其输出即 `subcommands` 表的逐行渲染（第 3.7 节）。子命令只在第一个参数上比较，多余参数被忽略（例如 `/manage help ping` 仍命中 `help`）。
+9. **`/manage status` 是 Linux 专有**：采集依赖 `/proc`、`/sys`（`status_linux.go`），非 Linux 平台只回复「当前平台不支持主机硬件采集（仅 Linux）」（`status_other.go`）。它**始终**需要管理员（第 2 节要点），且会阻塞 Handler 约 200ms（`/proc/stat` 两次采样，`cpuSampleGap`）。
+10. **`/manage status` 不显示 GPU 显存占用/利用率**（无跨厂商通用接口，见 3.6），也不展示网络、温度、进程等其他指标；`GPU` 型号只有 NVIDIA 有可读的 `Model` 字段，AMD/Intel 仅显示 PCI 厂商名与设备 ID。
 
 ---
 
