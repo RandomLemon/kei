@@ -80,6 +80,7 @@ func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.Se
 			if res == nil {
 				res = &bot.SendResult{}
 			}
+			e.logOutgoingMessage(ctx, ad.Name(), botID, out, res)
 			return res, nil
 		}
 		lastErr = err

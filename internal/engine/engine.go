@@ -436,6 +436,8 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	e.logIncomingMessage(ctx, ev)
+
 	if err := e.router.Dispatch(ctx, ev); err != nil {
 		e.log.Warn("event dispatch failed",
 			"event_id", ev.ID,

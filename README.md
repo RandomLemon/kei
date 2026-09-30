@@ -584,6 +584,9 @@ cd examples/kei-adapter-myim && go test ./...
 
 - 日志用 `log/slog`，字段化输出（`plugin`/`rule`/`event_id`/`duration_ms`/`error`），
   `log.format: json` 可切换为 JSON。
+- 收发消息时按 INFO 记录消息内容与收发双方（`收到消息`/`发送消息`，字段含
+  `platform`/`bot`/`user`/`user_name`/`channel`/`content`，发送另有 `message_id`）；
+  可见性由 `log.level` 控制，设为 `warn`/`error` 即关闭。
 
 ## 测试与验证
 

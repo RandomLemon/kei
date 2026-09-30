@@ -160,6 +160,8 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	e.logIncomingMessage(ctx, ev)
+
 	if err := e.router.Dispatch(ctx, ev); err != nil {
 		e.log.Warn("event dispatch failed",
 			"event_id", ev.ID,
@@ -172,6 +174,16 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
 ```
 
 单条规则不向适配器错误通道上报：路由只把命中规则的全部错误用 `errors.Join` 聚合返回给 `handle` 记录日志，事件处理失败不会终止引擎。
+
+### 7.4.1 消息收发的 INFO 日志
+
+`internal/engine/logging.go` 在收发消息时向根日志器（`Engine.log`）写 INFO 日志，字段化输出消息内容与收发双方；可见性由 `log.level` 控制（默认 `info` 可见，设为 `warn`/`error` 即关闭），没有单独开关。
+
+- 收到消息：`handle` 在分发前调用 `logIncomingMessage`，仅当 `ev.Message != nil` 时记录（非消息事件如心跳不产生日志），日志文案 `收到消息`，字段：`platform`/`bot`/`event_id`/`message_id`/`kind`/`user`/`user_name`/`channel`/`channel_name`/`content`。
+- 发送消息：`SendRequest` 在适配器 `Send` 成功后调用 `logOutgoingMessage`，日志文案 `发送消息`，字段：`platform`/`bot`/`kind`/`channel`/`user`/`content`，另有 `reply_to`（`req.ReplyTo` 非空时）与 `message_id`（平台返回时）。记录的是降级后实际发送的 `req.Message`。此前的重试失败仍按原样记 Debug，最终失败通过返回的错误暴露。
+- `content` 由 `describeMessage` 渲染：每个段为 `type:值`，段间以空格连接（文本/Markdown 输出原文，`at` 输出 `userID(显示名)`，`image`/`file` 输出 URL 或文件标识，`face` 输出表情 ID，`reply` 输出消息 ID，`card` 只输出类型名不展开载荷，未知类型输出 `<type>`）。该函数平台无关，适配器只需按 `Segment.Data` 键约定填充数据。
+
+`internal/engine/logging_test.go` 覆盖渲染规则、收/发 INFO 日志与「非消息事件不记日志」。
 
 ### 7.5 会话保序
 
