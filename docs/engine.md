@@ -229,7 +229,7 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 
 `/manage adapters` 由内置 `plugins/manage` 插件注册，是「插件经 `PluginContext.Adapters` 读取装配结果」的最小示例：注册表部分来自 `bot.RegisteredAdapters()`（编译期注册表），绑定部分来自 `Engine.Adapters()`（引擎实现 `bot.AdapterCatalog`），因此两段可以不一致（注册表含未启用/未引用的适配器）。
 
-输出格式、分支条件与实测样例见 [`plugins/manage.md`](plugins/manage.md) 3.4 节；`plugins/manage` 的五条子命令及其优先级、管理员门槛见同文档第 2 节。
+输出格式、分支条件与实测样例见 [`plugins/manage.md`](plugins/manage.md) 3.4 节；`plugins/manage` 的六条子命令及其优先级、管理员门槛见同文档第 2 节。
 
 ---
 

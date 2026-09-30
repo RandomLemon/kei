@@ -80,7 +80,7 @@
 | `pkg/kei` | `assemble_test.go`、`kei_test.go` | 17 | 装配表驱动（mock/onebot/feishu/未注册适配器）、插件启用筛选、注入实例优先（同名时跳过注册表实例、缺键补 `enabled: true`、不误报未注册）、`buildConfig` 来源冲突与缺来源报错、内联配置校验错误透出、注入冲突（nil 实例/空名/重名/配置 `enabled: false`）、权限解析、`buildStorage`（注入优先且清理函数为 no-op、配置 `type: sqlite` 时同文件重开读到同一键、未知类型报错）、门面端到端（`TestRunEndToEndWithInlinePlugin`：内联 `FuncPlugin` + 内联 YAML，事件→回复→优雅退出） |
 | `pkg/message` | `message_test.go` | 3 | 段构建器（文本/图片/At/表情/引用/卡片）、消息构建器、`New` 复制段 |
 | `plugins/echo` | `echo_test.go` | 3 | 拼接参数回复、无参数显示用法、元信息与生命周期 |
-| `plugins/manage` | `manage_test.go` | 6 | `/manage ping` 与 `/manage version`、`/manage plugins` 列表、`/manage adapters` 列表、子命令匹配、管理员规则、优先级胜过兜底插件 |
+| `plugins/manage` | `manage_test.go` | 7 | `/manage ping` 与 `/manage version`、`/manage plugins` 列表、`/manage adapters` 列表、`/manage help` 列表、子命令匹配、管理员规则、优先级胜过兜底插件 |
 | `examples/kei-adapter-myim`（独立 module） | `myim_test.go` | 11 | 注册表查表、工厂缺 HTTPClient 拒绝、`Options` 校验、`Start`/`Stop` 生命周期与停止前调用安全、回调先 ACK 再 `Emit`、事件上行、事件 ID 回退、**同一工厂多实例隔离**（`TestMultiInstanceIsolation`：两次调用返回不同实例、各自监听不同地址、事件 `BotID` 不串台、停其一不影响另一个）、发送路径与请求体（含降级）、发送错误 |
 
 ---

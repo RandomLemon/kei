@@ -55,7 +55,7 @@ kei/
 │   └── feishu/            飞书开放平台（事件订阅回调 + 消息发送）
 ├── plugins/
 │   ├── echo/              示例插件：/echo
-│   └── manage/            管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin
+│   └── manage/            管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、/manage help
 ├── examples/
 │   └── kei-adapter-myim/  独立 module 的第三方适配器示例（只依赖 pkg/bot）
 ├── configs/
@@ -232,7 +232,7 @@ plugins:
 ```
 
 - 注入一次事件，确认 `/sent`（mock）或平台侧收到回复。
-- 用管理命令检查装配：`/manage plugins`（已加载插件）、`/manage adapters`（适配器与每个 bot 的绑定）；五条管理子命令的契约与配置见 [`docs/plugins/manage.md`](docs/plugins/manage.md)。
+- 用管理命令检查装配：`/manage plugins`（已加载插件）、`/manage adapters`（适配器与每个 bot 的绑定）；六条管理子命令的契约与配置见 [`docs/plugins/manage.md`](docs/plugins/manage.md)。
 - 插件单测无需启动引擎：`bot.NewRecordingRegistrar()` + `bot.NewNoopReply()`，
   见「写一个插件」末尾。
 - 同一平台配多个 bot（多账号）时，主动发送必须显式指定 `Target.BotID`。

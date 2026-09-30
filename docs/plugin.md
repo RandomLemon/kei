@@ -302,7 +302,7 @@ type FuncPlugin struct {
 
 `Metadata`/`Setup`/`Start`/`Stop` 对 nil 接收者安全：nil 或对应函数为 nil 时是空实现（`Metadata` 返回零值，空名最终由 `pluginmgr.Add` 拒绝），与 `pkg/bot.Config` 的取值方法风格一致。它不调用 `RegisterPlugin`，因此不在注册表快照里；只能经 `pkg/kei.Options.Plugins` 注入，注入实例一律启用，与同名配置冲突（`enabled: false`）时启动失败。装配门面见 [architecture.md](architecture.md) 3.1。
 
-需要 `PluginContext`（配置、日志、存储、插件目录）的插件在 `Setup` 阶段用 `bot.PluginContextFrom(ctx)` 取出后保存到实例上——Handler 执行期的 ctx 不含 `PluginContext`（见 11.3）。`plugins/manage` 就是这么做的：保存 `pc.Config` 供命令读取，把 `pc.Catalog`/`pc.Adapters` 交给 Handler 闭包，取不到上下文时让 `Setup` 返回 `manage: missing plugin context`。其实现与五条子命令的契约（规则 ID、优先级、管理员门槛、输出格式、配置键）见 [`plugins/manage.md`](plugins/manage.md)，本节不再重复其代码。
+需要 `PluginContext`（配置、日志、存储、插件目录）的插件在 `Setup` 阶段用 `bot.PluginContextFrom(ctx)` 取出后保存到实例上——Handler 执行期的 ctx 不含 `PluginContext`（见 11.3）。`plugins/manage` 就是这么做的：保存 `pc.Config` 供命令读取，把 `pc.Catalog`/`pc.Adapters` 交给 Handler 闭包，取不到上下文时让 `Setup` 返回 `manage: missing plugin context`。其实现与六条子命令的契约（规则 ID、优先级、管理员门槛、输出格式、配置键）见 [`plugins/manage.md`](plugins/manage.md)，本节不再重复其代码。
 
 ---
 

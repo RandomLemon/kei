@@ -1,5 +1,5 @@
 // Package manage 提供管理命令：/manage ping、/manage version、/manage plugins、
-// /manage adapters、/manage admin。
+// /manage adapters、/manage admin、/manage help。
 //
 // 它同时演示了插件目录（PluginContext.Catalog）与管理员规则（WithAdmin +
 // Auth 中间件）的用法。
@@ -24,20 +24,56 @@ type Plugin struct {
 // 确保 Plugin 满足 bot.Plugin。
 var _ bot.Plugin = (*Plugin)(nil)
 
+// subcommands 是 /manage 的子命令表（名称 + 一行说明）。
+//
+// 它是 Metadata 描述与 /manage help 输出的唯一来源：新增子命令只需在此追加一行，
+// 并在 Setup 中注册对应规则，Metadata 与 help 自动跟随。
+var subcommands = []struct {
+	name string
+	desc string
+}{
+	{name: "ping", desc: "检查插件存活并显示运行时长"},
+	{name: "version", desc: "显示框架版本与插件版本"},
+	{name: "plugins", desc: "列出已加载插件"},
+	{name: "adapters", desc: "列出已注册适配器与已绑定实例"},
+	{name: "admin", desc: "管理员校验演示"},
+	{name: "help", desc: "显示本帮助"},
+}
+
+// commandList 把子命令表拼成 "/manage ping、/manage version、…" 形式的枚举。
+func commandList() string {
+	names := make([]string, 0, len(subcommands))
+	for _, sc := range subcommands {
+		names = append(names, "/manage "+sc.name)
+	}
+	return strings.Join(names, "、")
+}
+
+// helpText 把子命令表格式化为 /manage help 的多行文本。
+func helpText() string {
+	var b strings.Builder
+	b.WriteString("可用子命令：")
+	for _, sc := range subcommands {
+		fmt.Fprintf(&b, "\n- %s — %s", sc.name, sc.desc)
+	}
+	return b.String()
+}
+
 // Metadata 返回插件元信息。
 func (p *Plugin) Metadata() bot.Metadata {
 	return bot.Metadata{
 		Name:        "manage",
 		Version:     "v0.1.0",
 		Author:      "core",
-		Description: "管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin",
+		Description: "管理命令：" + commandList(),
 	}
 }
 
 // Setup 注册 /manage 命令及其子命令。
 //
-// 五条子命令共用命令名 "manage"，各自用 withSubcommand 限定第一个参数：
-// /manage ping、/manage version、/manage plugins、/manage adapters、/manage admin。
+// 六条子命令共用命令名 "manage"，各自用 withSubcommand 限定第一个参数：
+// /manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、
+// /manage help。
 func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 	pc, ok := bot.PluginContextFrom(ctx)
 	if !ok {
@@ -72,13 +108,17 @@ func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 		return r.Text("管理员校验通过").Send(ctx)
 	}, bot.WithPriority(100), bot.WithID("manage:admin"), withSubcommand("admin"), bot.WithAdmin())
 
+	reg.OnCommand("manage", func(ctx context.Context, _ *bot.Event, r bot.Reply) error {
+		return r.Text(helpText()).Send(ctx)
+	}, bot.WithPriority(100), bot.WithID("manage:help"), withSubcommand("help"))
+
 	return nil
 }
 
 // withSubcommand 限定规则只在命令的第一个参数等于 name 时命中（忽略大小写）。
 //
-// 命令名已在 Rule.Command 层限定为 "manage"，因此它把 /manage 的五个子命令
-// 拆成五条独立规则：优先级、规则 ID 与管理员门槛（WithAdmin）仍按子命令各自生效。
+// 命令名已在 Rule.Command 层限定为 "manage"，因此它把 /manage 的六个子命令
+// 拆成六条独立规则：优先级、规则 ID 与管理员门槛（WithAdmin）仍按子命令各自生效。
 func withSubcommand(name string) bot.Option {
 	return bot.WithMatch(func(e *bot.Event) bool {
 		if e == nil || e.Command == nil || len(e.Command.Args) == 0 {
