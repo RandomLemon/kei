@@ -38,47 +38,82 @@ func applyEnv(c *Config, env []string) error {
 }
 
 // applyEnvPath 把一条环境变量应用到对应字段；路径未知时静默忽略。
+//
+// 实际生效的覆盖会经 recordEnv 记入 c.EnvOverrides；空值不覆盖（如 limits.*
+// 的空串）或值非法被静默忽略（如 enabled 非布尔）时不记。
 func applyEnvPath(c *Config, botNames []string, segments []string, key, value string) error {
 	full := strings.Join(segments, "_")
 	switch full {
 	case "log_level":
 		c.Log.Level = value
-		return nil
+		recordEnv(c, key, "log.level", value)
 	case "log_format":
 		c.Log.Format = value
-		return nil
+		recordEnv(c, key, "log.format", value)
 	case "metrics_addr":
 		c.Metrics.Addr = value
-		return nil
+		recordEnv(c, key, "metrics.addr", value)
 	case "limits_handler_rate":
-		return envFloat(key, "Limits.HandlerRate", value, &c.Limits.HandlerRate)
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		if err := envFloat(key, "Limits.HandlerRate", value, &c.Limits.HandlerRate); err != nil {
+			return err
+		}
+		recordEnv(c, key, "limits.handler_rate", value)
 	case "limits_handler_burst":
-		return envInt(key, "Limits.HandlerBurst", value, &c.Limits.HandlerBurst)
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		if err := envInt(key, "Limits.HandlerBurst", value, &c.Limits.HandlerBurst); err != nil {
+			return err
+		}
+		recordEnv(c, key, "limits.handler_burst", value)
 	case "limits_send_rate":
-		return envFloat(key, "Limits.SendRate", value, &c.Limits.SendRate)
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		if err := envFloat(key, "Limits.SendRate", value, &c.Limits.SendRate); err != nil {
+			return err
+		}
+		recordEnv(c, key, "limits.send_rate", value)
 	case "limits_send_burst":
-		return envInt(key, "Limits.SendBurst", value, &c.Limits.SendBurst)
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		if err := envInt(key, "Limits.SendBurst", value, &c.Limits.SendBurst); err != nil {
+			return err
+		}
+		recordEnv(c, key, "limits.send_burst", value)
 	case "auth_admin_users":
 		c.Auth.AdminUsers = splitList(value)
-		return nil
+		recordEnv(c, key, "auth.admin_users", value)
 	case "storage_type":
 		c.Storage.Type = value
-		return nil
+		recordEnv(c, key, "storage.type", value)
 	case "storage_dsn":
 		c.Storage.DSN = value
-		return nil
-	}
-	switch {
-	case strings.HasPrefix(full, "storage_params_"):
-		setSetting(&c.Storage.Params, full[len("storage_params_"):], value)
-	case strings.HasPrefix(full, "bots_"):
-		applyBotEnv(c, botNames, full[len("bots_"):], value)
-	case strings.HasPrefix(full, "plugins_"):
-		applyPluginEnv(c, full[len("plugins_"):], value)
-	case strings.HasPrefix(full, "adapters_"):
-		applyAdapterEnv(c, full[len("adapters_"):], value)
+		recordEnv(c, key, "storage.dsn", value)
+	default:
+		switch {
+		case strings.HasPrefix(full, "storage_params_"):
+			name := full[len("storage_params_"):]
+			setSetting(&c.Storage.Params, name, value)
+			recordEnv(c, key, "storage.params."+name, value)
+		case strings.HasPrefix(full, "bots_"):
+			applyBotEnv(c, botNames, full[len("bots_"):], value, key)
+		case strings.HasPrefix(full, "plugins_"):
+			applyPluginEnv(c, full[len("plugins_"):], value, key)
+		case strings.HasPrefix(full, "adapters_"):
+			applyAdapterEnv(c, full[len("adapters_"):], value, key)
+		}
 	}
 	return nil
+}
+
+// recordEnv 记录一条实际生效的环境变量覆盖。
+func recordEnv(c *Config, key, path, value string) {
+	c.EnvOverrides = append(c.EnvOverrides, EnvOverride{Key: key, Path: path, Value: value})
 }
 
 // applyBotEnv 处理 KEI_BOTS_<BOTNAME>_... 形式的覆盖。
@@ -86,7 +121,7 @@ func applyEnvPath(c *Config, botNames []string, segments []string, key, value st
 // bot 名与键名都做了规范化（小写，"-"/"." 视作 "_"），因此
 // KEI_BOTS_FEISHU_MAIN_APP_ID 能命中名为 "feishu-main" 的 bot。
 // 同时命中多个 bot 时取名字规范化后最长者，长度相同时全部应用。
-func applyBotEnv(c *Config, botNames []string, rest, value string) {
+func applyBotEnv(c *Config, botNames []string, rest, value, key string) {
 	best, tail := -1, ""
 	var indices []int
 	for i, name := range botNames {
@@ -110,17 +145,22 @@ func applyBotEnv(c *Config, botNames []string, rest, value string) {
 		bot := &c.Bots[i]
 		switch tail {
 		case "name":
+			recordEnv(c, key, "bots."+bot.Name+".name", value)
 			bot.Name = value
 		case "adapter":
 			bot.Adapter = value
+			recordEnv(c, key, "bots."+bot.Name+".adapter", value)
 		case "plugins":
 			bot.Plugins = splitList(value)
+			recordEnv(c, key, "bots."+bot.Name+".plugins", value)
 		case "enabled":
 			if enabled, ok := envBool(value); ok {
 				bot.Enabled = &enabled
+				recordEnv(c, key, "bots."+bot.Name+".enabled", value)
 			}
 		default:
 			setSetting(&bot.Settings, tail, value)
+			recordEnv(c, key, "bots."+bot.Name+".settings."+tail, value)
 		}
 	}
 }
@@ -129,7 +169,7 @@ func applyBotEnv(c *Config, botNames []string, rest, value string) {
 //
 // 只有配置中已存在的插件名才会被命中，未知插件名一律忽略。
 // 同时命中多个插件时取名字规范化后最长者，长度相同时全部应用。
-func applyPluginEnv(c *Config, rest, value string) {
+func applyPluginEnv(c *Config, rest, value, key string) {
 	best, tail := -1, ""
 	var names []string
 	for name := range c.Plugins {
@@ -155,12 +195,14 @@ func applyPluginEnv(c *Config, rest, value string) {
 		if tail == "enabled" {
 			if enabled, ok := envBool(value); ok {
 				pc.Enabled = enabled
+				c.Plugins[name] = pc
+				recordEnv(c, key, "plugins."+name+".enabled", value)
 			}
-			c.Plugins[name] = pc
 			continue
 		}
 		setSetting(&pc.Settings, tail, value)
 		c.Plugins[name] = pc
+		recordEnv(c, key, "plugins."+name+".settings."+tail, value)
 	}
 }
 
@@ -169,7 +211,7 @@ func applyPluginEnv(c *Config, rest, value string) {
 // 只有配置中已存在的适配器名才会被命中，未知适配器名一律忽略。
 // 同时命中多个适配器时取名字规范化后最长者，长度相同时全部应用。
 // 只支持 enabled（控制启用状态），其余键忽略。
-func applyAdapterEnv(c *Config, rest, value string) {
+func applyAdapterEnv(c *Config, rest, value, key string) {
 	best, tail := -1, ""
 	var names []string
 	for name := range c.Adapters {
@@ -198,6 +240,7 @@ func applyAdapterEnv(c *Config, rest, value string) {
 			ac := c.Adapters[name]
 			ac.Enabled = &enabled
 			c.Adapters[name] = ac
+			recordEnv(c, key, "adapters."+name+".enabled", value)
 		}
 	}
 }

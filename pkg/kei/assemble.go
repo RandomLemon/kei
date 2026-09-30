@@ -140,6 +140,40 @@ func newLogger(c config.LogConfig) *slog.Logger {
 	return slog.New(handler)
 }
 
+// sensitiveEnvMarkers 是判定环境变量取值是否敏感的关键字（比较前转大写）。
+// 命中时 DEBUG 日志只输出掩码，避免密钥类配置被写进日志。
+var sensitiveEnvMarkers = []string{
+	"SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL",
+	"API_KEY", "APIKEY", "ACCESS_KEY", "PRIVATE_KEY", "ENCRYPT_KEY",
+}
+
+// logEnvOverrides 以 DEBUG 逐条输出本次启动实际生效的环境变量覆盖，
+// 便于排查某个配置项来自 YAML 还是环境变量。字段：env（变量名）、
+// config（配置项路径）、value（取值；敏感变量为掩码）。
+func logEnvOverrides(logger *slog.Logger, cfg *config.Config) {
+	for _, o := range cfg.EnvOverrides {
+		logger.Debug("环境变量覆盖配置",
+			"env", o.Key,
+			"config", o.Path,
+			"value", redactEnvValue(o.Key, o.Value),
+		)
+	}
+}
+
+// redactEnvValue 对敏感环境变量的取值做掩码；其余原样返回。
+func redactEnvValue(key, value string) string {
+	if value == "" {
+		return value
+	}
+	upper := strings.ToUpper(key)
+	for _, marker := range sensitiveEnvMarkers {
+		if strings.Contains(upper, marker) {
+			return "******"
+		}
+	}
+	return value
+}
+
 // serveMetrics 在独立 HTTP 服务上暴露 Prometheus 指标，随 ctx 结束关闭。
 func serveMetrics(ctx context.Context, addr string, handler http.Handler, logger *slog.Logger) error {
 	ln, err := net.Listen("tcp", addr)

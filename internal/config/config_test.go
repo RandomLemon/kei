@@ -911,3 +911,40 @@ func TestStorageValidateErrors(t *testing.T) {
 		t.Fatalf("错误 = %v", err)
 	}
 }
+
+func TestEnvOverridesRecorded(t *testing.T) {
+	env := []string{
+		"KEI_LOG_LEVEL=warn",
+		"KEI_LIMITS_SEND_RATE=3",
+		"KEI_AUTH_ADMIN_USERS=u9",
+		"KEI_BOTS_FEISHU_MAIN_APP_SECRET=s2",
+		"KEI_BOTS_QQ_MAIN_ENABLED=false",
+		"KEI_PLUGINS_WEATHER_ENABLED=false",
+		"KEI_STORAGE_TYPE=sqlite",
+		"KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=5m",
+		"KEI_LIMITS_HANDLER_RATE=", // 空值不覆盖，不记录
+		"KEI_BOTS_UNKNOWN_KEY=v",   // 未命中 bot，忽略
+		"KEI_UNKNOWN=v",            // 未知路径，忽略
+		"PATH=/usr/bin",            // 非 KEI_ 前缀，忽略
+	}
+	cfg := mustLoadBytes(t, fullYAML, env...)
+
+	want := []EnvOverride{
+		{Key: "KEI_LOG_LEVEL", Path: "log.level", Value: "warn"},
+		{Key: "KEI_LIMITS_SEND_RATE", Path: "limits.send_rate", Value: "3"},
+		{Key: "KEI_AUTH_ADMIN_USERS", Path: "auth.admin_users", Value: "u9"},
+		{Key: "KEI_BOTS_FEISHU_MAIN_APP_SECRET", Path: "bots.feishu-main.settings.app_secret", Value: "s2"},
+		{Key: "KEI_BOTS_QQ_MAIN_ENABLED", Path: "bots.qq-main.enabled", Value: "false"},
+		{Key: "KEI_PLUGINS_WEATHER_ENABLED", Path: "plugins.weather.enabled", Value: "false"},
+		{Key: "KEI_STORAGE_TYPE", Path: "storage.type", Value: "sqlite"},
+		{Key: "KEI_STORAGE_PARAMS_CLEANUP_INTERVAL", Path: "storage.params.cleanup_interval", Value: "5m"},
+	}
+	if len(cfg.EnvOverrides) != len(want) {
+		t.Fatalf("EnvOverrides = %+v\nwant %+v", cfg.EnvOverrides, want)
+	}
+	for i := range want {
+		if cfg.EnvOverrides[i] != want[i] {
+			t.Fatalf("EnvOverrides[%d] = %+v, want %+v", i, cfg.EnvOverrides[i], want[i])
+		}
+	}
+}

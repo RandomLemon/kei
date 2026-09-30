@@ -303,3 +303,36 @@ func TestBuildStorageUnknownType(t *testing.T) {
 		t.Fatalf("错误 = %v", err)
 	}
 }
+
+func TestLogEnvOverrides(t *testing.T) {
+	logger, buf := testLogger()
+	cfg := &config.Config{EnvOverrides: []config.EnvOverride{
+		{Key: "KEI_LOG_LEVEL", Path: "log.level", Value: "debug"},
+		{Key: "KEI_BOTS_FEISHU_MAIN_APP_SECRET", Path: "bots.feishu-main.settings.app_secret", Value: "top-secret"},
+	}}
+	logEnvOverrides(logger, cfg)
+
+	out := buf.String()
+	for _, want := range []string{"msg=环境变量覆盖配置", "env=KEI_LOG_LEVEL", "config=log.level", "value=debug"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺少 %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "config=bots.feishu-main.settings.app_secret") {
+		t.Fatalf("缺少敏感项路径:\n%s", out)
+	}
+	if strings.Contains(out, "top-secret") || !strings.Contains(out, "value=******") {
+		t.Fatalf("敏感取值未被掩码:\n%s", out)
+	}
+}
+
+func TestLogEnvOverridesRespectsInfoLevel(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logEnvOverrides(logger, &config.Config{EnvOverrides: []config.EnvOverride{
+		{Key: "KEI_LOG_LEVEL", Path: "log.level", Value: "debug"},
+	}})
+	if buf.Len() != 0 {
+		t.Fatalf("INFO 级别不应输出环境变量覆盖日志:\n%s", buf.String())
+	}
+}

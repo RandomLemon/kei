@@ -68,6 +68,8 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	slog.SetDefault(logger)
 
+	logEnvOverrides(logger, cfg)
+
 	store, closeStore, err := buildStorage(opts, cfg)
 	if err != nil {
 		return err

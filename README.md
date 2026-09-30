@@ -587,6 +587,9 @@ cd examples/kei-adapter-myim && go test ./...
 - 收发消息时按 INFO 记录消息内容与收发双方（`收到消息`/`发送消息`，字段含
   `platform`/`bot`/`user`/`user_name`/`channel`/`content`，发送另有 `message_id`）；
   可见性由 `log.level` 控制，设为 `warn`/`error` 即关闭。
+- 启动时按 DEBUG 逐条输出实际生效的环境变量覆盖（`环境变量覆盖配置`，字段
+  `env`/`config`/`value`），便于排查某个配置来自 YAML 还是环境变量；敏感变量
+  （名含 `SECRET`/`TOKEN`/`PASSWORD` 等）的取值显示为 `******`。`log.level: debug` 可见。
 
 ## 测试与验证
 

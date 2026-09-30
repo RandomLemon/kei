@@ -57,6 +57,20 @@ type Config struct {
 	Auth AuthConfig `yaml:"auth"`
 	// Storage 是存储后端配置。
 	Storage StorageConfig `yaml:"storage"`
+	// EnvOverrides 记录本次加载中实际生效的环境变量覆盖，按应用顺序排列；
+	// 供启动时以 DEBUG 日志输出，排查某个键来自 YAML 还是环境变量。
+	// 它不是 YAML 键，解码不会读写该字段。
+	EnvOverrides []EnvOverride `yaml:"-"`
+}
+
+// EnvOverride 记录一条实际生效的环境变量覆盖。
+type EnvOverride struct {
+	// Key 是原始环境变量名，例如 KEI_LOG_LEVEL。
+	Key string
+	// Path 是被覆盖的配置项路径，例如 log.level。
+	Path string
+	// Value 是环境变量的原始取值。
+	Value string
 }
 
 // LogConfig 是日志配置。

@@ -35,10 +35,14 @@ type Config struct {
 	Limits   LimitsConfig               `yaml:"limits"`
 	Auth     AuthConfig                 `yaml:"auth"`
 	Storage  StorageConfig              `yaml:"storage"`
+
+	// EnvOverrides 记录本次加载中实际生效的环境变量覆盖，供启动日志使用；
+	// 不是 YAML 键（yaml:"-"），解码不会读写。
+	EnvOverrides []EnvOverride `yaml:"-"`
 }
 ```
 
-顶层只允许这 8 个键，其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins`/`storage` 由自定义解码函数处理，条目上的未知键不会报错，而是收进各自的 `Settings`/`Params`（见 12.2–12.3、12.5）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。
+顶层只允许上面 8 个 YAML 键（`EnvOverrides` 不是键），其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins`/`storage` 由自定义解码函数处理，条目上的未知键不会报错，而是收进各自的 `Settings`/`Params`（见 12.2–12.3、12.5）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。
 
 | 段 | 键 | 结构体字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- | --- |
@@ -172,6 +176,10 @@ type StorageConfig struct {
 - `KEI_ADAPTERS_<NAME>_<KEY>`：只命中配置中已存在的适配器名。支持的键只有 `enabled`（指针布尔）；其余键忽略。
 - 值的类型按 YAML 规则推断（`convertValue`）：`true`→bool、`3`→int、`1.5`→float64、其余→string、空值→空字符串；无法按 YAML 解析时退化为原始字符串。写入 `Settings` 时，若已有键规范化后同名，则沿用 YAML 中的原键名（多个同名时取字典序最小者），否则使用规范化后的路径作为键名。
 - 未匹配任何已知路径的 `KEI_*` 变量被静默忽略（不报错，也不会创建新的 bot/plugin/adapter 条目）。
+
+每条**实际生效**的覆盖都会记入 `Config.EnvOverrides`（`EnvOverride{Key, Path, Value}`，按应用顺序）：`Key` 是原始环境变量名，`Path` 是配置项路径（顶层键用点号，如 `log.level`、`limits.send_rate`、`auth.admin_users`、`storage.params.cleanup_interval`；`bots.<名>.<字段>`、`bots.<名>.settings.<键>`、`plugins.<名>.enabled`、`plugins.<名>.settings.<键>`、`adapters.<名>.enabled`）。启动时 `pkg/kei.Run` 在日志器构造后以 **DEBUG** 逐条输出这些项（文案 `环境变量覆盖配置`，字段 `env`/`config`/`value`），便于排查某个配置来自 YAML 还是环境变量。取值默认原样输出，变量名命中 `SECRET`/`TOKEN`/`PASSWORD`/`PASSWD`/`CREDENTIAL`/`API_KEY`/`APIKEY`/`ACCESS_KEY`/`PRIVATE_KEY`/`ENCRYPT_KEY` 之一时输出掩码 `******`，避免密钥写入日志（`pkg/kei/assemble.go` 的 `logEnvOverrides`/`redactEnvValue`）。
+
+未被应用的变量不会记录：非 `KEI_` 前缀、未知路径、未命中 bot/plugin/adapter 名、`limits.*` 空值、`enabled` 非法布尔（被静默忽略）都不出现在 `EnvOverrides` 中。DEBUG 日志受 `log.level` 控制：默认 `info` 不输出，设 `debug` 才可见。
 
 因为覆盖发生在校验之前，非法的日志级别、负数限流等仍会被 `validate` 拒绝；`KEI_LIMITS_*` 的非数字值在 `applyEnv` 阶段就报错。
 
