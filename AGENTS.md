@@ -76,3 +76,4 @@ go test -race ./...
 - 修改导出符号前先查全部调用点（`lsp references`），迁移所有调用方并删除被替代的旧路径，不留兼容垫片。
 - 设计歧义时以 `docs/` 为准；文档与代码冲突时以代码为准并同步修改文档（口径见 [`docs/README.md`](docs/README.md) 的文档约定）。文档未覆盖时选最简单、可测试的方案。
 - 优先保证 `pkg/bot` 接口稳定：接口稳定比功能多更重要，不过度设计。
+- commit message 与 tag message 一律用英文书写。
