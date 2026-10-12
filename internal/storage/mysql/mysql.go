@@ -35,7 +35,8 @@ func open(cfg *bot.Config) (bot.Storage, error) {
 		return nil, fmt.Errorf("storage: mysql: 打开数据库: %w", err)
 	}
 	if err := sqlstore.ApplyPool(db, cfg); err != nil {
-		return nil, fmt.Errorf("storage: mysql: %w", err)
+		// 失败路径释放连接池：调用方拿到 error，无法再访问该 *sql.DB。
+		return nil, errors.Join(fmt.Errorf("storage: mysql: %w", err), sqlstore.CloseDB(db))
 	}
 	return sqlstore.New(db, cfg.Duration("cleanup_interval", time.Minute))
 }

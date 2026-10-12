@@ -62,7 +62,7 @@
   - 补注：只做「子 ctx + defer cancel()」不够——`srv.Shutdown` 在另一个 goroutine 里异步执行，`Run` 返回瞬间端口可能仍被占用，紧接着的第二次 `Run` 依旧可能撞上 `address already in use`。因此改为返回同步 `stop func()`（调用方 `defer`），保证返回即释放。
   - 验收：测试连续两次 `Run`（第二次在首次失败后）可正常绑定。
 
-- [ ] **8. SQL 存储：AutoMigrate/ApplyPool 失败时泄漏连接池** `[静态]`
+- [x] **8. SQL 存储：AutoMigrate/ApplyPool 失败时泄漏连接池** `[静态]` — 完成：`sqlstore.New`/`NewWithClock` 明确取得 db 所有权——AutoMigrate 失败时经新增的 `sqlstore.CloseDB` 关闭底层 `*sql.DB`（`errors.Join` 并入返回错误），`internal/storage/mysql` 的 `ApplyPool` 失败路径同样 `CloseDB`；`Store.Close` 改为复用 `CloseDB`。回归测试 `internal/storage/sqlstore/sqlstore_test.go` 的 `TestNewClosesPoolOnMigrateFailure`（只读库触发 AutoMigrate 失败，断言 Ping 报错且 `OpenConnections==0`）与 `TestCloseDBClosesPool`（真实关闭 + 重复调用幂等）。取证：修复前同一只读 DSN 复现 20 次构造失败后 fd 10→30，修复后 10→10（delta 0）；`go test -race -count=1 ./internal/storage/...` 全绿。文档：`New`/`Close`/`CloseDB` 注释写明所有权语义，`docs/testing.md` 的 sqlstore 行由「无独立测试文件」改为 2 个用例。
   - 位置：`internal/storage/sqlstore/sqlstore.go:62-64`、`internal/storage/mysql/mysql.go:37-39`、`internal/storage/sqlite/sqlite.go:31-37`
   - 问题：`gorm.Open` 已拿到 `*sql.DB`，失败路径直接 `return nil, err`，未 `Close`（SQLite 还占文件锁）；`pkg/kei` 侧也拿不到 closer。
   - 修复：失败分支 `if sqlDB, err := db.DB(); err == nil { _ = sqlDB.Close() }`；明确 `Store.Close` 对调用方传入 DB 的所有权语义。

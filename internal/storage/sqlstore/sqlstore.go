@@ -47,6 +47,9 @@ type Store struct {
 var _ bot.Storage = (*Store)(nil)
 
 // New 在 db 上 AutoMigrate 并构造 Store；cleanup <= 0 时不启动后台清理。
+//
+// New 取得 db 的所有权：成功时由 Store.Close 关闭底层连接池，失败（AutoMigrate
+// 报错）时由本函数关闭，调用方不需要（也不应）再关闭同一个 db。
 func New(db *gorm.DB, cleanup time.Duration) (*Store, error) {
 	return NewWithClock(db, cleanup, time.Now)
 }
@@ -60,7 +63,9 @@ func NewWithClock(db *gorm.DB, cleanup time.Duration, now func() time.Time) (*St
 		now = time.Now
 	}
 	if err := db.AutoMigrate(&Entry{}); err != nil {
-		return nil, fmt.Errorf("sqlstore: 建表: %w", err)
+		// 失败路径必须释放连接池（SQLite 还会占住文件句柄）：调用方拿到的是
+		// error 而非 Store，没有任何 closer，不关闭就是永久泄漏。
+		return nil, errors.Join(fmt.Errorf("sqlstore: 建表: %w", err), CloseDB(db))
 	}
 	s := &Store{db: db, now: now, cleanup: cleanup}
 	if cleanup > 0 {
@@ -107,7 +112,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return s.db.WithContext(ctx).Where("key = ?", key).Delete(&Entry{}).Error
 }
 
-// Close 停止后台清理并关闭底层数据库，可重复调用。
+// Close 停止后台清理并关闭底层数据库，可重复调用；db 的所有权语义见 New。
 func (s *Store) Close() error {
 	s.stopOnce.Do(func() {
 		if s.cancel != nil {
@@ -115,10 +120,18 @@ func (s *Store) Close() error {
 		}
 		s.wg.Wait()
 	})
-	if s.db == nil {
+	return CloseDB(s.db)
+}
+
+// CloseDB 关闭 db 的底层连接池，释放连接与文件句柄；db 为 nil 时返回 nil，
+// 对已关闭的连接池幂等。
+//
+// 供 New 的失败路径与方言包（如 mysql 应用连接池参数失败时）统一释放资源。
+func CloseDB(db *gorm.DB) error {
+	if db == nil {
 		return nil
 	}
-	sqlDB, err := s.db.DB()
+	sqlDB, err := db.DB()
 	if err != nil {
 		return err
 	}

@@ -73,7 +73,7 @@
 | `internal/reply` | `reply_test.go` | 3 | 累积段发送、错误累积、默认私聊 |
 | `internal/router` | `router_test.go` | 27 | 命令解析与自定义前缀、优先级顺序、多规则命中、无匹配、注册校验与错误、正则/关键词（大小写不敏感）、事件类型与平台过滤、`OnAll` 兜底、中间件顺序与作用域、中间件读取路由、触发描述、正则捕获、per-rule Reply、Reply 工厂回退、错误聚合、自动 ID、规则副本隔离、`UpdateRules` 重排与 nil 拒绝、并发派发与注册 |
 | `internal/storage` | `memory_test.go`、`registry_test.go` | 9 | 内存往返、TTL、ctx 取消、`Close` 幂等、拒绝式存储、并发访问；注册表 `Kinds()` 升序为 memory/mysql/sqlite、`Open("memory")` 返回可用实现、未知类型报错并列出已注册名 |
-| `internal/storage/sqlstore` | — | 0 | 无独立测试文件；SQL 通用实现（往返与拷贝语义、TTL 惰性过期、后台清理、`Close` 幂等、upsert）由 `internal/storage/sqlite` 的同构用例经 `storage.Open("sqlite")` 间接覆盖（不直连数据库） |
+| `internal/storage/sqlstore` | `sqlstore_test.go` | 2 | 构造失败（只读库 AutoMigrate 报错）时关闭连接池、连接池真被关闭且 `CloseDB` 幂等；SQL 通用实现（往返与拷贝语义、TTL 惰性过期、后台清理、`Close` 幂等、upsert）由 `internal/storage/sqlite` 的同构用例经 `storage.Open("sqlite")` 间接覆盖（不直连数据库） |
 | `internal/storage/sqlite` | `sqlite_test.go` | 5 | 经 `storage.Open("sqlite")` 往返与入参/返回值拷贝语义、缺失键 `ErrNotFound`、`Delete` 缺键不报错、`Close` 幂等、同文件重开后持久化；`sqlstore.NewWithClock` 假时钟 TTL 惰性清理后表内无行、20ms 间隔后台清理在 2s 内删除过期行 |
 | `internal/storage/mysql` | `mysql_test.go` | 2 | 默认 `t.Skip`；设置 `KEI_TEST_MYSQL_DSN` 时执行往返与 TTL（需真实 MySQL 实例，CI 不启动） |
 | `pkg/bot` | `adapter_registry_test.go`、`api_test.go`、`event_test.go`、`func_plugin_test.go`、`registrar_test.go` | 17 | 非法注册被记录并由启动校验报错（`TestRegisterAdapterRejectsInvalid`：不入表但记录 Name/Reason）、注册表快照隔离（入参/出参均不污染）、权限判定（`PermAll` 不适用于适配器）、`Config` 访问器、`BotAPI`/`Storage` 接口满足、`PluginContext` 往返、`NoopReply`、`TargetFromEvent`、`SessionKey`/命令解析/事件文本、段支持判定、能力降级、规则匹配表驱动、元信息权限、插件注册忽略 nil、内联插件 `FuncPlugin`（函数委托与调用顺序、nil 接收者与缺省字段都是空实现） |
