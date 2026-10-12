@@ -161,6 +161,11 @@ func Metrics(rec metrics.Recorder) bot.Middleware {
 //
 // next 在独立 goroutine 中执行并把结果写入容量为 1 的 channel，因此超时后
 // goroutine 不会阻塞在发送上；ctx 取消同样触发超时错误。返回错误包装 ErrTimeout。
+// 超时只是放弃等待，不会终止内层 goroutine：next 必须响应 ctx 取消才能真正释放。
+//
+// 该中间件为第三方代码（插件中间件与 Handler）而设，应放在策略类中间件
+// （Auth/Dedup/RateLimit）之内，让框架自身的判定在超时窗口之外同步完成；
+// 引擎装配的全局链即如此（见 internal/engine 的 globalMiddlewares）。
 func Timeout(d time.Duration) bot.Middleware {
 	if d <= 0 {
 		return passthrough
@@ -182,6 +187,16 @@ func Timeout(d time.Duration) bot.Middleware {
 }
 
 // Dedup 丢弃重复事件。
+//
+// 去重是「标记开始」而非「标记成功」：首次出现即写入集合，随后无论 next 成功、
+// 报错、超时还是 panic 都不回滚，因此 TTL 内同一「规则 × 事件」的重投一律丢弃。
+// 这与总线层按 ev.ID 去重（在 Publish 时写入）语义一致；若改成标记成功，第一次
+// 执行尚未结束时到达的重复投递会被并发处理，去重也就失去了意义。代价是超时或
+// 失败的尝试仍占用槽位，其重投在 TTL 内被丢弃（失败本身会经 Logger/指标上报，
+// 不是静默丢失）。
+//
+// 标记必须位于 Timeout 之外：在启动超时 goroutine 之前同步写入，判定与记录都
+// 不依赖内层 goroutine 是否已被放弃。
 //
 // 全局中间件链是按规则包裹执行的：同一事件可能命中多条规则，每条规则都会
 // 走一遍链。因此去重键必须带规则标识，否则第二条命中规则会被误判为重复。

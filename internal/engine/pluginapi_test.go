@@ -9,6 +9,7 @@ import (
 
 	"github.com/RandomLemon/kei/adapters/mock"
 	"github.com/RandomLemon/kei/internal/config"
+	"github.com/RandomLemon/kei/internal/middleware"
 	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
@@ -123,6 +124,65 @@ func applyMiddlewares(rule *bot.Rule, mws []bot.Middleware) bot.Handler {
 		h = mws[i](h)
 	}
 	return h
+}
+
+// TestGlobalMiddlewareChainSemantics 验证全局链的顺序契约：
+// Dedup 位于 RateLimit 之外（重投不消耗限流额度），且去重标记在 Timeout 之前
+// 同步写入（「标记开始」语义：超时的尝试仍占用槽位，TTL 内的重投被丢弃）。
+func TestGlobalMiddlewareChainSemantics(t *testing.T) {
+	routeCtx := bot.WithRoute(context.Background(), &bot.Route{Plugin: "p", RuleID: "r1"})
+	newEvent := func(id, user string) *bot.Event {
+		return &bot.Event{ID: id, Type: bot.EventMessage, Platform: "mock", BotID: "mock-main", Sender: &bot.User{ID: user}}
+	}
+
+	t.Run("重投不消耗限流额度", func(t *testing.T) {
+		eng := newTestEngine(t, Options{Config: &config.Config{
+			Bots:    []config.BotConfig{{Name: "mock-main", Adapter: "mock"}},
+			Plugins: map[string]config.PluginConfig{},
+			// 突发 1 且补充极慢：第一次调用后额度必然耗尽，可据此判断重投是否扣了额度。
+			Limits: config.LimitsConfig{HandlerRate: 0.01, HandlerBurst: 1},
+		}})
+
+		calls := 0
+		rule := &bot.Rule{ID: "r1", Plugin: "p", Handler: func(context.Context, *bot.Event, bot.Reply) error {
+			calls++
+			return nil
+		}}
+		h := applyMiddlewares(rule, eng.globalMiddlewares())
+
+		ev := newEvent("e1", "u1")
+		if err := h(routeCtx, ev, bot.NewNoopReply()); err != nil {
+			t.Fatalf("首次调用应通过: %v", err)
+		}
+		if err := h(routeCtx, ev, bot.NewNoopReply()); !errors.Is(err, middleware.ErrDuplicate) {
+			t.Fatalf("重投应先被去重拦下（ErrDuplicate），got %v", err)
+		}
+		if err := h(routeCtx, newEvent("e2", "u1"), bot.NewNoopReply()); !errors.Is(err, middleware.ErrRateLimited) {
+			t.Fatalf("额度已被首次调用耗尽，同一用户的新事件应被限流，got %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("Handler 调用次数 = %d, want 1（重投与被限流的事件都不应到达 handler）", calls)
+		}
+	})
+
+	t.Run("超时的尝试仍占用去重槽位", func(t *testing.T) {
+		eng := newTestEngine(t, Options{RuleTimeout: 50 * time.Millisecond})
+		rule := &bot.Rule{ID: "r1", Plugin: "p", Handler: func(ctx context.Context, _ *bot.Event, _ bot.Reply) error {
+			// 响应 ctx 取消，超时后自行退出。
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+		h := applyMiddlewares(rule, eng.globalMiddlewares())
+
+		ev := newEvent("e1", "u1")
+		if err := h(routeCtx, ev, bot.NewNoopReply()); !errors.Is(err, middleware.ErrTimeout) {
+			t.Fatalf("阻塞的 Handler 应超时: %v", err)
+		}
+		// 标记在 Timeout 之前写入且不回滚：TTL 内的重投不会因为上次超时而重放。
+		if err := h(routeCtx, ev, bot.NewNoopReply()); !errors.Is(err, middleware.ErrDuplicate) {
+			t.Fatalf("超时后的重投应被去重拦截，got %v", err)
+		}
+	})
 }
 
 func TestIsAdmin(t *testing.T) {

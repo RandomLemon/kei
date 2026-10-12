@@ -62,7 +62,7 @@ type AdapterBinding struct {
 | 字段 | 含义 | 默认 |
 | --- | --- | --- |
 | `EventTimeout` | 单条事件整体处理超时 | 30s |
-| `RuleTimeout` | 单条规则 Handler 超时（Timeout 中间件） | 10s |
+| `RuleTimeout` | 单条规则中插件中间件与 Handler 的执行超时（Timeout 中间件，框架自身判定在其之外，见 10.5） | 10s |
 | `ShutdownTimeout` | 优雅关闭总超时 | 10s |
 | `BusWorkers` | 事件总线分片 worker 数 | 4 |
 | `BusQueueSize` | 每个分片队列容量 | 256 |
@@ -232,10 +232,10 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 三层保护：
 
 1. 引擎层：`handle` 用 `EventTimeout`（默认 30s）约束整条事件的处理，规则、中间件与全部命中规则都在这条 ctx 下运行。
-2. 链层：中间件 `Timeout(RuleTimeout)` 对单条规则的 Handler 施加独立超时；`Recover` 在链中出现两次（见 10.5）。
+2. 链层：中间件 `Timeout(RuleTimeout)` 对单条规则的**插件中间件与 Handler** 施加独立超时；框架自身的策略判定（`Auth`/`Dedup`/`RateLimit`）在 `Timeout` 之外同步执行，见 10.5。`Recover` 在链中出现两次（见 10.5）。
 3. 总线层：`eventbus` 的 worker 对每个处理器单独 `recover`，某个处理器 panic 不影响其它处理器，也不终止 worker；该事件计入 `Failed`，否则计入 `Handled`。
 
-适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。
+适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。`Timeout` 只放弃等待，不会终止内层 goroutine；不响应 ctx 的插件中间件或 Handler 会留下悬空 goroutine，直到自行返回。
 
 ### 7.9 管理命令 `/manage adapters`
 
@@ -429,15 +429,21 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 		middleware.Recover(e.log),
 		middleware.Logger(e.log),
 		middleware.Metrics(e.met),
+		middleware.Auth(e.isAdmin),
+		middleware.Dedup(e.ruleDedup),
+		middleware.RateLimit(e.handleLimit, middleware.ScopeUser),
 		middleware.Timeout(orDuration(e.opts.RuleTimeout, defaultRuleTimeout)),
 		middleware.Recover(e.log),
-		middleware.Auth(e.isAdmin),
-		middleware.RateLimit(e.handleLimit, middleware.ScopeUser),
-		middleware.Dedup(e.ruleDedup),
 	}
 ```
 
-`Recover` 出现两次是有意为之：`Timeout` 会把内层链放进新的 goroutine 执行，外层 `Recover` 只能保护本 goroutine 上的中间件（Logger/Metrics/Timeout），插件 Handler 的 panic 必须由 `Timeout` 之内的那个 `Recover` 兜住，否则会带崩整个进程。
+链的顺序有三条契约：
+
+1. **策略判定在超时之外**：`Auth`/`Dedup`/`RateLimit` 都在 `Timeout` 之外，在调用者 goroutine 中同步完成；`Timeout` 只包裹第三方代码（插件 `Use` 中间件与 Handler）。因此框架自身的判定不会被超时窗口放弃，`RuleTimeout` 的语义是「插件代码的执行上限」。
+2. **去重先于限流**：`Dedup` 在 `RateLimit` 之外，重投的事件在 `l.Allow` 之前就被丢弃，重复投递不消耗 `limits.handler_rate` 配额。
+3. **去重标记先于超时**：`Dedup` 的写入发生在启动超时 goroutine 之前（见 10.6 的「标记开始」语义），不存在「超时后内层 goroutine 尚未记录」的窗口。
+
+`Recover` 出现两次是有意为之：`Timeout` 会把内层链放进新的 goroutine 执行，外层 `Recover` 只能保护本 goroutine 上的中间件（Logger/Metrics/Auth/Dedup/RateLimit/Timeout），插件中间件与 Handler 的 panic 必须由 `Timeout` 之内的那个 `Recover` 兜住，否则会带崩整个进程。
 
 `Metrics` 的两个计数语义不同，需分别解读：
 
@@ -448,7 +454,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 `internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
 
-引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
+引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。该中间件位于 `Dedup` 之内，重投的重复事件不消耗配额（见 10.5）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
 
 `isAdmin` 判定：`ev` 或 `ev.Sender` 为 nil 返回 false，否则与 `auth.admin_users` 逐一比对 `ev.Sender.ID`。
 
@@ -458,6 +464,8 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 - **总线层（`eventbus`）**：在事件入队前按 `ev.ID` 去重（TTL 默认 5m、容量默认 4096），拦截适配器/平台重复投递的同一事件；被拦截的事件连分片队列都不进。
 - **中间件层（`middleware.Dedup` + 引擎的 `ruleDedup` 集合）**：在规则执行前按「规则 × 事件」去重。因为全局链是**按规则**包裹执行的，同一条事件可能命中多条规则、每条规则都会走一遍链，所以去重键必须带规则标识，否则第二条命中规则会被误判为重复。键的构造：有路由信息时前缀 `route.RuleID + "|"`；基础键优先取 `e.ID`，为空时退化为 `SessionKey + "|" + 消息 ID`（无消息时只用 `SessionKey`）；基础键为空（拿不到任何标识）时放行不做去重。命中重复返回 `ErrDuplicate`。
+
+**去重是「标记开始」而非「标记成功」**：`Dedup` 命中新键即写入 `ruleDedup`，随后无论该次执行成功、报错、超时还是 panic 都不回滚，因此 TTL 内同一「规则 × 事件」的重投一律丢弃。理由是去重要拦住的正是「适配器重发、平台重试」：若等成功后才记录，第一次执行尚未结束时到达的重复投递会被并发处理，去重随之失去意义；这也与总线层在 `Publish` 时立即写入的语义一致。代价是超时或失败的尝试同样占用槽位，其重投在 TTL 内被丢弃——失败本身由 `ErrTimeout`/`ErrPanic` 的 `Error` 日志与 `kei_events_handled_total{result="error"}` 上报，不是静默丢失。为保证标记在超时窗口开始之前同步写入（不依赖可能被 `Timeout` 放弃的内层 goroutine），`Dedup` 位于 `Timeout` 之外，见 10.5。
 
 因此：同一条事件命中多条规则不会互相拦截（规则前缀隔离），而总线 TTL 窗口之外再次出现的事件 ID 也不会被总线拦截、但仍受 `ruleDedup` 的 TTL 约束（同一集合，默认 TTL 5m、容量 4096）。
 

@@ -250,19 +250,26 @@ func New(opts Options) (*Engine, error) {
 
 // globalMiddlewares 构造全局中间件链（最外层最先执行）。
 //
-// Recover 出现两次是有意为之：Timeout 会把内层链条放进新的 goroutine 执行，
-// 外层 Recover 只能保护本 goroutine 上的中间件，插件 Handler 的 panic 必须由
-// Timeout 之内的那个 Recover 兜住，否则会带崩整个进程。
+// 顺序有两处刻意设计：
+//
+//   - 框架自身的策略判定（Auth/Dedup/RateLimit）都位于 Timeout 之外，在调用者
+//     goroutine 中同步完成；Timeout 只包裹第三方代码（插件中间件与 Handler）。
+//     Dedup 在 RateLimit 之外，重投的事件先被去重拦下，不消耗限流额度；Dedup
+//     的标记也在任何超时窗口开始之前写入（去重是「标记开始」语义，见
+//     middleware.Dedup），不会因超时后内层 goroutine 被放弃而漏记或延迟记录。
+//   - Recover 出现两次是有意为之：Timeout 会把内层链条放进新的 goroutine 执行，
+//     外层 Recover 只能保护本 goroutine 上的中间件，插件中间件与 Handler 的 panic
+//     必须由 Timeout 之内的那个 Recover 兜住，否则会带崩整个进程。
 func (e *Engine) globalMiddlewares() []bot.Middleware {
 	return []bot.Middleware{
 		middleware.Recover(e.log),
 		middleware.Logger(e.log),
 		middleware.Metrics(e.met),
+		middleware.Auth(e.isAdmin),
+		middleware.Dedup(e.ruleDedup),
+		middleware.RateLimit(e.handleLimit, middleware.ScopeUser),
 		middleware.Timeout(orDuration(e.opts.RuleTimeout, defaultRuleTimeout)),
 		middleware.Recover(e.log),
-		middleware.Auth(e.isAdmin),
-		middleware.RateLimit(e.handleLimit, middleware.ScopeUser),
-		middleware.Dedup(e.ruleDedup),
 	}
 }
 

@@ -34,7 +34,7 @@
 - [x] 已完成：实现 `internal/router`，支持命令、正则、关键词、事件类型匹配。
   - 证据：`internal/router/registrar.go:35`、`:47`、`:61`、`:70`、`:78`（注册入口与兜底）；匹配与优先级语义见 [engine.md](engine.md) 10.3。测试 27 个（`internal/router/router_test.go`）。
 - [x] 已完成：实现 `internal/middleware`，至少包含 Recover、Logger、Timeout、Dedup。
-  - 证据：`internal/middleware/middleware.go:56`、`:91`、`:144`、`:164`、`:192`、`:216`、`:246`，`internal/middleware/chain.go:13`、`:32`；7 个中间件的签名与执行顺序见 [engine.md](engine.md) 10.4–10.5。测试 22 个。
+  - 证据：`internal/middleware/middleware.go:56`、`:91`、`:144`、`:169`、`:207`、`:231`、`:261`，`internal/middleware/chain.go:13`、`:32`；7 个中间件的签名与执行顺序见 [engine.md](engine.md) 10.4–10.5。测试 22 个。
 - [x] 已完成：实现 `internal/engine`，串联 Adapter、EventBus、Router、Plugin；引擎只接收 `AdapterBinding`，不感知平台名。
   - 证据：`internal/engine/engine.go`（AdapterBinding、`Options.Adapters`、New、Run）；事件链路与装配见 [engine.md](engine.md) 7.1–7.4，分层约束见 [`../AGENTS.md`](../AGENTS.md) 第 2.1 节。测试 24 个。
 - [x] 已完成：编写单元测试。
@@ -114,7 +114,7 @@
 - [x] 已完成：实现日志规范，使用 `log/slog`。
   - 证据：`internal/middleware/middleware.go:91`（Logger 字段化输出）、`internal/config/config.go:58`（LogConfig 校验级别与格式）；字段集与级别映射见 [engine.md](engine.md) 10.5，配置键见 [configuration.md](configuration.md) 12.1。
 - [x] 已完成：实现令牌桶限流。
-  - 证据：`internal/ratelimit/ratelimit.go:13`、`:32`、`:54`，`internal/middleware/middleware.go:216`（RateLimit 中间件）；令牌桶语义与接线见 [engine.md](engine.md) 7.7、10.5，配置键见 [configuration.md](configuration.md) 12.1。测试 7 个。
+  - 证据：`internal/ratelimit/ratelimit.go:13`、`:32`、`:54`，`internal/middleware/middleware.go:231`（RateLimit 中间件）；令牌桶语义与接线见 [engine.md](engine.md) 7.7、10.5，配置键见 [configuration.md](configuration.md) 12.1。测试 7 个。
 - [x] 已完成：实现消息去重 TTL 缓存。
   - 证据：`internal/dedup/dedup.go:13`（Set）、`:41`（New）、`:57`（Add）、`:146`（evictLocked，槽位序号匹配）；总线层与中间件层两层去重的关系见 [engine.md](engine.md) 8.5、10.6。测试 9 个。
 - [x] 已完成：实现管理命令 `/manage ping`、`/manage version`、`/manage plugins`、`/manage adapters`，另有阶段清单之外的 `/manage admin`、`/manage status`、`/manage help`。
