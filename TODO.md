@@ -99,11 +99,12 @@
   - 验收：`go test -race ./internal/eventbus`；文档同步。
   - 补注：未采用「一次 `Add` 判定」的备选，因为那会把「队列满的事件」也写进去重集，破坏 8.2 明确承诺的「被丢弃的事件不写去重集，调用方重试仍可成功投递」；按 ID 拆分的多个集合已消除全局串行，`Seen`+`Add` 的第二查只在该 ID 跨会话并发投递时生效。
 
-- [ ] **14. `Publish` 的“ev 可复用”契约是错的** `[读码]`
-  - 位置：`internal/eventbus/bus.go:158-160`（注释）vs `internal/router/router.go:190-192`（worker 写 `ev.Command`）
+- [x] **14. `Publish` 的“ev 可复用”契约是错的** `[已复现]` — 完成 271a142：采用「复制事件」方案（而非「入队前解析命令 + 文档化 Publish 会写 ev」）：`Publish` 在确定入队那一刻把 `*bot.Event` 浅拷贝为 `owned` 并入队 `&owned`，此后队列、去重集、worker、处理器与 `Router.Dispatch` 的 `ev.Command` 回写都只接触副本，调用方在 `Publish`/`Emit` 返回后即可立即复用事件对象（池化、覆写字段），不再与后台读取竞态。复制只在「确定入队」的路径上发生，去重命中与队列满不产生额外分配；浅拷贝的边界（`Message`/`Sender`/`Channel` 等被引用对象仍与副本共享，投递后不得再修改）写进 `Publish` 注释、`pkg/bot` 的 `EventSink.Emit` 契约、`docs/adapter.md` 6.1 与 `docs/engine.md` 8.2（含「旧实现为何错误」的一句）。未选「入队前解析命令」的原因：那只消除 `Dispatch` 写 `ev.Command` 这一处写，worker 仍会读调用方对象（`Rule.Matches`/`Text`/日志），复用依旧竞态，无法满足「`-race` 下池化事件测试通过」。回归测试 `internal/eventbus/bus_test.go` 的 `TestPublishEventOwnership`：子测试一「投递后立即覆写不影响处理」——处理器先等调用方覆写完（gate），再断言收到的不是调用方对象（指针不等）且 `ID`/文本仍是投递时的值；子测试二「并发复用不产生竞态」——订阅者读取字段的同时调用方投递后立即整体覆写并改写 ID（队列满视为可接受结果，不掩盖竞态判定）。取证：临时 worktree（HEAD 旧实现）+ 同一测试——子测试一必失败 `处理器拿到的仍是调用方的事件对象，Publish 未复制`，子测试二在 `-race` 下必报 `WARNING: DATA RACE`（`callHandler` 读 vs 测试覆写同一地址）；修复后两者均通过，`-count=5 -race` 稳定。`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/engine.md` 8.2（所有权段落 + 顺序里的「复制事件并入队」）、`docs/adapter.md` 6.1、`pkg/bot/adapter.go`、`docs/testing.md`（eventbus 行 25→26）、`docs/roadmap.md` 计数同步。
+  - 位置：`internal/eventbus/bus.go` 的 `Publish`（注释原 `:158-160`，现 `:171-175`；复制在 `set.Add` 成功之后、`sh.q <- &owned`）
   - 问题：bus 保留同一 `*bot.Event` 指针，worker 稍后写字段；任何池化事件的适配器都会与之竞态。
   - 修复：二选一——在入队前解析命令（并如实文档化 Publish 会写 ev），或 dispatch 前拷贝事件；最低限度改正 `bus.go:160` 与 `docs/engine.md:289`。
   - 验收：`-race` 下池化事件测试通过；文档同步。
+  - 补注：复制引入「每入队一条事件一次浅拷贝分配」，与 `hasherPool` 那类优化方向相反，但这是「调用方可复用」能做到零竞态的最低成本；如需彻底免分配，只能把所有权明确交给总线（调用方不得复用），不采纳的原因是适配器的池化解码是很自然的写法。
 
 - [ ] **15. `Rule.Matches`/`Match` panic 会垮掉该事件的其余规则** `[读码]`
   - 位置：`internal/router/router.go:197`（匹配在中间件链之前）；兜底 `internal/eventbus/bus.go:310-321`
