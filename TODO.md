@@ -92,11 +92,12 @@
   - 验收：测试 `fn` 中途报错后规则字段未变。
   - 补注：`fn` 的入参语义随之改变——不再是「规则表里的原始 `*bot.Rule`」，而是副本；把改动写回路由表只能靠「`UpdateRules` 返回 nil」这一条路径，`Register(rule)` 的入参对象在 `UpdateRules` 之后也不再是活跃规则（活跃对象是副本）。
 
-- [ ] **13. `eventbus.Publish` 会阻塞：分片锁内取全局 dedup 锁 + slog I/O** `[已复现]`
-  - 位置：`internal/eventbus/bus.go:168-194`（`sh.mu` 内调用 `dedup.Seen/Add` 与 `logger.Warn`）
-  - 问题：所有分片在 `dedup.Set.mu` 上串行（`BusWorkers` 并行度失效）；阻塞式 slog handler 会卡住平台回调线程。与 `bus.go:158-159`、`docs/engine.md:289`“永不阻塞”矛盾。
+- [x] **13. `eventbus.Publish` 会阻塞：分片锁内取全局 dedup 锁 + slog I/O** `[已复现]` — 完成 31f5961：三处改动——(1) 去重集合由单个全局 `dedup.Set` 拆成 `Workers` 份，**分片下标由 `ev.ID` 的 FNV-1a 哈希决定**（不是会话键），因此同一 ID 无论会话键是否相同都落在同一集合上、去重语义与单集合完全一致，不同 ID 的投递则分散到不同锁；每片容量 `max(1, DedupCapacity/Workers)`，总量仍受 `DedupCapacity` 约束。(2) 丢弃日志移到 `sh.mu` 之外（计数本来是原子操作），阻塞式 slog handler 只拖慢本次投递。(3) 丢弃日志按分片限流（`dropLogInterval = 1s`，`dropLogAt` 原子时间戳 + CAS，并用 `dropped_total` 字段带出写日志当刻的累计丢弃数），`Stats().Dropped` 仍逐条精确。语义取舍：`Seen` + `Add` 双查保留（`Add` 的返回值继续作为「同一 ID 不同会话并发投递」的兜底），因为「队列满不写去重集、重试可成功」的既有契约要求先探视、成功入队后再落标记。回归测试 `internal/eventbus/bus_test.go`：`TestQueueFullDropLogging`（子测试一：一个限流窗口内 10 条丢弃只记 1 条日志、`Dropped=10`、日志带 `dropped_total`；跨窗口再记 1 条且累计值更新。子测试二：`Handle` 阻塞的 slog handler 不会卡住同一分片的后续投递）与 `TestDedupAcrossShardsByEventID`（同一 ID、两条落在不同分片的事件只处理一次，`Published=1 Duplicated=1`，钉住「按 ID 而非按会话分片去重」的设计）。取证：临时 worktree（HEAD 旧实现）+ 新测试必失败——`限流窗口内只应有 1 条丢弃日志, 实际 10 条`、`阻塞式日志处理器卡住了同一分片的后续投递`；另用临时并行投递基准（30 万次、24 线程、TTL=1ns 放大 `Add` 的清理临界区）取 mutex profile：`dedup.(*Set).Add` 的锁延迟 28.7ms → 4.4ms、`Seen` 0.52ms → 0.06ms（残余的分片锁延迟两个版本相同，容量检查 + 入队本就必须在锁内）。`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿，新用例 `-count=3` 稳定。文档：`docs/engine.md` 8.1（`DedupCapacity` 语义）、8.2（锁外日志 + 限流 + 字段）、8.5（按 ID 拆分与每片容量）、`internal/engine` 的 `Options.DedupCapacity` 注释、`docs/testing.md`（eventbus 行 23→25）、`docs/roadmap.md` 行号与计数同步。
+  - 位置：`internal/eventbus/bus.go` 的 `Publish`（原 168-194，现 `:171` 起）、新增的 `logDrop`/`dropLogInterval`（`:211` 起）、`shard.dropLogAt`、`Bus.dedups`
+  - 问题：所有分片在 `dedup.Set.mu` 上串行（`BusWorkers` 并行度失效）；阻塞式 slog handler 会卡住平台回调线程。与 `bus.go` 的“永不阻塞”与 `docs/engine.md` 8.2 矛盾。
   - 修复：丢弃日志移到锁外并限流；dedup 按分片拆分，或直接用一次 `Add` 判定并接受跨分片去重语义（同时去掉 `Seen`+`Add` 双查）。
   - 验收：`go test -race ./internal/eventbus`；文档同步。
+  - 补注：未采用「一次 `Add` 判定」的备选，因为那会把「队列满的事件」也写进去重集，破坏 8.2 明确承诺的「被丢弃的事件不写去重集，调用方重试仍可成功投递」；按 ID 拆分的多个集合已消除全局串行，`Seen`+`Add` 的第二查只在该 ID 跨会话并发投递时生效。
 
 - [ ] **14. `Publish` 的“ev 可复用”契约是错的** `[读码]`
   - 位置：`internal/eventbus/bus.go:158-160`（注释）vs `internal/router/router.go:190-192`（worker 写 `ev.Command`）
