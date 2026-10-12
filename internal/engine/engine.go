@@ -268,7 +268,7 @@ func (e *Engine) globalMiddlewares() []bot.Middleware {
 		middleware.Auth(e.isAdmin),
 		middleware.Dedup(e.ruleDedup),
 		middleware.RateLimit(e.handleLimit, middleware.ScopeUser),
-		middleware.Timeout(orDuration(e.opts.RuleTimeout, defaultRuleTimeout)),
+		middleware.Timeout(orDuration(e.opts.RuleTimeout, defaultRuleTimeout), e.log, e.met),
 		middleware.Recover(e.log),
 	}
 }

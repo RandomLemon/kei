@@ -8,8 +8,9 @@ import (
 
 // Handler 是插件事件处理函数。
 //
-// 所有 Handler 都会被 Recover、Timeout 中间件包裹，因此允许 panic 与阻塞，
-// 但必须响应 ctx 取消。
+// 所有 Handler 都会被 Recover、Timeout 中间件包裹，因此允许 panic；可以阻塞，
+// 但必须响应 ctx 取消：规则超时后框架不再等待，不响应取消的调用会一直占用
+// goroutine，框架只能计数并记录告警，无法强制终止。
 type Handler func(ctx context.Context, e *Event, r Reply) error
 
 // Middleware 是洋葱模型中间件：返回的 Handler 负责在合适的时机调用 next。

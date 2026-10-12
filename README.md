@@ -580,6 +580,7 @@ cd examples/kei-adapter-myim && go test ./...
   | `kei_messages_sent_total` | `platform`, `result` |
   | `kei_message_send_seconds`（直方图） | `platform` |
   | `kei_rules_matched_total` | `plugin`, `rule` |
+  | `kei_rule_overruns_total` | `plugin`, `rule` |
 
 - 日志用 `log/slog`，字段化输出（`plugin`/`rule`/`event_id`/`duration_ms`/`error`），
   `log.format: json` 可切换为 JSON。

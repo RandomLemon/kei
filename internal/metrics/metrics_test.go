@@ -45,6 +45,7 @@ func TestCounters(t *testing.T) {
 	r.RuleMatched("echo", "hi")
 	r.RuleMatched("echo", "hi")
 	r.RuleMatched("echo", "bye")
+	r.RuleOverrun("echo", "hi")
 
 	got, _ := body(t, r)
 
@@ -60,6 +61,7 @@ func TestCounters(t *testing.T) {
 		`kei_messages_sent_total{platform="onebot",result="ok"} 1`,
 		`kei_rules_matched_total{plugin="echo",rule="bye"} 1`,
 		`kei_rules_matched_total{plugin="echo",rule="hi"} 2`,
+		`kei_rule_overruns_total{plugin="echo",rule="hi"} 1`,
 		"# TYPE kei_event_handling_seconds histogram",
 		"# TYPE kei_message_send_seconds histogram",
 	}
@@ -119,6 +121,7 @@ func TestEmptyRegistry(t *testing.T) {
 	for _, name := range []string{
 		metricEventsPublished, metricEventsDropped, metricEventsHandled,
 		metricEventHandling, metricMessagesSent, metricMessageSend, metricRulesMatched,
+		metricRuleOverruns,
 	} {
 		if !strings.Contains(got, "# HELP "+name+" ") {
 			t.Errorf("缺少 HELP 头: %s", name)
@@ -156,6 +159,7 @@ func TestNilReceiver(t *testing.T) {
 	r.EventDropped("p", "reason")
 	r.MessageSent("p", time.Millisecond, nil)
 	r.RuleMatched("p", "r")
+	r.RuleOverrun("p", "r")
 	// nil 接收者的 Handler 也应可安全调用。
 	rec := httptest.NewRecorder()
 	r.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
@@ -175,6 +179,7 @@ func TestInterfaceSatisfied(t *testing.T) {
 	rec.EventDropped("p", "r")
 	rec.MessageSent("p", time.Millisecond, nil)
 	rec.RuleMatched("p", "r")
+	rec.RuleOverrun("p", "r")
 }
 
 // TestConcurrentRecording 在 -race 下验证并发写入与并发渲染无竞态。
@@ -199,6 +204,7 @@ func TestConcurrentRecording(t *testing.T) {
 				r.EventHandled("p", "r", time.Duration(i)*time.Microsecond, nil)
 				r.MessageSent(platform, time.Duration(i)*time.Microsecond, nil)
 				r.RuleMatched("p", "r")
+				r.RuleOverrun("p", "r")
 				r.EventHandled(platform, "r", time.Millisecond, errors.New("x"))
 			}
 		}()
@@ -228,6 +234,7 @@ func TestConcurrentRecording(t *testing.T) {
 		`kei_events_dropped_total{platform="onebot",reason="duplicate"} 200`,
 		`kei_events_handled_total{plugin="p",result="ok",rule="r"} 400`,
 		`kei_rules_matched_total{plugin="p",rule="r"} 400`,
+		`kei_rule_overruns_total{plugin="p",rule="r"} 400`,
 		`kei_message_send_seconds_count{platform="onebot"} 200`,
 	}
 	for _, w := range wants {

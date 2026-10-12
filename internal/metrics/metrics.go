@@ -28,6 +28,8 @@ type Recorder interface {
 	MessageSent(platform string, d time.Duration, err error)
 	// RuleMatched 记录一次规则命中。
 	RuleMatched(plugin, rule string)
+	// RuleOverrun 记录一次规则 Handler 未在 RuleTimeout 内返回（超时时刻仍未退出）。
+	RuleOverrun(plugin, rule string)
 }
 
 // 指标名。
@@ -39,6 +41,7 @@ const (
 	metricMessagesSent    = "kei_messages_sent_total"
 	metricMessageSend     = "kei_message_send_seconds"
 	metricRulesMatched    = "kei_rules_matched_total"
+	metricRuleOverruns    = "kei_rule_overruns_total"
 )
 
 // 指标帮助文本。
@@ -50,6 +53,7 @@ const (
 	helpMessagesSent    = "已发送的消息总数"
 	helpMessageSend     = "消息发送耗时（秒）"
 	helpRulesMatched    = "规则命中总数"
+	helpRuleOverruns    = "规则 Handler 未在 RuleTimeout 内返回的次数"
 )
 
 // 结果标签取值。

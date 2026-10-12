@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/RandomLemon/kei/internal/dedup"
@@ -157,32 +159,106 @@ func Metrics(rec metrics.Recorder) bot.Middleware {
 	}
 }
 
+// overrunStackLimit 是超时后仍未返回时转储全部 goroutine 堆栈的缓冲区大小（字节）。
+const overrunStackLimit = 1 << 20
+
 // Timeout 限制 next 的执行时间，d <= 0 时透传表示不限时。
 //
 // next 在独立 goroutine 中执行并把结果写入容量为 1 的 channel，因此超时后
 // goroutine 不会阻塞在发送上；ctx 取消同样触发超时错误。返回错误包装 ErrTimeout。
 // 超时只是放弃等待，不会终止内层 goroutine：next 必须响应 ctx 取消才能真正释放。
+// 该中间件为第三方代码而设，应放在策略类中间件（Auth/Dedup/RateLimit）之内，
+// 让框架自身的判定在超时窗口之外同步完成；引擎装配的全局链即如此（见
+// internal/engine 的 globalMiddlewares）。
 //
-// 该中间件为第三方代码（插件中间件与 Handler）而设，应放在策略类中间件
-// （Auth/Dedup/RateLimit）之内，让框架自身的判定在超时窗口之外同步完成；
-// 引擎装配的全局链即如此（见 internal/engine 的 globalMiddlewares）。
-func Timeout(d time.Duration) bot.Middleware {
+// 超时那一刻仍未返回的调用会被归因上报，便于定位不响应 ctx 的插件实现；
+// 父 ctx 已结束（引擎关闭、EventTimeout 到期）导致的取消不计入——那不是规则超时：
+//
+//   - 规则超时且内层调用尚未返回：上报 rec.RuleOverrun(plugin, rule) 并记 Warn 日志；
+//   - 该调用随后返回：记 Warn 日志（含实际耗时），说明它最终退出、并未永久泄漏；
+//   - 超时后再过 d 仍未返回：记一次 Error 日志，附全部 goroutine 堆栈（含卡住的
+//     调用帧）；每个 Timeout 实例至多转储一次，避免卡死的实现刷爆日志。
+//
+// 观察者 goroutine 的生命周期以 d 为上限，不会随卡死的调用一起常驻。
+// log 为 nil 时不记日志、也不启动观察者（它唯一的产出就是日志）；rec 为 nil 时
+// 不上报指标；两者都不影响拦截行为，计数仍由 rec 在超时当刻完成。
+func Timeout(d time.Duration, log *slog.Logger, rec metrics.Recorder) bot.Middleware {
 	if d <= 0 {
 		return passthrough
 	}
+	observe := log != nil
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	var stackOnce sync.Once
 	return func(next bot.Handler) bot.Handler {
 		return func(ctx context.Context, e *bot.Event, r bot.Reply) error {
 			callCtx, cancel := context.WithTimeout(ctx, d)
 			defer cancel()
+			start := time.Now()
 			results := make(chan error, 1)
 			go func() { results <- next(callCtx, e, r) }()
 			select {
 			case err := <-results:
 				return err
 			case <-callCtx.Done():
+				if ctx.Err() == nil {
+					// 规则级超时：内层调用此刻仍未返回。
+					if rec != nil {
+						rec.RuleOverrun(pluginName(ctx), ruleID(ctx))
+					}
+					log.Warn("中间件: Handler 未在超时内返回",
+						"plugin", pluginName(ctx),
+						"rule", ruleID(ctx),
+						"platform", platformOf(e),
+						"kind", kindOf(e),
+						"user", userIDOf(e),
+						"channel", channelIDOf(e),
+						"event_id", eventID(e),
+						"timeout_ms", float64(d.Microseconds())/1000,
+						"hint", "Handler 必须响应 ctx 取消，否则超时后仍会占用 goroutine",
+					)
+					if observe {
+						go observeOverrun(ctx, e, results, d, start, log, &stackOnce)
+					}
+				}
 				return fmt.Errorf("%w: %w", ErrTimeout, callCtx.Err())
 			}
 		}
+	}
+}
+
+// observeOverrun 观察一次规则超时后仍未返回的调用。
+//
+// 在宽限期（与超时时长 d 相同）内等待内层调用返回：返回则记 Warn（含实际耗时），
+// 说明调用最终退出；到期仍未返回则经 once 记一次带全部 goroutine 堆栈的 Error。
+// 无论哪条路径，观察者都会在宽限期内退出，不会自行堆积。
+func observeOverrun(ctx context.Context, e *bot.Event, results <-chan error, grace time.Duration, start time.Time, log *slog.Logger, once *sync.Once) {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case err := <-results:
+		log.Warn("中间件: Handler 在超时后返回",
+			"plugin", pluginName(ctx),
+			"rule", ruleID(ctx),
+			"platform", platformOf(e),
+			"event_id", eventID(e),
+			"duration_ms", float64(time.Since(start).Microseconds())/1000,
+			"error", err,
+		)
+	case <-timer.C:
+		once.Do(func() {
+			buf := make([]byte, overrunStackLimit)
+			n := runtime.Stack(buf, true)
+			log.Error("中间件: Handler 超时后仍未返回（goroutine 堆栈）",
+				"plugin", pluginName(ctx),
+				"rule", ruleID(ctx),
+				"platform", platformOf(e),
+				"event_id", eventID(e),
+				"timeout_ms", float64(grace.Microseconds())/1000,
+				"stack", string(buf[:n]),
+			)
+		})
 	}
 }
 

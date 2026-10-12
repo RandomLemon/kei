@@ -23,6 +23,7 @@ type Registry struct {
 	sent      map[platformResultKey]*counter
 	sending   map[string]*histogram
 	matched   map[pluginRuleKey]*counter
+	overruns  map[pluginRuleKey]*counter
 }
 
 // droppedKey 是丢弃计数的标签组合。
@@ -50,6 +51,7 @@ func New() *Registry {
 		sent:      make(map[platformResultKey]*counter),
 		sending:   make(map[string]*histogram),
 		matched:   make(map[pluginRuleKey]*counter),
+		overruns:  make(map[pluginRuleKey]*counter),
 	}
 }
 
@@ -93,6 +95,14 @@ func (r *Registry) RuleMatched(plugin, rule string) {
 		return
 	}
 	counterFor(&r.mu, r.matched, pluginRuleKey{plugin, rule}).inc()
+}
+
+// RuleOverrun 记录一次规则 Handler 未在 RuleTimeout 内返回。
+func (r *Registry) RuleOverrun(plugin, rule string) {
+	if r == nil {
+		return
+	}
+	counterFor(&r.mu, r.overruns, pluginRuleKey{plugin, rule}).inc()
 }
 
 // resultOf 把错误映射为结果标签值。
@@ -159,9 +169,9 @@ func (r *Registry) render(b *strings.Builder) {
 		return
 	}
 	r.mu.RLock()
-	published, dropped, handled, handling, sent, sending, matched :=
+	published, dropped, handled, handling, sent, sending, matched, overruns :=
 		copyMap(r.published), copyMap(r.dropped), copyMap(r.handled), copyMap(r.handling),
-		copyMap(r.sent), copyMap(r.sending), copyMap(r.matched)
+		copyMap(r.sent), copyMap(r.sending), copyMap(r.matched), copyMap(r.overruns)
 	r.mu.RUnlock()
 
 	writeFamily(b, metricEventsPublished, helpEventsPublished, typeCounter, func() {
@@ -208,6 +218,13 @@ func (r *Registry) render(b *strings.Builder) {
 			writeLine(b, metricRulesMatched,
 				sortLabels([]label{{"plugin", k.plugin}, {"rule", k.rule}}),
 				formatUint(matched[k].value()))
+		}
+	})
+	writeFamily(b, metricRuleOverruns, helpRuleOverruns, typeCounter, func() {
+		for _, k := range sortedKeys(overruns, func(k pluginRuleKey) string { return k.plugin + "\x00" + k.rule }) {
+			writeLine(b, metricRuleOverruns,
+				sortLabels([]label{{"plugin", k.plugin}, {"rule", k.rule}}),
+				formatUint(overruns[k].value()))
 		}
 	})
 }

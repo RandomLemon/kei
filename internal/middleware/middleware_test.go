@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,7 +216,7 @@ func TestLoggerSuccessIsDebug(t *testing.T) {
 }
 
 // lastEntry 解析最后一条 JSON 日志，便于断言多次记录后的最终级别。
-func lastEntry(t *testing.T, buf *strings.Builder) map[string]any {
+func lastEntry(t *testing.T, buf interface{ String() string }) map[string]any {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	var entry map[string]any
@@ -223,6 +224,38 @@ func lastEntry(t *testing.T, buf *strings.Builder) map[string]any {
 		t.Fatalf("日志不是合法 JSON: %v (%q)", err, lines[len(lines)-1])
 	}
 	return entry
+}
+
+// syncBuffer 是并发安全的日志缓冲：后台观察者 goroutine 会与测试并发写入。
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+// Write 实现 io.Writer。
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+// String 返回当前缓冲内容。
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// waitLog 等待缓冲中出现包含 want 的日志行，超时即失败。
+func waitLog(t *testing.T, buf interface{ String() string }, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(buf.String(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("日志中未出现 %q:\n%s", want, buf.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // loggerCase 是 Logger 分级测试的一个用例。
@@ -283,7 +316,7 @@ func TestLoggerErrorLevels(t *testing.T) {
 				h := Apply(func(context.Context, *bot.Event, bot.Reply) error {
 					time.Sleep(50 * time.Millisecond)
 					return nil
-				}, Logger(log), Timeout(5*time.Millisecond))
+				}, Logger(log), Timeout(5*time.Millisecond, nil, nil))
 				return h(bot.WithRoute(ctx, plainRoute), newEvent(), nil)
 			},
 		},
@@ -345,7 +378,7 @@ func TestTimeoutBlocks(t *testing.T) {
 		// 故意无视 ctx：验证超时返回后 goroutine 仍能退出。
 		<-release
 		return nil
-	}, Timeout(50*time.Millisecond))
+	}, Timeout(50*time.Millisecond, nil, nil))
 
 	start := time.Now()
 	err := h(context.Background(), newEvent(), nil)
@@ -366,17 +399,123 @@ func TestTimeoutBlocks(t *testing.T) {
 	waitGoroutines(t, base)
 }
 
+// TestTimeoutReportsOverrun 验证超时后仍未返回的调用被计数、告警，并在卡死时附堆栈。
+func TestTimeoutReportsOverrun(t *testing.T) {
+	route := &bot.Route{Plugin: "slow-plugin", RuleID: "slow-rule"}
+	routeCtx := func(ctx context.Context) context.Context { return bot.WithRoute(ctx, route) }
+
+	t.Run("超时未返回计数并告警，随后返回再记一条", func(t *testing.T) {
+		base := runtime.NumGoroutine()
+		sb := &syncBuffer{}
+		logger := slog.New(slog.NewJSONHandler(sb, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		rec := &fakeRecorder{}
+		release := make(chan struct{})
+
+		h := Apply(func(context.Context, *bot.Event, bot.Reply) error {
+			<-release // 无视 ctx
+			return errors.New("晚到的失败")
+		}, Timeout(30*time.Millisecond, logger, rec))
+
+		if err := h(routeCtx(context.Background()), newEvent(), nil); !errors.Is(err, ErrTimeout) {
+			t.Fatalf("期望 ErrTimeout: %v", err)
+		}
+		if rec.overruns != 1 {
+			t.Fatalf("超时未返回应上报一次 RuleOverrun: %+v", rec)
+		}
+		if rec.gotOverrun.plugin != "slow-plugin" || rec.gotOverrun.rule != "slow-rule" {
+			t.Fatalf("RuleOverrun 标签不符: %+v", rec.gotOverrun)
+		}
+		entry := lastEntry(t, sb)
+		if entry["level"] != "WARN" || entry["plugin"] != "slow-plugin" || entry["rule"] != "slow-rule" {
+			t.Fatalf("超时告警字段不符: %v", entry)
+		}
+		if entry["event_id"] != "evt-1" {
+			t.Fatalf("超时告警应带 event_id: %v", entry)
+		}
+		if _, ok := entry["timeout_ms"]; !ok {
+			t.Fatalf("超时告警应带 timeout_ms: %v", entry)
+		}
+
+		// 释放后调用最终退出：观察者再记一条，且不留悬空 goroutine。
+		close(release)
+		waitLog(t, sb, "在超时后返回")
+		late := lastEntry(t, sb)
+		if late["level"] != "WARN" || late["error"] == nil {
+			t.Fatalf("超时后返回应记 WARN 与错误: %v", late)
+		}
+		if d, ok := late["duration_ms"].(float64); !ok || d <= 0 {
+			t.Fatalf("超时后返回应带实际耗时: %v", late)
+		}
+		waitGoroutines(t, base)
+	})
+
+	t.Run("父 ctx 结束不计入规则超时", func(t *testing.T) {
+		rec := &fakeRecorder{}
+		block := make(chan struct{})
+		defer close(block)
+
+		h := Apply(func(context.Context, *bot.Event, bot.Reply) error {
+			<-block
+			return nil
+		}, Timeout(time.Minute, nil, rec))
+
+		ctx, cancel := context.WithCancel(routeCtx(context.Background()))
+		cancel()
+		err := h(ctx, newEvent(), nil)
+		if !errors.Is(err, ErrTimeout) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("取消后应返回包装 context.Canceled 的 ErrTimeout: %v", err)
+		}
+		if rec.overruns != 0 {
+			t.Fatalf("父 ctx 结束不应计入规则超时: %+v", rec)
+		}
+	})
+
+	t.Run("超时后仍未返回转储堆栈", func(t *testing.T) {
+		base := runtime.NumGoroutine()
+		sb := &syncBuffer{}
+		logger := slog.New(slog.NewJSONHandler(sb, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		block := make(chan struct{})
+
+		h := Apply(func(context.Context, *bot.Event, bot.Reply) error {
+			<-block
+			return nil
+		}, Timeout(20*time.Millisecond, logger, nil))
+
+		if err := h(routeCtx(context.Background()), newEvent(), nil); !errors.Is(err, ErrTimeout) {
+			t.Fatalf("期望 ErrTimeout: %v", err)
+		}
+		// 宽限期（与超时时长相同）过后仍未返回：记 ERROR 并附全部 goroutine 堆栈。
+		waitLog(t, sb, "goroutine 堆栈")
+		entry := lastEntry(t, sb)
+		if entry["level"] != "ERROR" || entry["plugin"] != "slow-plugin" || entry["event_id"] != "evt-1" {
+			t.Fatalf("堆栈告警字段不符: %v", entry)
+		}
+		stack, _ := entry["stack"].(string)
+		if !strings.Contains(stack, "TestTimeoutReportsOverrun") {
+			t.Fatalf("堆栈应包含卡住的调用帧:\n%s", stack)
+		}
+
+		// 卡死的调用被释放后回收，观察者也不常驻。
+		close(block)
+		waitGoroutines(t, base)
+	})
+}
+
 // TestTimeoutFastHandler 验证未超时时的正常路径与错误透传。
 func TestTimeoutFastHandler(t *testing.T) {
-	h := Apply(func(context.Context, *bot.Event, bot.Reply) error { return nil }, Timeout(time.Second))
+	rec := &fakeRecorder{}
+	h := Apply(func(context.Context, *bot.Event, bot.Reply) error { return nil }, Timeout(time.Second, nil, rec))
 	if err := h(context.Background(), newEvent(), nil); err != nil {
 		t.Fatalf("快速 handler 不应超时: %v", err)
 	}
 
 	sentinel := errors.New("快速失败")
-	h = Apply(func(context.Context, *bot.Event, bot.Reply) error { return sentinel }, Timeout(time.Second))
+	h = Apply(func(context.Context, *bot.Event, bot.Reply) error { return sentinel }, Timeout(time.Second, nil, rec))
 	if err := h(context.Background(), newEvent(), nil); !errors.Is(err, sentinel) {
 		t.Fatalf("handler 错误应原样返回: %v", err)
+	}
+	if rec.overruns != 0 {
+		t.Fatalf("未超时的调用不应上报 RuleOverrun: %+v", rec)
 	}
 }
 
@@ -385,7 +524,7 @@ func TestTimeoutDisabled(t *testing.T) {
 	h := Apply(func(context.Context, *bot.Event, bot.Reply) error {
 		time.Sleep(20 * time.Millisecond)
 		return nil
-	}, Timeout(0))
+	}, Timeout(0, nil, nil))
 	if err := h(context.Background(), newEvent(), nil); err != nil {
 		t.Fatalf("禁用超时后不应报错: %v", err)
 	}
@@ -604,7 +743,9 @@ func TestAuth(t *testing.T) {
 type fakeRecorder struct {
 	calls        int
 	matchedCalls int
+	overruns     int
 	gotMatch     struct{ plugin, rule string }
+	gotOverrun   struct{ plugin, rule string }
 	got          struct {
 		plugin, rule string
 		d            time.Duration
@@ -631,6 +772,12 @@ func (f *fakeRecorder) MessageSent(string, time.Duration, error) {}
 func (f *fakeRecorder) RuleMatched(plugin, rule string) {
 	f.matchedCalls++
 	f.gotMatch.plugin, f.gotMatch.rule = plugin, rule
+}
+
+// RuleOverrun 实现 metrics.Recorder。
+func (f *fakeRecorder) RuleOverrun(plugin, rule string) {
+	f.overruns++
+	f.gotOverrun.plugin, f.gotOverrun.rule = plugin, rule
 }
 
 // TestMetricsMiddleware 验证指标中间件上报插件、规则、耗时与错误。

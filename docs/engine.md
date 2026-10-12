@@ -235,7 +235,7 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 2. 链层：中间件 `Timeout(RuleTimeout)` 对单条规则的**插件中间件与 Handler** 施加独立超时；框架自身的策略判定（`Auth`/`Dedup`/`RateLimit`）在 `Timeout` 之外同步执行，见 10.5。`Recover` 在链中出现两次（见 10.5）。
 3. 总线层：`eventbus` 的 worker 对每个处理器单独 `recover`，某个处理器 panic 不影响其它处理器，也不终止 worker；该事件计入 `Failed`，否则计入 `Handled`。
 
-适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。`Timeout` 只放弃等待，不会终止内层 goroutine；不响应 ctx 的插件中间件或 Handler 会留下悬空 goroutine，直到自行返回。
+适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。`Timeout` 只放弃等待，不会终止内层 goroutine；不响应 ctx 的插件中间件或 Handler 会留下悬空 goroutine，直到自行返回。这类调用按 10.5 的清单被归因：规则超时那一刻仍未返回的调用计入 `kei_rule_overruns_total{plugin,rule}` 并记 Warn 日志（plugin/rule/event_id/timeout_ms）；它随后返回时另记一条含实际耗时的 Warn，超时后经过同样长的时间仍未返回时记一次含全部 goroutine 堆栈的 Error（每个 `Timeout` 实例至多转储一次），`EventTimeout`/引擎关闭导致的取消不计入。
 
 ### 7.9 管理命令 `/manage adapters`
 
@@ -415,7 +415,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 | `Recover` | `Recover(log *slog.Logger) bot.Middleware` | 捕获 handler panic（含非 error 值），记 `Error` 日志（plugin/rule/platform/event_id/panic/stack）并返回包装 `ErrPanic` 的错误 |
 | `Logger` | `Logger(log *slog.Logger) bot.Middleware` | 记录 plugin、rule、platform、kind、user、channel、event_id、duration_ms；成功记 Debug，`ErrDuplicate`/`ErrRateLimited`/`ErrUnauthorized` 记 Warn 并带 `decision=denied`，其余（含 `ErrTimeout`/`ErrPanic`）记 Error |
 | `Metrics` | `Metrics(rec metrics.Recorder) bot.Middleware` | 进入链时（规则已命中）调 `rec.RuleMatched(plugin, rule)`，`next` 返回后再调 `rec.EventHandled(plugin, rule, 耗时, err)`；`rec` 为 nil 时透传，错误原样透传 |
-| `Timeout` | `Timeout(d time.Duration) bot.Middleware` | 用 `d <= 0` 透传；在独立 goroutine 中执行 next（结果写入容量 1 的 channel），超时或 ctx 取消返回包装 `ErrTimeout` 的错误 |
+| `Timeout` | `Timeout(d time.Duration, log *slog.Logger, rec metrics.Recorder) bot.Middleware` | 用 `d <= 0` 透传；在独立 goroutine 中执行 next（结果写入容量 1 的 channel），超时或 ctx 取消返回包装 `ErrTimeout` 的错误；超时时刻仍未返回的调用上报 `rec.RuleOverrun` 并记 Warn，超时后经过 `d` 仍未返回时另记一次含全部 goroutine 堆栈的 Error（见 7.8） |
 | `Auth` | `Auth(isAdmin func(*bot.Event) bool) bot.Middleware` | 仅当 `Route.AdminOnly` 为 true 时生效：`isAdmin` 为 nil 或返回 false 时返回 `ErrUnauthorized` 且不调用 next |
 | `RateLimit` | `RateLimit(l *ratelimit.Limiter, scope string) bot.Middleware` | 按作用域取限流键并 `l.Allow(key)`，超配额返回 `ErrRateLimited`；`l` 为 nil 时透传 |
 | `Dedup` | `Dedup(set *dedup.Set) bot.Middleware` | 见 10.6；`set` 为 nil 时透传 |
@@ -432,7 +432,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 		middleware.Auth(e.isAdmin),
 		middleware.Dedup(e.ruleDedup),
 		middleware.RateLimit(e.handleLimit, middleware.ScopeUser),
-		middleware.Timeout(orDuration(e.opts.RuleTimeout, defaultRuleTimeout)),
+		middleware.Timeout(orDuration(e.opts.RuleTimeout, defaultRuleTimeout), e.log, e.met),
 		middleware.Recover(e.log),
 	}
 ```
@@ -452,7 +452,9 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 两者不相等：`Metrics` 在全局链中位于 `Timeout`/`Auth`/`RateLimit`/`Dedup` 之外（见上表顺序），所以被去重或限流拦下的调用同样计入 `RuleMatched`，而只在 `EventHandled` 上体现为 `result="error"`。据此可从两者差值读出「命中但被拒绝」的比例。
 
-`internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
+`internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`、`kei_rule_overruns_total{plugin,rule}`。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
+
+`kei_rule_overruns_total{plugin,rule}` 记录**规则超时那一刻仍未返回**的调用数：父 ctx 结束（引擎关闭、`EventTimeout` 到期）导致的取消不计入——那不是规则超时；超时后很快退出的良性情况也计入（对应日志里的实际耗时可用于分辨），持续不退出者另有 Error 级堆栈告警（见 7.8）。
 
 引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。该中间件位于 `Dedup` 之内，重投的重复事件不消耗配额（见 10.5）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
 
@@ -475,6 +477,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 - **被拒绝的适配器注册是启动期致命错误**：`bot.RegisterAdapter`（`pkg/bot/adapter_registry.go`）在 `meta.Name == ""` 或 `factory == nil` 时不入表，而是把该次注册记入 `bot.AdapterRegistrationErrors()`（保留注册顺序与拒绝原因）；`adaptermgr.ValidateRegistry` 在校验进程内注册表后调用 `validateRegistrationRejects`，非空时报错终止启动：`adaptermgr: 适配器注册被拒绝: %s；RegisterAdapter 要求 Name 非空且 factory 非 nil`，其中 `%s` 为逐条 `名称（原因）`，空名显示为 `<空名>`。因此空 `Name` 既不会让适配器静默可用，也不会表现为运行时「未注册」，而是在进程启动阶段失败。同名重复注册不走这条路径，由 `validateRegistryOf` 单独报错，见 7.6。
 - **无 `eventbus.EventBus` 接口**：`internal/eventbus` 只导出具体类型 `*eventbus.Bus`（`Engine` 亦持有具体类型）；其完整方法集为 `Publish(ctx, ev) error`、`Emit(ctx, ev) error`（实现 `bot.EventSink`）、`Subscribe(handler) error`、`Close(ctx) error`、`Stats() Stats`。`Publish` 不阻塞：分片队列满时丢弃事件并返回 `eventbus: publish %q: queue full`（`errors.Is(err, ErrQueueFull)`），已关闭时返回 `ErrClosed`。
+- **`Timeout` 无法终止不响应 ctx 的调用**：Go 不能强杀 goroutine，规则超时只是放弃等待——不响应取消的插件中间件或 Handler 会继续运行、继续占用该 goroutine，直到自行返回。框架的兜底是契约（`pkg/bot` 的 `Handler` 注释要求响应 ctx 取消）与归因（`kei_rule_overruns_total` 计数、Warn 日志、卡死时的 goroutine 堆栈 Error，见 7.8、10.5），而不是强制退出。
 
 ## 相关文档
 
