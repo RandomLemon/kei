@@ -85,11 +85,12 @@
   - 验收：测试断言超时后能观测到泄漏计数/告警。
   - 补注：「拖住排空」对引擎装配的链并不成立：`Timeout` 在 `RuleTimeout` 后即返回 `ErrTimeout`，被放弃的调用与观察者都不再占用 eventbus worker，排空只受 `RuleTimeout` 约束；残余足迹就是那个不响应 ctx 的 goroutine 本身（Go 无法回收），只有调用方自行把 `Timeout(0)` 组成链时 Handler 才会同步执行并真正阻塞 worker。
 
-- [ ] **12. `Router.UpdateRules` 会改到已发布快照里的活对象** `[读码]`
-  - 位置：`internal/router/router.go:155-176`；`Engine.Router()` 公开于 `internal/engine/engine.go:428`
-  - 问题：`fn` 作用于快照内 `*bot.Rule`；中途因 `Handler==nil` 提前返回时，前面的字段已被改且不重建快照 → 与 `docs/engine.md` 10.3“原子替换、不发布半更新状态”不符。
+- [x] **12. `Router.UpdateRules` 会改到已发布快照里的活对象** `[已复现]` — 完成 929a912：`UpdateRules` 改为「先在副本上应用并校验、全部通过后再整体发布」——每条规则经 `cloneRule` 复制后交给 `fn`，新 entry 由副本构建，只有全部规则都通过校验才替换 `r.ordered` 与快照；中途失败（`fn` 为 nil 或某条规则 `Handler` 被置空）时已应用的改动一并丢弃，已发布快照里的规则对象不再被触碰。公开面收窄：删除可写的 `Engine.Router()`，改为两个只读视图 `Engine.Rules()`（`Rules()` 深层副本）与 `Engine.RegistrationErrors()`（错误副本，即 `docs/plugin.md` 原先经 `Router()` 审计正则注册失败的路径），引擎不再对外暴露任何注册/改规则的入口；调用方（`internal/engine/engine_test.go` 的白名单断言）已迁移到 `eng.Rules()`。回归测试 `internal/router/router_test.go` 的 `TestUpdateRulesFailureLeavesPublishedRulesUntouched`：`fn` 先给第一条规则写入 `BotIDs`/`Priority` 再把第二条规则 `Handler` 置空 → 断言报错后 `Rules()` 两条规则均为原值、`Dispatch` 仍命中两条规则（行为未变）、随后修正过的 `fn` 仍能正常发布。取证：临时 worktree（HEAD 旧实现）内同一测试必失败——`失败的 UpdateRules 改到了已发布规则: &{ID:p:all:0 Priority:99 … BotIDs:[other-bot]}`；`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/engine.md` 10.3（副本语义 + 不产生半更新）与访问器清单、`docs/plugin.md` 9.2 的审计路径、`docs/testing.md`（router 行 27→28）、`docs/roadmap.md` 测试计数同步。
+  - 位置：`internal/router/router.go` 的 `UpdateRules`（原 155-176，现 `:152` 起，循环内 `cloneRule`）；原 `Engine.Router()` 位于 `internal/engine/engine.go`，现由 `Engine.Rules()`（`:488`）与 `Engine.RegistrationErrors()`（`:494`）取代
+  - 问题：`fn` 作用于快照内 `*bot.Rule`；中途因 `Handler==nil` 提前返回时，前面的字段已被改且不重建快照 → 与 `docs/engine.md` 10.3"原子替换、不发布半更新状态"不符。
   - 修复：先在 `cloneRule` 副本上应用并校验，再整体换快照；同时评估 `Engine.Router()` 是否应收窄公开面。
   - 验收：测试 `fn` 中途报错后规则字段未变。
+  - 补注：`fn` 的入参语义随之改变——不再是「规则表里的原始 `*bot.Rule`」，而是副本；把改动写回路由表只能靠「`UpdateRules` 返回 nil」这一条路径，`Register(rule)` 的入参对象在 `UpdateRules` 之后也不再是活跃规则（活跃对象是副本）。
 
 - [ ] **13. `eventbus.Publish` 会阻塞：分片锁内取全局 dedup 锁 + slog I/O** `[已复现]`
   - 位置：`internal/eventbus/bus.go:168-194`（`sh.mu` 内调用 `dedup.Seen/Add` 与 `logger.Warn`）
