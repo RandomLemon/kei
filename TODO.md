@@ -78,11 +78,12 @@
   - 修复：调整为 `Recover → Logger → Metrics → Timeout → Recover → Auth → Dedup → RateLimit`；决定并文档化“去重是标记开始还是标记成功”。
   - 验收：新增顺序相关测试；同步 `docs/engine.md` 10.5/10.6。
 
-- [ ] **11. `Timeout` 中间件泄漏内层 goroutine** `[读码]`
-  - 位置：`internal/middleware/middleware.go:164-181`
-  - 问题：handler 不响应 ctx 时每事件泄漏一个 goroutine，并会拖住 `eventbus.Close` 排空；`AGENTS.md` 2.3 要求“goroutine 必须有退出机制”。
-  - 修复：至少在超时后统计/告警未退出调用（含插件/规则标识与堆栈）；`Handler` 契约明确“必须响应 ctx”。
+- [x] **11. `Timeout` 中间件泄漏内层 goroutine** `[已复现]` — 完成 62cd704：Go 无法强杀 goroutine，超时仍是「放弃等待」，但每次未退出的调用现在都被归因：规则超时当刻仍在运行的调用上报新增的 `rec.RuleOverrun(plugin, rule)`（指标族 `kei_rule_overruns_total{plugin,rule}`）并记 Warn（plugin/rule/platform/kind/user/channel/event_id/timeout_ms + 「Handler 必须响应 ctx 取消」提示）；父 ctx 已结束（引擎关闭、`EventTimeout` 到期）不算规则超时、不计入。调用随后返回时另记一条含实际耗时的 Warn；超时后再过 `d` 仍未返回时记一次含全部 goroutine 堆栈的 Error（`sync.Once` 每个 `Timeout` 实例至多一次，避免卡死实现刷爆日志）。观察者 goroutine 生命周期 ≤ `d`（未传日志器时不启动），不会随卡死调用常驻。`middleware.Timeout` 签名改为 `Timeout(d, log *slog.Logger, rec metrics.Recorder)`，`metrics.Recorder` 增加 `RuleOverrun`；`Handler` 契约在 `pkg/bot` 注释与 `docs/plugin.md` 9.2 写明「规则超时后框架不再等待，不响应取消的调用会一直占用 goroutine，框架只能计数与告警」。回归测试 `internal/middleware/middleware_test.go` 的 `TestTimeoutReportsOverrun`（三个子测试：超时未返回 → `overruns==1` + Warn 字段，释放后 → 「超时后返回」Warn 含 duration_ms/error，并断言 goroutine 回落到基线；父 ctx 取消 → `overruns==0` 且错误包装 `context.Canceled`；卡死 → ERROR 含堆栈且堆栈里出现被放弃调用的帧），`TestTimeoutFastHandler` 断言未超时不计数；签名迁移 `TestTimeoutBlocks`/`TestTimeoutDisabled` 与 Logger 的「超时记 ERROR」用例。取证：临时用例（Handler 无视 ctx 阻塞在 `RuleTimeout=30ms` 之后）修复前返回 `ErrTimeout` 后 goroutine base=2→3 且无任何计数/日志入口（旧签名不收日志器与指标），修复后 `overruns=1 labels={plugin:slow-plugin rule:slow-rule}`、Warn + 含被放弃帧的 ERROR 堆栈、释放后回到 base=2；`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿，`TestTimeout*` 与全局链用例 `-count=5` 稳定。文档：`docs/engine.md` 7.8/10.5 + 附注（新增「`Timeout` 无法终止不响应 ctx 的调用」条目）、`README.md` 指标表、`docs/testing.md`（middleware 行 22→23、超时条目）、`docs/roadmap.md` 行号引用同步。
+  - 位置：`internal/middleware/middleware.go` 的 `Timeout`（原 164-181，现 `:185` 起）与新增的 `observeOverrun`
+  - 问题：handler 不响应 ctx 时每事件泄漏一个 goroutine，并会拖住 `eventbus.Close` 排空；`AGENTS.md` 2.3 要求"goroutine 必须有退出机制"。
+  - 修复：至少在超时后统计/告警未退出调用（含插件/规则标识与堆栈）；`Handler` 契约明确"必须响应 ctx"。
   - 验收：测试断言超时后能观测到泄漏计数/告警。
+  - 补注：「拖住排空」对引擎装配的链并不成立：`Timeout` 在 `RuleTimeout` 后即返回 `ErrTimeout`，被放弃的调用与观察者都不再占用 eventbus worker，排空只受 `RuleTimeout` 约束；残余足迹就是那个不响应 ctx 的 goroutine 本身（Go 无法回收），只有调用方自行把 `Timeout(0)` 组成链时 Handler 才会同步执行并真正阻塞 worker。
 
 - [ ] **12. `Router.UpdateRules` 会改到已发布快照里的活对象** `[读码]`
   - 位置：`internal/router/router.go:155-176`；`Engine.Router()` 公开于 `internal/engine/engine.go:428`
