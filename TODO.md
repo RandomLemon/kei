@@ -106,11 +106,12 @@
   - 验收：`-race` 下池化事件测试通过；文档同步。
   - 补注：复制引入「每入队一条事件一次浅拷贝分配」，与 `hasherPool` 那类优化方向相反，但这是「调用方可复用」能做到零竞态的最低成本；如需彻底免分配，只能把所有权明确交给总线（调用方不得复用），不采纳的原因是适配器的池化解码是很自然的写法。
 
-- [ ] **15. `Rule.Matches`/`Match` panic 会垮掉该事件的其余规则** `[读码]`
-  - 位置：`internal/router/router.go:197`（匹配在中间件链之前）；兜底 `internal/eventbus/bus.go:310-321`
+- [x] **15. `Rule.Matches`/`Match` panic 会垮掉该事件的其余规则** `[已复现]` — 完成 b9f750a：`Dispatch` 改经新增的 `(*Router).match` 逐条匹配，`defer recover` 把匹配阶段的 panic 收敛到单条规则——该规则被跳过，其余规则照常匹配与执行；panic 记 `Error` 日志（`plugin`/`rule`/`platform`/`type`/`event_id`/`panic`/`stack`，与 `middleware.Recover` 同风格），计入新增的 `rec.RuleMatchPanic(plugin, rule)`（指标族 `kei_rule_match_panics_total{plugin,rule}`，`metrics.Recorder` 与 `Registry` 同步扩展、引擎经 `router.Options.Metrics` 注入 `e.met`），错误以 `router: 规则匹配 panic: 规则 <id>: <panic>` 包装新导出的 `router.ErrMatchPanic` 进入 `Dispatch` 的 `errors.Join` 聚合返回值（调用方可用 `errors.Is` 判定）。回归测试 `internal/router/router_test.go` 的 `TestMatchPanicIsIsolated`：三条规则按优先级 `[first(100), boom(50, WithMatch panic), last(0)]`，断言 panic 规则被跳过而 `first`/`last` 都执行（`命中顺序 == [first last]`）、聚合错误 `errors.Is(err, ErrMatchPanic)` 且含 panic 值与规则 ID、`matchPanicRecorder` 恰好上报一次 `RuleMatchPanic{b, b:all:0}`、Error 日志含 `规则匹配 panic`/`plugin=b`/`匹配炸弹`/`stack=`。取证：临时 worktree（HEAD 旧实现）内等价用例——`panic 冒泡出 Dispatch: 匹配炸弹`、`命中顺序 = [first]`（`last` 被中止），且旧路径下该 panic 由事件总线 `callHandler` 按「处理器 panic」兜底（日志只有 `event_id`/`session_key`/`panic`，无 `rule` 标识）并把整个事件计为 `Failed`；修复后同一场景按规则归因并继续执行其余规则。`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/engine.md` 7.8（匹配 panic 不在 Handler 保护范围内，指向 10.3）、10.3（按规则隔离语义 + 错误文案 + 与旧行为对比）、10.5（指标族与语义）、`docs/plugin.md` 9.2（`WithMatch` 的 panic 行为）、`README.md` 指标表、`docs/testing.md`（router 行 28→29、panic 必测项）、`docs/roadmap.md` 计数同步。
+  - 位置：`internal/router/router.go` 的 `Dispatch`（原 `:197` 的裸 `e.rule.Matches(ev)`，现 `:205` 经 `r.match`）；新增 `ErrMatchPanic`（`:24`）与 `match`（`:244`）；兜底日志 `internal/eventbus/bus.go` 的 `callHandler`
   - 问题：插件提供的 `Match` panic 被 bus 按“处理器 panic”捕获并中止剩余规则，日志无 rule 标识 → 跨插件爆炸半径。
   - 修复：`Dispatch` 内对每条规则匹配单独 recover、跳过并带 `plugin`/`rule` 记录与计数。
   - 验收：测试一个 Match panic 不影响其它规则命中。
+  - 补注：匹配 panic 不进入 `Result`/`EventHandled` 指标（handler 根本没被调用），因此单独用 `kei_rule_match_panics_total` 计数；`Errors` 与 `Rules()` 之类的只读视图不变。
 
 - [ ] **16. onebot：`flexID` 接受任意 JSON token，`Event.ID` 可空/可撞** `[读码]`
   - 位置：`adapters/onebot/event.go:74-90`（末分支原样存 token）、`:178-182`（秒级兜底拼接）
