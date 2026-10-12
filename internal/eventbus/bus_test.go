@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -341,6 +342,34 @@ func TestDedupTTLExpiry(t *testing.T) {
 	}
 }
 
+// TestDedupAcrossShardsByEventID 验证去重按事件 ID 判定而非按会话分片：
+// 同一 ID 的事件即使被路由到不同分片，也只处理一次。
+func TestDedupAcrossShardsByEventID(t *testing.T) {
+	const shards = 4
+	b := New(Options{Workers: shards, QueueSize: 16, Logger: testLogger()})
+	defer closeBus(t, b)
+
+	rec := &recorder{}
+	mustSubscribe(t, b, rec.handler)
+
+	sessions := pickSessions(t, 2, shards)
+	first := newEvent(sessions[0], "same-id")
+	second := newEvent(sessions[1], "same-id")
+	if shardIndex(first.SessionKey(), shards) == shardIndex(second.SessionKey(), shards) {
+		t.Fatalf("测试需要两条事件落在不同分片: %q / %q", sessions[0], sessions[1])
+	}
+
+	mustPublish(t, b, first)
+	mustPublish(t, b, second)
+	closeBus(t, b)
+
+	assertIDs(t, rec.snapshot(), []string{"same-id"})
+	stats := b.Stats()
+	if stats.Published != 1 || stats.Duplicated != 1 || stats.Handled != 1 {
+		t.Fatalf("Stats = %+v, 期望 Published=1 Duplicated=1 Handled=1", stats)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 队列满
 // ---------------------------------------------------------------------------
@@ -392,6 +421,151 @@ func TestQueueFullDropsWithoutBlocking(t *testing.T) {
 	if stats.Published != 2 || stats.Dropped != 1 || stats.Handled != 2 {
 		t.Fatalf("Stats = %+v, 期望 Published=2 Dropped=1 Handled=2", stats)
 	}
+}
+
+// syncWriter 是并发安全的 io.Writer，用于在测试中捕获日志输出。
+type syncWriter struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+// Write 实现 io.Writer。
+func (w *syncWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+// String 返回当前输出内容。
+func (w *syncWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
+}
+
+// blockingLogHandler 是 Handle 会阻塞到 gate 释放的 slog.Handler，
+// 用于验证日志写在分片锁之外。
+type blockingLogHandler struct {
+	started chan struct{}
+	release *gate
+}
+
+// Enabled 实现 slog.Handler。
+func (h *blockingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle 阻塞到 gate 释放，并通知调用方已经进入日志处理器。
+func (h *blockingLogHandler) Handle(context.Context, slog.Record) error {
+	select {
+	case h.started <- struct{}{}:
+	default:
+	}
+	h.release.wait()
+	return nil
+}
+
+// WithAttrs 实现 slog.Handler（本测试不关心属性）。
+func (h *blockingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup 实现 slog.Handler（本测试不关心分组）。
+func (h *blockingLogHandler) WithGroup(string) slog.Handler { return h }
+
+// TestQueueFullDropLogging 验证队列满的丢弃日志经过限流、写在分片锁之外。
+func TestQueueFullDropLogging(t *testing.T) {
+	// fillQueue 让唯一 worker 忙在 gate 上，并把容量为 1 的队列占满。
+	fillQueue := func(t *testing.T, b *Bus) *gate {
+		t.Helper()
+		handler := newGate()
+		entered := make(chan struct{}, 1)
+		mustSubscribe(t, b, func(context.Context, *bot.Event) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			handler.wait()
+		})
+		mustPublish(t, b, newEvent("s", "keep-1"))
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("worker 未开始处理首个事件")
+		}
+		mustPublish(t, b, newEvent("s", "keep-2"))
+		return handler
+	}
+
+	t.Run("丢弃日志按分片限流且带累计计数", func(t *testing.T) {
+		out := &syncWriter{}
+		b := New(Options{Workers: 1, QueueSize: 1, Logger: slog.New(slog.NewTextHandler(out, nil))})
+		defer closeBus(t, b)
+		handler := fillQueue(t, b)
+		defer handler.release()
+
+		drop := func(prefix string, n int) {
+			t.Helper()
+			for i := range n {
+				err := b.Publish(context.Background(), newEvent("s", fmt.Sprintf("%s-%d", prefix, i)))
+				if !errors.Is(err, ErrQueueFull) {
+					t.Fatalf("第 %d 条应被丢弃: %v", i, err)
+				}
+			}
+		}
+
+		// 第一个限流窗口：10 条丢弃只记 1 条日志，计数仍逐条精确。
+		drop("first", 10)
+		if got := b.Stats().Dropped; got != 10 {
+			t.Fatalf("Dropped = %d, 期望 10", got)
+		}
+		if got := strings.Count(out.String(), "分片队列已满"); got != 1 {
+			t.Fatalf("限流窗口内只应有 1 条丢弃日志, 实际 %d 条:\n%s", got, out.String())
+		}
+		if !strings.Contains(out.String(), "dropped_total=1") {
+			t.Fatalf("丢弃日志应带累计丢弃数:\n%s", out.String())
+		}
+
+		// 下一个限流窗口：再记一条；累计值是「写这条日志时」的总丢弃数
+		// （前 10 条 + 触发本条日志的那 1 条）。
+		time.Sleep(dropLogInterval + 50*time.Millisecond)
+		drop("second", 2)
+		if got := b.Stats().Dropped; got != 12 {
+			t.Fatalf("Dropped = %d, 期望 12", got)
+		}
+		if got := strings.Count(out.String(), "分片队列已满"); got != 2 {
+			t.Fatalf("新窗口应再记 1 条丢弃日志, 实际 %d 条:\n%s", got, out.String())
+		}
+		if !strings.Contains(out.String(), "dropped_total=11") {
+			t.Fatalf("新窗口日志应带累计丢弃数:\n%s", out.String())
+		}
+	})
+
+	t.Run("丢弃日志不占用分片锁", func(t *testing.T) {
+		logHandler := &blockingLogHandler{started: make(chan struct{}, 1), release: newGate()}
+		b := New(Options{Workers: 1, QueueSize: 1, Logger: slog.New(logHandler)})
+		defer closeBus(t, b)
+		defer logHandler.release.release()
+		handler := fillQueue(t, b)
+		defer handler.release()
+
+		// 第一条丢弃日志会阻塞在日志处理器里（限流窗口已由它占用）。
+		dropped := make(chan error, 1)
+		go func() { dropped <- b.Publish(context.Background(), newEvent("s", "drop-1")) }()
+		select {
+		case <-logHandler.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("丢弃日志未进入日志处理器")
+		}
+
+		// 同一分片的后续投递不得被日志处理器卡住。
+		done := make(chan error, 1)
+		go func() { done <- b.Publish(context.Background(), newEvent("s", "drop-2")) }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrQueueFull) {
+				t.Fatalf("队列满时应返回 ErrQueueFull: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("阻塞式日志处理器卡住了同一分片的后续投递")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

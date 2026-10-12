@@ -49,7 +49,7 @@ type Options struct {
 	Workers       int           // 分片 worker 数；<=0 → 4
 	QueueSize     int           // 每分片队列容量；<=0 → 256
 	DedupTTL      time.Duration // 去重 TTL；<=0 → 5m
-	DedupCapacity int           // 去重集合容量；<=0 → 4096
+	DedupCapacity int           // 去重集合总容量；<=0 → 4096，按 Workers 均分（每片至少 1）
 	Logger        *slog.Logger  // nil → slog.Default()
 }
 
@@ -84,6 +84,10 @@ type shard struct {
 	mu     sync.Mutex
 	q      chan *bot.Event
 	closed bool
+
+	// dropLogAt 是上一次「队列已满」告警的时间戳（UnixNano，0 表示还没记过），
+	// 用于限流丢弃日志；只经原子访问，不参与 mu（日志本身在锁外写）。
+	dropLogAt atomic.Int64
 }
 
 // Bus 是分片保序的事件总线，实现 bot.EventSink。
@@ -91,7 +95,9 @@ type shard struct {
 // 零值不可用，必须通过 New 构造。
 type Bus struct {
 	shards []*shard
-	dedup  *dedup.Set
+	// dedups 是按事件 ID 哈希切分的去重集合：同一 ID 必然映射到同一个集合，
+	// 因此去重语义与单集合一致，而不同 ID 的投递不再挤在同一把去重锁上。
+	dedups []*dedup.Set
 	logger *slog.Logger
 	// baseCtx 是传递给处理器的上下文：它不随 Close 取消，保证 Close 时
 	// 已入队事件仍能被处理完。
@@ -135,7 +141,7 @@ func New(opts Options) *Bus {
 
 	b := &Bus{
 		shards:  make([]*shard, opts.Workers),
-		dedup:   dedup.New(opts.DedupCapacity, opts.DedupTTL),
+		dedups:  make([]*dedup.Set, opts.Workers),
 		logger:  logger,
 		baseCtx: context.Background(),
 		done:    make(chan struct{}),
@@ -143,9 +149,12 @@ func New(opts Options) *Bus {
 	empty := make([]handlerFunc, 0, 2)
 	b.handlers.Store(&empty)
 
+	// 去重容量按分片均分：总量仍受 DedupCapacity 约束。
+	dedupCap := max(1, opts.DedupCapacity/opts.Workers)
 	for i := range opts.Workers {
 		sh := &shard{q: make(chan *bot.Event, opts.QueueSize)}
 		b.shards[i] = sh
+		b.dedups[i] = dedup.New(dedupCap, opts.DedupTTL)
 		b.wg.Add(1)
 		go b.run(sh)
 	}
@@ -155,7 +164,8 @@ func New(opts Options) *Bus {
 // Publish 把事件投递到会话所属分片。
 //
 // 返回 nil 表示事件已入队，或事件因 ID 重复被忽略；它不表示事件已被处理。
-// Publish 永不阻塞：队列已满时丢弃事件并返回包装了 ErrQueueFull 的错误。
+// Publish 永不阻塞：队列已满时丢弃事件并返回包装了 ErrQueueFull 的错误；
+// 去重与入队只在分片自身与事件 ID 所属的去重分片上串行，不同分片互不影响。
 // ctx 仅为满足 bot.EventSink 契约，投递本身是非阻塞的，不响应取消。
 // Publish 不会修改 ev，调用方可以在投递后复用事件对象。
 func (b *Bus) Publish(_ context.Context, ev *bot.Event) error {
@@ -164,34 +174,60 @@ func (b *Bus) Publish(_ context.Context, ev *bot.Event) error {
 	}
 	key := ev.SessionKey()
 	sh := b.shards[shardIndex(key, len(b.shards))]
+	set := b.dedups[shardIndex(ev.ID, len(b.dedups))]
 
-	// 所有入队操作都在 sh.mu 内完成，因此下面的容量检查与发送之间不存在
-	// 并发写入，容量足够时发送一定不会阻塞。
+	// 所有入队与去重操作都在 sh.mu 内完成，因此下面的容量检查与发送之间不存在
+	// 并发写入，容量足够时发送一定不会阻塞；去重锁也在 sh.mu 之内，但按事件 ID
+	// 分散到多个集合，投递方之间不会在同一把锁上串行。
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
-
 	if sh.closed {
+		sh.mu.Unlock()
 		return ErrClosed
 	}
-	if b.dedup.Seen(ev.ID) {
+	if set.Seen(ev.ID) {
+		sh.mu.Unlock()
 		b.stats.duplicated.Add(1)
 		return nil
 	}
 	if len(sh.q) >= cap(sh.q) {
 		// 丢弃的事件不写入去重集合，重试仍可成功投递。
+		sh.mu.Unlock()
 		b.stats.dropped.Add(1)
-		b.logger.Warn("eventbus: 分片队列已满，事件被丢弃",
-			"event_id", ev.ID, "session_key", key, "queue_size", cap(sh.q))
+		b.logDrop(sh, ev, key)
 		return fmt.Errorf("eventbus: publish %q: %w", ev.ID, ErrQueueFull)
 	}
-	if !b.dedup.Add(ev.ID) {
-		// 并发投递下同一 ID 的兜底去重。
+	if !set.Add(ev.ID) {
+		// 同一 ID 但不同会话的并发投递（各自持有不同分片锁）兜底去重。
+		sh.mu.Unlock()
 		b.stats.duplicated.Add(1)
 		return nil
 	}
 	sh.q <- ev
+	sh.mu.Unlock()
 	b.stats.published.Add(1)
 	return nil
+}
+
+// dropLogInterval 是同一分片「队列已满」告警的最小间隔。
+const dropLogInterval = time.Second
+
+// logDrop 在分片锁之外记录一次「队列已满」丢弃，并按分片限流。
+//
+// 持续打满时每个分片每秒至多一条日志，因此阻塞式日志处理器既不会占着分片锁，
+// 也不会被高频丢弃刷屏；丢弃总数以 Stats().Dropped 为准，日志里附带累计值。
+func (b *Bus) logDrop(sh *shard, ev *bot.Event, key string) {
+	now := time.Now().UnixNano()
+	last := sh.dropLogAt.Load()
+	if last != 0 && now-last < int64(dropLogInterval) {
+		return
+	}
+	if !sh.dropLogAt.CompareAndSwap(last, now) {
+		// 并发的投递方已经记过这条日志。
+		return
+	}
+	b.logger.Warn("eventbus: 分片队列已满，事件被丢弃",
+		"event_id", ev.ID, "session_key", key, "queue_size", cap(sh.q),
+		"dropped_total", b.stats.dropped.Load())
 }
 
 // Emit 实现 bot.EventSink，语义与 Publish 完全一致。

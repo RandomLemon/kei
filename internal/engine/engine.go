@@ -87,6 +87,7 @@ type Options struct {
 	// DedupTTL 是事件去重时间窗，默认 5m。
 	DedupTTL time.Duration
 	// DedupCapacity 是去重集合容量上限，默认 4096。
+	// 事件总线的去重按分片均分该容量，中间件层的规则去重集合独占该容量。
 	DedupCapacity int
 
 	// SendRetries 是发送失败后的重试次数（不含首次），默认 2。

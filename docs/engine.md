@@ -67,7 +67,7 @@ type AdapterBinding struct {
 | `BusWorkers` | 事件总线分片 worker 数 | 4 |
 | `BusQueueSize` | 每个分片队列容量 | 256 |
 | `DedupTTL` | 事件去重时间窗 | 5m |
-| `DedupCapacity` | 去重集合容量上限 | 4096 |
+| `DedupCapacity` | 去重集合容量上限（总线按分片均分，规则去重集合独占） | 4096 |
 | `SendRetries` | 发送失败重试次数（不含首次），负数按 0 | 2 |
 | `SendBackoff` | 发送重试初始退避 | 100ms |
 | `HTTPClient` | 插件 HTTP 客户端，nil 时使用 `Timeout: 15s` 的默认客户端 | 15s |
@@ -267,7 +267,7 @@ type Options struct {
 	Workers       int           // 分片 worker 数；<=0 → 4
 	QueueSize     int           // 每分片队列容量；<=0 → 256
 	DedupTTL      time.Duration // 去重 TTL；<=0 → 5m
-	DedupCapacity int           // 去重集合容量；<=0 → 4096
+	DedupCapacity int           // 去重集合总容量；<=0 → 4096，总线按 Workers 均分
 	Logger        *slog.Logger  // nil → slog.Default()
 }
 ```
@@ -291,10 +291,10 @@ type Stats struct {
 - 空事件返回 `errNilEvent`（`eventbus: nil event`）。
 - 已关闭返回 `ErrClosed`（`eventbus: closed`）。
 - 事件 ID 已出现过：`Duplicated` 加一，返回 nil（去重是「成功」而非错误）。
-- 队列已满：`Dropped` 加一，写 `Warn` 日志，返回包装了 `ErrQueueFull` 的错误（`eventbus: publish %q: queue full`）；被丢弃的事件**不写入去重集**，因此调用方重试仍可成功投递。
+- 队列已满：`Dropped` 加一，写 `Warn` 日志，返回包装了 `ErrQueueFull` 的错误（`eventbus: publish %q: queue full`）；被丢弃的事件**不写入去重集**，因此调用方重试仍可成功投递。该日志在分片锁之外写、且**按分片限流**：连续打满时每个分片每个窗口（`dropLogInterval = 1s`）至多一条，字段含 `event_id`/`session_key`/`queue_size`/`dropped_total`（写日志当刻的累计丢弃数）；丢弃总数以 `Stats().Dropped` 为准。因此阻塞式日志处理器只会拖慢本次投递，不会占着分片锁。
 - 成功入队：`Published` 加一，返回 nil。返回值只表示事件已入队或已被去重忽略，不表示已被处理。
 
-容量检查与入队都在分片互斥锁内完成，因此不存在「检查通过后被并发写满、发送阻塞」的窗口，也不会向已关闭的 channel 发送。
+容量检查与入队都在分片互斥锁内完成，因此不存在「检查通过后被并发写满、发送阻塞」的窗口，也不会向已关闭的 channel 发送。锁内只做内存操作（去重集与队列），日志与计数器都在锁外：去重集合按事件 ID 哈希拆成 `Workers` 份（见 8.5），因此不同 ID 的投递不会在同一把去重锁上串行，投递方之间只有分片锁这一处串行点。
 
 ### 8.3 Subscribe 语义
 
@@ -317,6 +317,8 @@ type Stats struct {
 - 容量：条目数超过容量时按插入顺序淘汰最旧的**活条目**，并压缩插入顺序切片防止无限增长。每个条目在 `order` 中只有一个有效槽位：ID 过期后被重加会分配新槽位，旧槽位在淘汰与压缩时被丢弃，因此陈旧槽位既不会误删重加后的条目，也不会累积。
 
 总线的去重键是事件 ID（`ev.ID`），TTL 与容量来自 `Options.DedupTTL`/`DedupCapacity`（引擎默认 5m / 4096）。它拦截的是「同一条事件被重复投递」（适配器重发、平台重试），与中间件层按规则去重是两层独立机制（见 10.6）。
+
+总线把去重集合按 `Options.Workers` 个分片拆开：**分片下标由 `ev.ID` 的 FNV-1a 哈希决定**，因此同一 ID 的投递（无论会话键是否相同）必然落在同一个集合上，去重语义与单集合一致，而不同 ID 的投递分散到不同集合、不再共用一把锁。每个集合的容量是 `max(1, DedupCapacity/Workers)`，总条目数仍受 `DedupCapacity` 约束；代价是单个集合的淘汰窗口比「全局 4096 条」的语义更短（TTL 仍是主要窗口）。
 
 ### 8.6 关闭
 
