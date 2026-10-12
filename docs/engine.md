@@ -83,7 +83,7 @@ type AdapterBinding struct {
 
 实际顺序（`pkg/kei.Run`：`buildConfig` → `adaptermgr.Build` → `engine.New` → `engine.Run`）：
 
-1. `config.Load`/`config.LoadBytes` 加载配置；构造 `slog` 日志器并设为默认；`storage.NewMemory()`；`metrics.New()`；`cfg.Metrics.Addr` 非空时启动 `/metrics` HTTP 服务。
+1. `config.Load`/`config.LoadBytes` 加载配置；构造 `slog` 日志器并设为默认；`storage.NewMemory()`；`metrics.New()`；`cfg.Metrics.Addr` 非空时启动 `/metrics` HTTP 服务（`pkg/kei/assemble.go` 的 `serveMetrics`，同时注册 `/healthz`）。该服务由 `Run` 以 `defer` 同步关闭：无论装配成功还是中途失败，`Run` 返回时监听端口都已释放，重复 `Run` 可复用同一地址（`pkg/kei` 的 `TestRunReleasesMetricsPortOnEarlyFailure`、`TestServeMetricsStopReleasesPort`）。
 2. `adaptermgr.Build(ctx, cfg, deps)`：校验适配器注册表与配置一致性，并按配置装配全部 bot 的适配器（适配器经 `bot.LookupAdapter` + `bot.AdapterContext`）。平台名分支只存在于适配器实现内部，`cmd/` 与 `internal/` 没有平台名分支。
 3. 收集需要加载的插件（`selectPlugins`：注入实例在前，其后是配置启用且已注册的插件）。
 4. `engine.New`：构造 Router（含全局中间件链）、构造并**启动事件总线 worker**、构造插件管理器，登记注册表中的插件。
@@ -91,8 +91,8 @@ type AdapterBinding struct {
    - `plugins.Setup(runCtx, e.router.Registrar)`：按注册顺序调用每个插件的 `Setup`，注入 `PluginContext`（含路由注册器、目录、适配器目录、按权限裁剪的依赖）。任一步失败或 panic 立即返回错误。
    - `e.applyBotPluginFilter()`：按每个 bot 的插件白名单裁剪规则适用范围（见 7.6）。
    - `plugins.Start(runCtx)`：按注册顺序启动插件；中途失败会逆序停止已启动的插件。
-   - 为每个 `AdapterBinding` 启动一个独立 goroutine 调用 `Adapter.Start(runCtx, e.sink)`。
-   - 之后阻塞在 `select`：`runCtx.Done()`（ctx 取消，例如 SIGINT/SIGTERM）或 `adapterErr`（适配器不可恢复错误）。
+   - 为每个 `AdapterBinding` 启动一个独立 goroutine 调用 `Adapter.Start(runCtx, e.sink)`；适配器返回非 `context.Canceled` 错误时把 `engine: adapter <botID>: <err>` 写入带缓冲的 `adapterErr` 并 `cancel()`。
+   - 之后阻塞在 `select`：`runCtx.Done()`（ctx 取消，例如 SIGINT/SIGTERM）或 `adapterErr`（适配器不可恢复错误）。适配器先写 `adapterErr` 再 `cancel()`，两个分支可能同时就绪而被 `select` 随机挑选；因此 `shutdown` 之后统一用非阻塞读收敛 `adapterErr` 中的全部残余错误（多个适配器失败时用 `errors.Join` 合并），保证适配器崩溃不会被静默吞成 `nil`。
 
 ### 7.3 关闭顺序与优雅退出
 
@@ -105,7 +105,7 @@ type AdapterBinding struct {
 5. 引擎自有的内存存储（`ownStorage`，即 `Options.Storage` 为 nil 时内部创建）关闭。
 6. 记录 `engine stopped` 日志，携带总线的 `published`/`handled` 计数。
 
-关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；总超时由 `ShutdownTimeout`（默认 10s）约束。`Run` 的返回值是适配器错误（若有），ctx 取消返回 nil。
+关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；总超时由 `ShutdownTimeout`（默认 10s）约束。`Run` 的返回值是收敛后的适配器错误（多个失败用 `errors.Join` 合并），并同时以 `engine aborted by adapter failure` 记为 `Error` 日志；仅 ctx 取消且无任何适配器错误时才返回 nil。
 
 优雅退出的触发点是 `cmd/bot/main.go` 的 `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`（门面本身只消费传入的 ctx）；取消后 `Run` 走上述关闭路径，因此已入队事件不会丢失（`internal/engine` 的 `TestGracefulShutdownDrainsQueuedEvents` 覆盖该行为）。
 
@@ -314,7 +314,7 @@ type Stats struct {
 - `Add(id)` 返回 true 表示首次出现、false 表示重复；空 ID 一律视为首次出现（无法去重）。
 - `Seen(id)` 只查询不改变状态。
 - 过期：`Add` 时若距上次 GC 已超过一个 TTL 则顺带清理过期条目；`GC()` 可显式清理。
-- 容量：条目数超过容量时按插入顺序淘汰最旧的条目，并压缩插入顺序切片防止无限增长。
+- 容量：条目数超过容量时按插入顺序淘汰最旧的**活条目**，并压缩插入顺序切片防止无限增长。每个条目在 `order` 中只有一个有效槽位：ID 过期后被重加会分配新槽位，旧槽位在淘汰与压缩时被丢弃，因此陈旧槽位既不会误删重加后的条目，也不会累积。
 
 总线的去重键是事件 ID（`ev.ID`），TTL 与容量来自 `Options.DedupTTL`/`DedupCapacity`（引擎默认 5m / 4096）。它拦截的是「同一条事件被重复投递」（适配器重发、平台重试），与中间件层按规则去重是两层独立机制（见 10.6）。
 

@@ -83,9 +83,11 @@ func Run(ctx context.Context, opts Options) error {
 
 	registry := metrics.New()
 	if cfg.Metrics.Addr != "" {
-		if err := serveMetrics(ctx, cfg.Metrics.Addr, registry.Handler(), logger); err != nil {
+		stopMetrics, err := serveMetrics(cfg.Metrics.Addr, registry.Handler(), logger)
+		if err != nil {
 			return err
 		}
+		defer stopMetrics()
 	}
 
 	// 适配器一律经注册表装配：本包不出现任何平台名分支。

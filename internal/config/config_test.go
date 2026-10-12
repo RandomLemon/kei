@@ -948,3 +948,72 @@ func TestEnvOverridesRecorded(t *testing.T) {
 		}
 	}
 }
+
+// emptyEnvYAML 在 fullYAML 之上补出 storage 与 adapters 段，用于验证空值环境变量不覆盖 YAML。
+const emptyEnvYAML = fullYAML + `
+storage:
+  type: sqlite
+  dsn: /tmp/keep.db
+  cleanup_interval: 7m
+adapters:
+  myim:
+    enabled: true
+`
+
+// TestEmptyEnvValuesDoNotOverride 断言空白值的 KEI_* 变量既不覆盖 YAML、也不记入 EnvOverrides。
+//
+// compose/systemd 中 `KEY=${UNSET}` 会展开成空串；若被当成一次覆盖，会把 YAML 值
+// 打回默认值（如 `KEI_STORAGE_TYPE=` 让 sqlite 变回 memory、`KEI_AUTH_ADMIN_USERS=`
+// 清空管理员），并在启动日志里伪装成有意的覆盖。
+func TestEmptyEnvValuesDoNotOverride(t *testing.T) {
+	env := []string{
+		"KEI_LOG_LEVEL=",
+		"KEI_LOG_FORMAT=   ",
+		"KEI_METRICS_ADDR=",
+		"KEI_LIMITS_HANDLER_RATE=",
+		"KEI_LIMITS_SEND_RATE=",
+		"KEI_AUTH_ADMIN_USERS=",
+		"KEI_STORAGE_TYPE=",
+		"KEI_STORAGE_DSN=",
+		"KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=",
+		"KEI_BOTS_FEISHU_MAIN_APP_SECRET=",
+		"KEI_BOTS_QQ_MAIN_ENABLED=",
+		"KEI_PLUGINS_WEATHER_API_KEY=",
+		"KEI_ADAPTERS_MYIM_ENABLED=",
+	}
+	cfg := mustLoadBytes(t, emptyEnvYAML, env...)
+
+	if cfg.Log.Level != "debug" || cfg.Log.Format != "json" {
+		t.Fatalf("log 被空值覆盖: %+v", cfg.Log)
+	}
+	if cfg.Metrics.Addr != ":9100" {
+		t.Fatalf("metrics.addr 被空值覆盖: %q", cfg.Metrics.Addr)
+	}
+	if cfg.Limits.HandlerRate != 5 || cfg.Limits.SendRate != 0.5 {
+		t.Fatalf("limits 被空值覆盖: %+v", cfg.Limits)
+	}
+	if len(cfg.Auth.AdminUsers) != 2 {
+		t.Fatalf("auth.admin_users 被空值清空: %v", cfg.Auth.AdminUsers)
+	}
+	if cfg.Storage.Type != "sqlite" || cfg.Storage.DSN != "/tmp/keep.db" {
+		t.Fatalf("storage 被空值覆盖: %+v", cfg.Storage)
+	}
+	if got := cfg.Storage.Params["cleanup_interval"]; got != "7m" {
+		t.Fatalf("storage.params.cleanup_interval 被空值覆盖: %#v", got)
+	}
+	if got := cfg.Bots[0].Settings["app_secret"]; got != "secret-1" {
+		t.Fatalf("bots[0].app_secret 被空值覆盖: %#v", got)
+	}
+	if cfg.Bots[1].Enabled != nil {
+		t.Fatalf("bots[1].enabled 被空值覆盖: %v", *cfg.Bots[1].Enabled)
+	}
+	if w := cfg.Plugins["weather"]; !w.Enabled || w.Settings["api_key"] != "xxx" {
+		t.Fatalf("plugins.weather 被空值覆盖: %+v", w)
+	}
+	if ac := cfg.Adapters["myim"]; ac.Enabled == nil || !*ac.Enabled {
+		t.Fatalf("adapters.myim.enabled 被空值覆盖: %+v", ac)
+	}
+	if len(cfg.EnvOverrides) != 0 {
+		t.Fatalf("空值不应记入 EnvOverrides: %+v", cfg.EnvOverrides)
+	}
+}

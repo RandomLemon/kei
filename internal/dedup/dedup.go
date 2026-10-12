@@ -16,9 +16,24 @@ type Set struct {
 	ttl      time.Duration
 	now      func() time.Time
 
-	items  map[string]time.Time // id -> 过期时间，零值表示永不过期
-	order  []string             // 插入顺序，用于容量淘汰
+	seq    uint64           // 单调递增的槽位序号
+	items  map[string]entry // id -> 当前活条目
+	order  []slot           // 插入顺序槽位，用于容量淘汰
 	lastGC time.Time
+}
+
+// entry 是集合中的一个活条目。exp 为零值表示永不过期；seq 是写入该条目时
+// 分配的槽位序号，用于在淘汰时区分同一 ID 的旧槽位。
+type entry struct {
+	exp time.Time
+	seq uint64
+}
+
+// slot 是 order 中的一个插入顺序槽位。同一 ID 在过期后被重加会产生新的
+// 槽位，旧槽位随之失效（其 seq 不再等于 items[id].seq）。
+type slot struct {
+	id  string
+	seq uint64
 }
 
 // New 构造去重集合。capacity <= 0 时使用默认容量 4096；
@@ -31,7 +46,7 @@ func New(capacity int, ttl time.Duration) *Set {
 		capacity: capacity,
 		ttl:      ttl,
 		now:      time.Now,
-		items:    make(map[string]time.Time, min(capacity, 1024)),
+		items:    make(map[string]entry, min(capacity, 1024)),
 		lastGC:   time.Now(),
 	}
 }
@@ -48,11 +63,12 @@ func (s *Set) Add(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if exp, ok := s.items[id]; ok && (exp.IsZero() || exp.After(now)) {
+	if e, ok := s.items[id]; ok && (e.exp.IsZero() || e.exp.After(now)) {
 		return false
 	}
-	s.items[id] = s.expiry(now)
-	s.order = append(s.order, id)
+	s.seq++
+	s.items[id] = entry{exp: s.expiry(now), seq: s.seq}
+	s.order = append(s.order, slot{id: id, seq: s.seq})
 
 	if s.ttl > 0 && now.Sub(s.lastGC) >= s.ttl {
 		s.lastGC = now
@@ -74,8 +90,8 @@ func (s *Set) Seen(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	exp, ok := s.items[id]
-	return ok && (exp.IsZero() || exp.After(now))
+	e, ok := s.items[id]
+	return ok && (e.exp.IsZero() || e.exp.After(now))
 }
 
 // Len 返回当前有效条目数。
@@ -115,8 +131,8 @@ func (s *Set) gcLocked(now time.Time) {
 	if s.ttl <= 0 {
 		return
 	}
-	for id, exp := range s.items {
-		if !exp.IsZero() && !exp.After(now) {
+	for id, e := range s.items {
+		if !e.exp.IsZero() && !e.exp.After(now) {
 			delete(s.items, id)
 		}
 	}
@@ -124,28 +140,33 @@ func (s *Set) gcLocked(now time.Time) {
 }
 
 // evictLocked 按插入顺序淘汰最旧的条目。
+//
+// 同一 ID 在过期后被重加时会留下旧槽位，只删除与当前活条目序号一致的槽位；
+// 陈旧槽位直接跳过，不得连带删除重加后的新条目。
 func (s *Set) evictLocked() {
 	for len(s.order) > 0 {
-		id := s.order[0]
+		sl := s.order[0]
 		s.order = s.order[1:]
-		if _, ok := s.items[id]; ok {
-			delete(s.items, id)
+		if e, ok := s.items[sl.id]; ok && e.seq == sl.seq {
+			delete(s.items, sl.id)
 			return
 		}
 	}
-	// order 已空但 items 仍有残留（理论上不会发生），退化为清空最旧键。
+	// 不变量：每个活条目在 order 中都有当前槽位，因此 items 非空时不会走到这里。
+	// 兜底删除任一残留条目，保证淘汰循环终止。
 	for id := range s.items {
 		delete(s.items, id)
 		return
 	}
 }
 
-// compactOrderLocked 丢弃 order 中已被删除的 ID，防止切片无限增长。
+// compactOrderLocked 丢弃 order 中已失效的槽位（条目已被删除，或该 ID 已被
+// 重加而槽位序号不再是当前序号），防止切片无限增长。
 func (s *Set) compactOrderLocked() {
 	kept := s.order[:0]
-	for _, id := range s.order {
-		if _, ok := s.items[id]; ok {
-			kept = append(kept, id)
+	for _, sl := range s.order {
+		if e, ok := s.items[sl.id]; ok && e.seq == sl.seq {
+			kept = append(kept, sl)
 		}
 	}
 	s.order = kept

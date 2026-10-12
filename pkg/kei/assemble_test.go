@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -334,5 +335,87 @@ func TestLogEnvOverridesRespectsInfoLevel(t *testing.T) {
 	}})
 	if buf.Len() != 0 {
 		t.Fatalf("INFO 级别不应输出环境变量覆盖日志:\n%s", buf.String())
+	}
+}
+
+// freeAddr 返回一个当前空闲的 loopback 地址（先监听再释放端口）。
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return addr
+}
+
+// waitHealthy 轮询 /healthz，直到 addr 上的 metrics 服务可达。
+func waitHealthy(t *testing.T, addr string) {
+	t.Helper()
+	client := &http.Client{Timeout: time.Second}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get("http://" + addr + "/healthz")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("metrics 服务未在超时内就绪: %s", addr)
+}
+
+func TestServeMetricsStopReleasesPort(t *testing.T) {
+	addr := freeAddr(t)
+	logger, _ := testLogger()
+
+	stop, err := serveMetrics(addr, http.NotFoundHandler(), logger)
+	if err != nil {
+		t.Fatalf("serveMetrics: %v", err)
+	}
+	waitHealthy(t, addr)
+
+	stop()
+	stop() // 幂等
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("stop 返回后端口未释放: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestRunReleasesMetricsPortOnEarlyFailure 断言 Run 在 metrics 启动之后装配失败时
+// 同步释放监听端口：紧接着的第二次 Run 能重新绑定同一地址并正常退出。
+func TestRunReleasesMetricsPortOnEarlyFailure(t *testing.T) {
+	addr := freeAddr(t)
+	metricsYAML := "metrics:\n  addr: " + addr + "\n"
+
+	if err := Run(context.Background(), Options{Config: []byte(metricsYAML + "bots:\n  - name: b\n    adapter: nosuch-adapter\n")}); err == nil {
+		t.Fatal("未知适配器应使 Run 失败")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, Options{Config: []byte(metricsYAML + mockBotYAML)}) }()
+
+	waitHealthy(t, addr)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("第二次 Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("第二次 Run 未在超时内退出")
 	}
 }

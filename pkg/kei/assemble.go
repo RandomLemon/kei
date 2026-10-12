@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RandomLemon/kei/internal/config"
@@ -174,11 +175,15 @@ func redactEnvValue(key, value string) string {
 	return value
 }
 
-// serveMetrics 在独立 HTTP 服务上暴露 Prometheus 指标，随 ctx 结束关闭。
-func serveMetrics(ctx context.Context, addr string, handler http.Handler, logger *slog.Logger) error {
+// serveMetrics 在独立 HTTP 服务上暴露 Prometheus 指标。
+//
+// 返回的 stop 幂等，同步关闭服务并释放监听端口：调用方（Run）必须 defer 它，
+// 否则装配在 metrics 启动之后失败时会泄漏监听端口与 goroutine
+// （再次 Run 会报 address already in use）。
+func serveMetrics(addr string, handler http.Handler, logger *slog.Logger) (stop func(), err error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("metrics listen %s: %w", addr, err)
+		return nil, fmt.Errorf("metrics listen %s: %w", addr, err)
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", handler)
@@ -188,20 +193,25 @@ func serveMetrics(ctx context.Context, addr string, handler http.Handler, logger
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("metrics server stopped", "error", err)
 		}
 	}()
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Warn("metrics shutdown incomplete", "error", err)
-		}
-	}()
 
 	logger.Info("metrics listening", "addr", ln.Addr().String(), "path", "/metrics")
-	return nil
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("metrics shutdown incomplete", "error", err)
+			}
+			<-done // 等 Serve 退出，保证返回时监听端口已释放
+		})
+	}, nil
 }

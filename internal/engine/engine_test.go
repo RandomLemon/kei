@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -515,6 +516,63 @@ func TestAdapterStartFailureSurfaces(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mock-main") {
 		t.Fatalf("错误信息应包含 bot 名: %v", err)
+	}
+}
+
+// failingAdapter 是 Start 立即失败的测试适配器。
+type failingAdapter struct {
+	name string
+	err  error
+}
+
+func (a *failingAdapter) Name() string { return a.name }
+
+func (a *failingAdapter) Start(context.Context, bot.EventSink) error { return a.err }
+
+func (a *failingAdapter) Stop(context.Context) error { return nil }
+
+func (a *failingAdapter) Send(context.Context, *bot.SendRequest) (*bot.SendResult, error) {
+	return nil, errors.New("failingAdapter: send unsupported")
+}
+
+func (a *failingAdapter) Capabilities() bot.Capabilities { return bot.Capabilities{} }
+
+// TestRunSurfacesAdapterStartError 断言适配器启动错误既不会被吞成 nil、也不会丢日志。
+//
+// Run 内 runCtx.Done() 与 adapterErr 可能同时就绪（适配器先写带缓冲 channel 再
+// cancel），select 的选择是随机的，因此重复运行以覆盖两种分支。
+func TestRunSurfacesAdapterStartError(t *testing.T) {
+	sentinel := errors.New("adapter blew up")
+	const runs = 20
+
+	for i := range runs {
+		var logs bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		eng, err := engine.New(engine.Options{
+			Config:   mockConfig(config.BotConfig{Name: "bad", Adapter: "mock"}),
+			Logger:   logger,
+			Adapters: []engine.AdapterBinding{{BotID: "bad", Adapter: &failingAdapter{name: "mock", err: sentinel}}},
+		})
+		if err != nil {
+			t.Fatalf("engine.New: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		runErr := eng.Run(ctx)
+		cancel()
+
+		if runErr == nil {
+			t.Fatalf("第 %d 次 Run: 适配器启动错误被吞成 nil", i)
+		}
+		if !errors.Is(runErr, sentinel) {
+			t.Fatalf("第 %d 次 Run: 错误应包裹适配器错误, got %v", i, runErr)
+		}
+		if !strings.Contains(runErr.Error(), "bad") {
+			t.Fatalf("第 %d 次 Run: 错误应含 bot 名, got %v", i, runErr)
+		}
+		if !strings.Contains(logs.String(), sentinel.Error()) {
+			t.Fatalf("第 %d 次 Run: 适配器错误必须进日志, logs = %q", i, logs.String())
+		}
 	}
 }
 

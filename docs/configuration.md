@@ -19,7 +19,7 @@ func Load(path string) (*Config, error)          // 读文件 + os.Environ() 覆
 func LoadBytes(data []byte, env []string) (*Config, error)  // 解析内存数据 + 指定 env
 ```
 
-`LoadBytes` 的固定顺序是：`decode`（YAML → 结构体，不做校验）→ `applyEnv`（环境变量覆盖）→ `applyDefaults`（填默认值）→ `validate`（校验）。因此环境变量覆盖同样受校验约束（例如 `KEI_LOG_LEVEL=trace` 会在 `log.level` 上报错），而默认值不会覆盖环境变量给出的空串以外的值。
+`LoadBytes` 的固定顺序是：`decode`（YAML → 结构体，不做校验）→ `applyEnv`（环境变量覆盖）→ `applyDefaults`（填默认值）→ `validate`（校验）。因此环境变量覆盖同样受校验约束（例如 `KEI_LOG_LEVEL=trace` 会在 `log.level` 上报错）；空白值不参与覆盖（见 12.6），YAML 值与默认值都不会被它影响。
 
 ### 12.1 结构体与顶层键
 
@@ -158,6 +158,7 @@ type StorageConfig struct {
 规则在 `internal/config/env.go`（`applyEnv`、`applyEnvPath`、`canonicalName`、`canonicalSegments`）：
 
 - 只有以 `KEI_` 开头（前缀不区分大小写）的变量参与覆盖；其余一律忽略。`KEY=VALUE` 中缺少 `=` 的元素、以及空的 `KEI_` 被忽略。
+- **空白值（`strings.TrimSpace(value) == ""`，即 `KEY=` 或只有空白字符）对所有键一律等同「未设置」**：不覆盖 YAML（因此不会把 `storage.type: sqlite` 打回默认的 `memory`、也不会清空 `auth.admin_users`）、不记入 `EnvOverrides`。compose/systemd 里 `KEY=${UNSET}` 展开成空串时依赖这条规则（`internal/config/env.go` 的 `applyEnvPath` 入口统一拦截）。
 - 路径段之间用 `_` 连接；每一段都做规范化：转小写，`-` 与 `.` 视作 `_`，空段丢弃。因此 `KEI_BOTS_FEISHU_MAIN_APP_ID` 与 `KEI_BOTS_feishu-main_APP_ID` 命中同一个 bot 的同名键。
 - 顶层段的固定路径（`applyEnvPath` 直接赋值或经 `envFloat`/`envInt` 解析）：
 
@@ -165,8 +166,8 @@ type StorageConfig struct {
 | --- | --- |
 | `KEI_LOG_LEVEL` / `KEI_LOG_FORMAT` | `log.level` / `log.format`（原样字符串） |
 | `KEI_METRICS_ADDR` | `metrics.addr` |
-| `KEI_LIMITS_HANDLER_RATE` / `KEI_LIMITS_SEND_RATE` | 浮点速率；空值表示不覆盖，非法值报错并点名变量 |
-| `KEI_LIMITS_HANDLER_BURST` / `KEI_LIMITS_SEND_BURST` | 整数突发容量；同样空值不覆盖、非法值报错 |
+| `KEI_LIMITS_HANDLER_RATE` / `KEI_LIMITS_SEND_RATE` | 浮点速率；非法值报错并点名变量 |
+| `KEI_LIMITS_HANDLER_BURST` / `KEI_LIMITS_SEND_BURST` | 整数突发容量；非法值报错 |
 | `KEI_AUTH_ADMIN_USERS` | 逗号分隔列表，忽略空白与空项；无有效项时为 nil |
 | `KEI_STORAGE_TYPE` / `KEI_STORAGE_DSN` | `storage.type` / `storage.dsn`（原样字符串） |
 | `KEI_STORAGE_PARAMS_<KEY>` | `storage.Params[<key>]`（键名按规范化规则映射，值按 YAML 规则推断类型） |
@@ -174,12 +175,12 @@ type StorageConfig struct {
 - `KEI_BOTS_<BOT>_<KEY>`：`<BOT>` 按规范化名匹配**配置中已存在的** bot（快照于覆盖开始前，因此 `KEI_BOTS_X_NAME` 之后的其他变量仍按旧名匹配；同时命中多个 bot 时取规范化名最长者，长度相同则全部应用）。`<KEY>` 为 `name`/`adapter`/`plugins`（逗号分隔列表）时写入对应字段，为 `enabled` 时按布尔覆盖实例启用状态（值不可解析为布尔则**静默忽略**），其余键写入 `Settings`。
 - `KEI_PLUGINS_<NAME>_<KEY>`：只命中配置中已存在的插件名，未知插件名忽略。`<KEY>` 为 `enabled` 时按布尔覆盖（值不可解析为布尔则**静默忽略**），其余键写入该插件的 `Settings`。
 - `KEI_ADAPTERS_<NAME>_<KEY>`：只命中配置中已存在的适配器名。支持的键只有 `enabled`（指针布尔）；其余键忽略。
-- 值的类型按 YAML 规则推断（`convertValue`）：`true`→bool、`3`→int、`1.5`→float64、其余→string、空值→空字符串；无法按 YAML 解析时退化为原始字符串。写入 `Settings` 时，若已有键规范化后同名，则沿用 YAML 中的原键名（多个同名时取字典序最小者），否则使用规范化后的路径作为键名。
+- 值的类型按 YAML 规则推断（`convertValue`）：`true`→bool、`3`→int、`1.5`→float64、其余→string；无法按 YAML 解析时退化为原始字符串。空白值到达这一步之前就被 `applyEnvPath` 丢弃，因此不会写出空字符串。写入 `Settings` 时，若已有键规范化后同名，则沿用 YAML 中的原键名（多个同名时取字典序最小者），否则使用规范化后的路径作为键名。
 - 未匹配任何已知路径的 `KEI_*` 变量被静默忽略（不报错，也不会创建新的 bot/plugin/adapter 条目）。
 
 每条**实际生效**的覆盖都会记入 `Config.EnvOverrides`（`EnvOverride{Key, Path, Value}`，按应用顺序）：`Key` 是原始环境变量名，`Path` 是配置项路径（顶层键用点号，如 `log.level`、`limits.send_rate`、`auth.admin_users`、`storage.params.cleanup_interval`；`bots.<名>.<字段>`、`bots.<名>.settings.<键>`、`plugins.<名>.enabled`、`plugins.<名>.settings.<键>`、`adapters.<名>.enabled`）。启动时 `pkg/kei.Run` 在日志器构造后以 **DEBUG** 逐条输出这些项（文案 `环境变量覆盖配置`，字段 `env`/`config`/`value`），便于排查某个配置来自 YAML 还是环境变量。取值默认原样输出，变量名命中 `SECRET`/`TOKEN`/`PASSWORD`/`PASSWD`/`CREDENTIAL`/`API_KEY`/`APIKEY`/`ACCESS_KEY`/`PRIVATE_KEY`/`ENCRYPT_KEY` 之一时输出掩码 `******`，避免密钥写入日志（`pkg/kei/assemble.go` 的 `logEnvOverrides`/`redactEnvValue`）。
 
-未被应用的变量不会记录：非 `KEI_` 前缀、未知路径、未命中 bot/plugin/adapter 名、`limits.*` 空值、`enabled` 非法布尔（被静默忽略）都不出现在 `EnvOverrides` 中。DEBUG 日志受 `log.level` 控制：默认 `info` 不输出，设 `debug` 才可见。
+未被应用的变量不会记录：非 `KEI_` 前缀、未知路径、未命中 bot/plugin/adapter 名、**空白值（任意键，含 `limits.*`）**、`enabled` 非法布尔（被静默忽略）都不出现在 `EnvOverrides` 中。DEBUG 日志受 `log.level` 控制：默认 `info` 不输出，设 `debug` 才可见。
 
 因为覆盖发生在校验之前，非法的日志级别、负数限流等仍会被 `validate` 拒绝；`KEI_LIMITS_*` 的非数字值在 `applyEnv` 阶段就报错。
 

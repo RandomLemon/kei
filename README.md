@@ -306,6 +306,7 @@ KEI_STORAGE_DSN=/var/lib/kei/storage.db
 ```
 
 值的类型按 YAML 规则推断（`true`→bool、`3`→int、其余→string），所以 `enabled: "false"` 也能生效。
+空白值（`KEY=` 或只有空白字符）一律等同「未设置」：不覆盖 YAML、也不出现在启动日志的覆盖列表里——`${UNSET}` 展开成空串时不会把配置打回默认值。
 未匹配任何已知路径的 `KEI_*` 变量会被忽略。
 
 ## 写一个插件
@@ -570,7 +571,7 @@ cd examples/kei-adapter-myim && go test ./...
 
 ## 可观测性
 
-- `GET /metrics`（`metrics.addr`）暴露 Prometheus 文本指标：
+- `GET /metrics`（`metrics.addr`）暴露 Prometheus 文本指标；该 HTTP 服务随 `kei.Run` 返回关闭并释放监听地址（装配失败也如此）：
 
   | 指标 | 标签 |
   | --- | --- |

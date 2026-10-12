@@ -39,9 +39,14 @@ func applyEnv(c *Config, env []string) error {
 
 // applyEnvPath 把一条环境变量应用到对应字段；路径未知时静默忽略。
 //
-// 实际生效的覆盖会经 recordEnv 记入 c.EnvOverrides；空值不覆盖（如 limits.*
-// 的空串）或值非法被静默忽略（如 enabled 非布尔）时不记。
+// 空白值（仅由空白字符组成）一律视为未设置：既不覆盖 YAML、也不记入
+// c.EnvOverrides。compose/systemd 里 `KEY=${UNSET}` 会展开成空串，必须与
+// 「未设置」等价，否则会把 YAML 值打回默认值。值非法被静默忽略（如 enabled
+// 非布尔）时同样不记。
 func applyEnvPath(c *Config, botNames []string, segments []string, key, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
 	full := strings.Join(segments, "_")
 	switch full {
 	case "log_level":
@@ -54,33 +59,21 @@ func applyEnvPath(c *Config, botNames []string, segments []string, key, value st
 		c.Metrics.Addr = value
 		recordEnv(c, key, "metrics.addr", value)
 	case "limits_handler_rate":
-		if strings.TrimSpace(value) == "" {
-			return nil
-		}
 		if err := envFloat(key, "Limits.HandlerRate", value, &c.Limits.HandlerRate); err != nil {
 			return err
 		}
 		recordEnv(c, key, "limits.handler_rate", value)
 	case "limits_handler_burst":
-		if strings.TrimSpace(value) == "" {
-			return nil
-		}
 		if err := envInt(key, "Limits.HandlerBurst", value, &c.Limits.HandlerBurst); err != nil {
 			return err
 		}
 		recordEnv(c, key, "limits.handler_burst", value)
 	case "limits_send_rate":
-		if strings.TrimSpace(value) == "" {
-			return nil
-		}
 		if err := envFloat(key, "Limits.SendRate", value, &c.Limits.SendRate); err != nil {
 			return err
 		}
 		recordEnv(c, key, "limits.send_rate", value)
 	case "limits_send_burst":
-		if strings.TrimSpace(value) == "" {
-			return nil
-		}
 		if err := envInt(key, "Limits.SendBurst", value, &c.Limits.SendBurst); err != nil {
 			return err
 		}
@@ -304,8 +297,8 @@ func canonicalName(s string) string {
 
 // convertValue 按 YAML 规则把环境变量字符串解析成 any。
 //
-// true→bool、3→int、1.5→float64、其余→string；空值视为空字符串。
-// 无法按 YAML 解析时退化为原始字符串，避免个别字符导致加载失败。
+// true→bool、3→int、1.5→float64、其余→string；无法按 YAML 解析时退化为原始字符串，
+// 避免个别字符导致加载失败。空白值已在 applyEnvPath 被过滤，这里兜底返回空字符串。
 func convertValue(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return ""
@@ -340,11 +333,8 @@ func toBool(s string) (bool, bool) {
 	}
 }
 
-// envFloat 解析浮点型覆盖值；空值表示不覆盖。
+// envFloat 解析浮点型覆盖值。调用方（applyEnvPath）已过滤空白值。
 func envFloat(key, path, value string, dst *float64) error {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
 	f, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil {
 		return fmt.Errorf("config: 环境变量 %s 覆盖 %s 失败，需要数字，实际为 %q", key, path, value)
@@ -353,11 +343,8 @@ func envFloat(key, path, value string, dst *float64) error {
 	return nil
 }
 
-// envInt 解析整型覆盖值；空值表示不覆盖。
+// envInt 解析整型覆盖值。调用方（applyEnvPath）已过滤空白值。
 func envInt(key, path, value string, dst *int) error {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
 	n, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil {
 		return fmt.Errorf("config: 环境变量 %s 覆盖 %s 失败，需要整数，实际为 %q", key, path, value)

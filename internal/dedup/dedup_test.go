@@ -136,3 +136,71 @@ func TestConcurrentAddIsRaceFree(t *testing.T) {
 		t.Fatalf("并发 Add 同一 ID 应恰好有一次返回 true, got %d", firstAdd)
 	}
 }
+
+// orderLen 在锁内读取内部插入顺序切片长度（仅本包测试使用）。
+func (s *Set) orderLen() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.order)
+}
+
+// TestStaleOrderSlotDoesNotEvictReAddedID 复现「过期后重加的 ID 被自己的陈旧槽位
+// 提前淘汰」：X 首次插入后过期，A 在其间插入（更旧），随后 X 被重加；容量淘汰
+// 必须删掉最旧的 A，而不是只剩陈旧槽位的 X。
+func TestStaleOrderSlotDoesNotEvictReAddedID(t *testing.T) {
+	s := New(2, 100*time.Millisecond)
+	now := time.Unix(0, 0)
+	s.now = func() time.Time { return now }
+
+	if !s.Add("X") {
+		t.Fatal("首次 Add(X) 应为 true")
+	}
+	// 显式 GC 刷新基准时刻：此后重加 X 不会触发 GC，X 的陈旧槽位会留在 order 中。
+	now = now.Add(50 * time.Millisecond)
+	if n := s.GC(); n != 0 {
+		t.Fatalf("GC 不应删除未过期条目, got %d", n)
+	}
+	if !s.Add("A") {
+		t.Fatal("Add(A) 应为 true")
+	}
+
+	now = now.Add(70 * time.Millisecond) // X 已过期（100ms），A 仍未过期
+	if !s.Add("X") {
+		t.Fatal("过期后重加 X 应返回 true")
+	}
+	if !s.Add("B") { // 容量 2，len(items)==3 触发淘汰
+		t.Fatal("Add(B) 应为 true")
+	}
+
+	if !s.Seen("X") {
+		t.Fatal("重加的 X 在 TTL 内应仍被视为已出现")
+	}
+	if !s.Seen("B") {
+		t.Fatal("最新写入的 B 应保留")
+	}
+	if s.Seen("A") {
+		t.Fatal("淘汰的应是最旧的活条目 A")
+	}
+	if got := s.Len(); got != 2 {
+		t.Fatalf("Len = %d, want 2", got)
+	}
+}
+
+// TestOrderStaysBoundedUnderReAdd 断言跨 TTL 反复重加同一批 ID 时插入顺序切片有界。
+func TestOrderStaysBoundedUnderReAdd(t *testing.T) {
+	s := New(4, time.Second)
+	now := time.Unix(0, 0)
+	s.now = func() time.Time { return now }
+	s.GC() // 把 lastGC 同步到假时钟基准
+
+	for range 20000 {
+		now = now.Add(2 * time.Second)
+		s.Add("same")
+	}
+	if got := s.orderLen(); got > 4 {
+		t.Fatalf("重置后 order 长度 = %d, want <= 4", got)
+	}
+	if !s.Seen("same") {
+		t.Fatal("最后一次重加应仍在有效期内")
+	}
+}

@@ -336,11 +336,37 @@ func (e *Engine) Run(ctx context.Context) error {
 	select {
 	case <-runCtx.Done():
 	case runErr = <-adapterErr:
-		cancel()
 	}
+	cancel()
 
 	e.shutdown(&wg)
+
+	// 适配器先写 adapterErr（带缓冲，必然成功）再 cancel，因此 runCtx.Done() 与
+	// adapterErr 可能同时就绪，select 会随机选中前者；shutdown 已等待适配器
+	// goroutine 退出，此刻收敛 channel 中的全部残余错误，避免适配器崩溃被
+	// 静默吞成 nil（多个适配器同时失败时全部保留）。
+	errs := drainErrors(adapterErr)
+	if runErr != nil {
+		errs = append([]error{runErr}, errs...)
+	}
+	runErr = errors.Join(errs...)
+	if runErr != nil {
+		e.log.Error("engine aborted by adapter failure", "error", runErr)
+	}
 	return runErr
+}
+
+// drainErrors 非阻塞地取空 channel 中已写入的错误。
+func drainErrors(ch <-chan error) []error {
+	var errs []error
+	for {
+		select {
+		case err := <-ch:
+			errs = append(errs, err)
+		default:
+			return errs
+		}
+	}
 }
 
 // shutdown 按规范顺序完成优雅关闭。

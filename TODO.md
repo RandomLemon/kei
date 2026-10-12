@@ -16,23 +16,25 @@
 
 ## P0 — 正确性 / 静默故障
 
-- [ ] **1. dedup：过期后重加的 ID 会被自己的陈旧槽位提前淘汰** `[已复现]`
+- [x] **1. dedup：过期后重加的 ID 会被自己的陈旧槽位提前淘汰** `[已复现]` — 完成：`Set` 的 `order` 改为 `slot{id, seq}` 槽位，`Add` 每次写入分配唯一 `seq`，`evictLocked` 只删除 `items[id].seq == slot.seq` 的槽位（陈旧槽位跳过并继续按插入序淘汰下一条活条目），`compactOrderLocked` 同步丢弃失效槽位。回归测试 `internal/dedup/dedup_test.go` 的 `TestStaleOrderSlotDoesNotEvictReAddedID`（假时钟：X 过期→重加，容量淘汰删最旧的 A 而非 X；修复前该测试失败，报 `重加的 X 在 TTL 内应仍被视为已出现`）。取证：`gofmt -l`、`go vet ./internal/dedup/`、`go test -race -count=1 ./internal/dedup/` 全绿。
   - 位置：`internal/dedup/dedup.go:51-61`（`Add` 重加仍 `append`）、`:127-140`（`evictLocked`）、`:144-152`（`compactOrderLocked`）
   - 问题：`Add` 对“已过期再重加”的 ID 再次 append；`evictLocked` 弹出 `order[0]` 后只按 `items[id]` 是否存在决定删除，删掉的是**新写入的活条目**；compaction 保留重复槽位。实测 `New(2, 50ms)`：`Add(X)`→过期→`Add(X)`→`Add(Y)`→`Add(Z)` 后 `Seen(X)==false`。后果：TTL 内重投的同一事件被二次处理（平台重试正是该路径）。
   - 修复：`order` 槽位携带唯一序号/过期时刻，淘汰时只删除与 `items` 当前条目一致的槽位；或改为按插入序的小顶堆。
+  - 补注：原文 trace（过期后重加 X，再加 Y、Z）里 X 本来就是最旧的**活**条目，淘汰 X 属 FIFO 正确结果，该 trace 不区分新旧实现；真正暴露缺陷的是“陈旧槽位排在其他活条目之前”：X 首次插入 → X 过期 → 重加 X → 再加 B（容量已满），旧实现弹出 X 的陈旧槽位并删掉重加后的 X，而更旧的 A 存活（见 `TestStaleOrderSlotDoesNotEvictReAddedID`）。
   - 验收：`internal/dedup` 新增回归测试（过期重加后淘汰其它键，`Seen(重加键)==true`）；`go test -race ./internal/dedup ./internal/eventbus ./internal/middleware`。
 
-- [ ] **2. dedup：`order` 在重投场景下无限增长** `[已复现]`
+- [x] **2. dedup：`order` 在重投场景下无限增长** `[已复现]` — 完成：已随第 1 条的唯一槽位落地（`Add` 分配唯一 `seq`，`compactOrderLocked` 只保留 `items[id].seq` 匹配的当前槽位，故 compaction 不再保留活 ID 的全部重复槽位）。回归测试 `internal/dedup/dedup_test.go` 的 `TestOrderStaysBoundedUnderReAdd`（`New(4, 1s)`、2 万次跨 TTL 重加同一 ID，断言 `len(s.order) <= 4`，实测 1；修复前同一测试实测 20000）；`docs/engine.md` 8.5 的容量条目已改写为“每个条目在 `order` 中只有一个有效槽位”。
   - 位置：`internal/dedup/dedup.go:57-63`、`:120`、`:129`、`:144-152`
   - 问题：compaction 只在 `now.Sub(lastGC) >= ttl` 时触发，且保留活 ID 的**全部重复槽位**。实测 `New(4, 5s)`、2 万次“跨 TTL 重加同一批 ID”后 `order=20001`。注：纯唯一 ID 流量下不增长（实测 50 万唯一键仅 +12KB），所以该缺口恰好只命中去重的用途。
   - 修复：并入第 1 条（唯一槽位）；至少在淘汰路径也触发压缩，且压缩时对活 ID 去重。
   - 验收：测试断言长跑重加后 `order` 有界（同包测试可直接读 `len(s.order)`）。
   - 文档：`docs/engine.md` 8.5 的“压缩插入顺序切片防止无限增长”要么成就、要么改写。
 
-- [ ] **3. `Engine.Run` 可能把适配器崩溃吞成 `nil`** `[读码]`
+- [x] **3. `Engine.Run` 可能把适配器崩溃吞成 `nil`** `[读码]` — 完成：`Run` 在 `select` 后无条件 `cancel()`，`shutdown` 之后用非阻塞 `drainErrors` 收敛 `adapterErr` 中的全部残余错误（`errors.Join` 合并，含 select 随机选中的那一路），并统一以 `engine aborted by adapter failure` 记 `Error` 日志后返回；新增 `internal/engine/engine_test.go` 的 `TestRunSurfacesAdapterStartError`（`failingAdapter` 立即返回哨兵错误，重复 20 次断言错误非 nil、`errors.Is` 命中、含 bot 名且进日志）。取证：在 `HEAD` 的临时 worktree 内跑同一测试必失败（首次即报“适配器错误必须进日志”，日志里根本没有该错误）；`go test -race -count=1 ./internal/engine/` 全绿。
   - 位置：`internal/engine/engine.go:329-345`
   - 问题：适配器 goroutine 先 `adapterErr <- err`（带缓冲立即成功）再 `cancel()`；主 `select` 两分支几乎同时就绪，随机选中 `<-runCtx.Done()` 时 `runErr` 仍为 `nil`，且错误**无任何日志** → 适配器异常后进程“安静地”正常退出。
   - 修复：`cancel` 后统一读取 channel 残余，或在 `runCtx.Done()` 分支非阻塞检查 `adapterErr`；无论如何错误必须进日志。
+  - 补注：两分支同时就绪的概率不低——起完适配器 goroutine 后还有 `engine started` 日志等开销，失败适配器往往在进入 `select` 之前就完成“写 channel + cancel”。用等价最小复现（同一 `select` 结构 + 1ms 前置延迟）跑 200 次：旧逻辑 107 次返回 `nil`，新逻辑 0 次。
   - 验收：测试模拟 `Adapter.Start` 返回非 `ctx.Canceled` 错误，断言 `Run` 返回非 nil 错误（重复运行以覆盖随机性）。
 
 - [ ] **4. 飞书：先 ACK 成功后丢事件** `[读码]`
@@ -47,16 +49,17 @@
   - 修复：改用 `clause.Eq{Column: clause.Column{Name:"key"}, Value:key}` 或 `Where(map[string]any{"key": key})`，由 dialector 负责引用。
   - 验收：本地起 MySQL 设 `KEI_TEST_MYSQL_DSN` 跑 `go test ./internal/storage/mysql/`（或至少用 dialector 的 SQL 生成断言）。
 
-- [ ] **6. 空环境变量被当成覆盖写回，静默改配置** `[读码]`
+- [x] **6. 空环境变量被当成覆盖写回，静默改配置** `[读码]` — 完成：在 `applyEnvPath` 入口统一 `if strings.TrimSpace(value) == "" { return nil }`，所有键（含 `limits.*`、`bots`/`plugins`/`adapters` 与 `storage.params.*`）的空白值一律等同「未设置」；随之删除 `limits_*` 四处调用点检查与 `envFloat`/`envInt` 内的重复空值分支（唯一规则只留一处）。新增 `internal/config/config_test.go` 的 `TestEmptyEnvValuesDoNotOverride`：一份含非默认值的 YAML + 13 个空白值变量，断言 log/metrics/limits/auth/storage（含 `params.cleanup_interval`）/bots（`Settings` 与 `enabled`）/plugins/adapters 全部保持 YAML 值且 `EnvOverrides` 为空。取证：在 `HEAD` 的临时 worktree 跑该测试必失败（`LoadBytes 失败: config: log.format: 不支持的值 "   "`）；另用临时代码观察旧行为：`KEI_STORAGE_TYPE=` 使 `storage.type` 由 `sqlite` 变 `memory`、`KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=` 清空参数、`KEI_AUTH_ADMIN_USERS=` 清空管理员，且三条都进了 `EnvOverrides`。文档：`docs/configuration.md` 12.6 增加全局空白值规则并修正 `limits.*`/`convertValue` 表述、12 章引言，`README.md`「环境变量覆盖」同步。
   - 位置：`internal/config/env.go:47-55`（`log_level`/`log_format`/`metrics_addr`）、`:88-96`（`auth_admin_users`/`storage_type`/`storage_dsn`）直接赋值；对比 `:56-87` 的 `limits_*` 有空值提前返回
   - 问题：`LoadBytes` 顺序是 `applyEnv → applyDefaults`（`config.go:172-178`）。`KEI_STORAGE_TYPE=`（compose/systemd 中 `KEY=${UNSET}` 的常见写法）把 YAML 的 `sqlite` 打回 `memory`（默认值重新填上）；`KEI_AUTH_ADMIN_USERS=` 清空管理员；两者还会进 `EnvOverrides`，日志看像有意覆盖。`docs/configuration.md` 12.6 只写了 `limits.*` 的空值规则。
   - 修复：所有非 limits 路径同样 `TrimSpace(value)==""` 时跳过且不 `recordEnv`；或定义显式的 `KEI_*_RESET` 约定并写进文档。
   - 验收：`internal/config` 测试覆盖各键空值不覆盖 YAML；同步 `docs/configuration.md` 12.6。
 
-- [ ] **7. `serveMetrics` 在 `Run` 早期失败时泄漏监听与 goroutine** `[读码]`
+- [x] **7. `serveMetrics` 在 `Run` 早期失败时泄漏监听与 goroutine** `[读码]` — 完成：`serveMetrics` 改为返回同步清理函数 `stop func()`（`sync.Once` 幂等：`srv.Shutdown` + 等 `Serve` goroutine 退出，确保返回时监听端口已释放），`Run` 就地 `defer stopMetrics()`；随之删掉原来那个只等 `<-ctx.Done()` 的关闭 goroutine（不再需要 ctx 参数），`Serve` 提前退出时也不会再留下等待 ctx 的 goroutine。新增 `pkg/kei/assemble_test.go` 的 `TestServeMetricsStopReleasesPort`（`stop` 幂等 + `stop` 返回后立即能重新 `net.Listen` 同一地址）与 `TestRunReleasesMetricsPortOnEarlyFailure`（装配失败后第二次 `Run` 绑定同一 `metrics.addr` 并正常退出）。取证：同一 `Run` 用例在 `HEAD` 的临时 worktree 内失败 —— `第二次 Run: metrics listen 127.0.0.1:42467: bind: address already in use`。
   - 位置：`pkg/kei/assemble.go:177-206`（仅 `<-ctx.Done()` 才关闭）、调用点 `pkg/kei/kei.go:84-88`（早于 `adaptermgr.Build`/`selectPlugins`/`engine.New`）
   - 问题：任一后续步骤返回错误时 `Run` 直接返回而调用方 ctx 仍存活 → 端口不复用（重试报 `address already in use`）、每次失败泄漏一个 goroutine。
   - 修复：`Run` 内建子 ctx 并 `defer cancel()`；或把 metrics 启动挪到装配成功之后。
+  - 补注：只做「子 ctx + defer cancel()」不够——`srv.Shutdown` 在另一个 goroutine 里异步执行，`Run` 返回瞬间端口可能仍被占用，紧接着的第二次 `Run` 依旧可能撞上 `address already in use`。因此改为返回同步 `stop func()`（调用方 `defer`），保证返回即释放。
   - 验收：测试连续两次 `Run`（第二次在首次失败后）可正常绑定。
 
 - [ ] **8. SQL 存储：AutoMigrate/ApplyPool 失败时泄漏连接池** `[静态]`
@@ -314,4 +317,4 @@
 4. P1 基础设施（27-33、35-37、39-40）。
 5. P2 结构与文档（41-48）。
 
-> 注：第 1、2 条已在本地用临时用例复现（结论：`Seen(X)==false`；`order` 由 4 涨到 20001），落地时可直接转成 `internal/dedup` 的回归测试。
+> 注：第 1、2 条已在本地用临时用例复现（结论：`Seen(X)==false`；`order` 由 4 涨到 20001），已落地为 `internal/dedup` 的回归测试 `TestStaleOrderSlotDoesNotEvictReAddedID`、`TestOrderStaysBoundedUnderReAdd`（修复前均失败，修复后通过）。
