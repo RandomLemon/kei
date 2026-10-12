@@ -286,7 +286,9 @@ type Stats struct {
 
 ### 8.2 Publish 语义
 
-`Publish` 永不阻塞，也不响应 ctx 取消（`ctx` 仅为满足 `bot.EventSink` 契约），并且不修改 `ev`，调用方投递后可复用事件对象。顺序固定为：空事件报错 → 定位分片并在分片锁内检查关闭状态 → 去重命中则忽略 → 队列已满则丢弃 → 写入去重集 → 入队。
+`Publish` 永不阻塞，也不响应 ctx 取消（`ctx` 仅为满足 `bot.EventSink` 契约）。顺序固定为：空事件报错 → 定位分片并在分片锁内检查关闭状态 → 去重命中则忽略 → 队列已满则丢弃 → 写入去重集 → 复制事件并入队。
+
+**事件对象的所有权**：入队时总线复制 `*bot.Event` 并独占副本，队列、worker、处理器与路由器的命令解析都只接触副本，因此 `Publish` 返回后调用方可以立即复用 `ev`（放回 `sync.Pool`、覆写字段等）——旧实现把调用方的指针直接入队，`Router.Dispatch` 稍后写回的 `ev.Command` 会与这种复用方式竞态。复制是**浅拷贝**：`ev` 引用的 `Message`/`Sender`/`Channel` 等对象仍与副本共享，投递后不得再修改它们。复制只发生在确定入队的那条路径上，去重命中与队列满的调用不产生额外分配。
 
 - 空事件返回 `errNilEvent`（`eventbus: nil event`）。
 - 已关闭返回 `ErrClosed`（`eventbus: closed`）。

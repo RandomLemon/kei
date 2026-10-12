@@ -35,6 +35,10 @@ type Adapter interface {
 // 以免阻塞平台回调线程。
 type EventSink interface {
 	// Emit 投递一个事件。返回值仅表示是否成功入队，不表示已被处理。
+	//
+	// 核心实现（事件总线）入队时会复制事件对象并独占副本，因此 Emit 返回后
+	// 调用方可以立即复用 ev（放回池、覆写字段等）；但 ev 引用的
+	// Message/Sender/Channel 等对象仍会被后台读取，投递后不得再修改。
 	Emit(ctx context.Context, ev *Event) error
 }
 
@@ -126,6 +130,7 @@ func (c Capabilities) Supports(t SegmentType) bool {
 - `SegFace` 由 `Text` 支撑：平台没有独立的表情段能力时，表情随文本一起发送。因此 `Supports(SegFace) == false` 只可能来自 `Text: false`，声明了纯文本的适配器无法通过关闭能力位来阻止表情段走文本通路。
 - `Supports` 只识别 `SegText`/`SegMarkdown`/`SegImage`/`SegAt`/`SegCard`/`SegReply`/`SegFile`/`SegFace` 八种段类型；其余（含核心尚未定义的新类型）一律返回 false，即按「不支持」处理。
 - `TargetFromEvent(ev *Event) Target`（同文件）由事件推导回复目标：`Platform`/`BotID` 取自事件，`Kind` 优先取 `ev.Message.Kind`、缺失时回退 `ev.Channel.Kind`，`ChannelID`/`UserID` 分别取自 `ev.Channel`、`ev.Sender`；`ev == nil` 时返回零值。
+- 事件对象的所有权：`Emit` 入队时核心会复制 `*Event` 并独占副本（浅拷贝），因此 `Emit` 返回后适配器可以立即复用事件对象（池化、覆写字段）；但 `ev` 引用的 `Message`/`Sender`/`Channel` 等对象仍会被后台读取，投递后不得再修改。详见 [engine.md](engine.md) 8.2。
 - `Start` 收到的 `EventSink` 由引擎实现（`internal/engine` 的 `eventSink`），其 `Emit` 埋点后写入事件总线，返回值只表示是否成功入队。
 
 ### 6.2 注册表与工厂

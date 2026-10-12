@@ -27,6 +27,10 @@ type Adapter interface {
 // 以免阻塞平台回调线程。
 type EventSink interface {
 	// Emit 投递一个事件。返回值仅表示是否成功入队，不表示已被处理。
+	//
+	// 核心实现（事件总线）入队时会复制事件对象并独占副本，因此 Emit 返回后
+	// 调用方可以立即复用 ev（放回池、覆写字段等）；但 ev 引用的
+	// Message/Sender/Channel 等对象仍会被后台读取，投递后不得再修改。
 	Emit(ctx context.Context, ev *Event) error
 }
 

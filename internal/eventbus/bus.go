@@ -167,7 +167,11 @@ func New(opts Options) *Bus {
 // Publish 永不阻塞：队列已满时丢弃事件并返回包装了 ErrQueueFull 的错误；
 // 去重与入队只在分片自身与事件 ID 所属的去重分片上串行，不同分片互不影响。
 // ctx 仅为满足 bot.EventSink 契约，投递本身是非阻塞的，不响应取消。
-// Publish 不会修改 ev，调用方可以在投递后复用事件对象。
+//
+// 入队时会复制事件对象并独占副本，因此 Publish 返回后调用方可以立即复用 ev
+// （放回 sync.Pool、覆写字段等）：队列与处理器只接触副本，命令解析等回写也落在
+// 副本上，不会回写调用方的对象。复制是浅拷贝——ev 引用的 Message/Sender/Channel
+// 等对象仍与副本共享，投递后不得再修改它们。
 func (b *Bus) Publish(_ context.Context, ev *bot.Event) error {
 	if ev == nil {
 		return errNilEvent
@@ -202,7 +206,10 @@ func (b *Bus) Publish(_ context.Context, ev *bot.Event) error {
 		b.stats.duplicated.Add(1)
 		return nil
 	}
-	sh.q <- ev
+	// 复制事件：此后调用方即可复用 ev，而队列与处理器只接触副本。
+	// 只在确定入队时复制，丢弃与去重路径不产生额外分配。
+	owned := *ev
+	sh.q <- &owned
 	sh.mu.Unlock()
 	b.stats.published.Add(1)
 	return nil

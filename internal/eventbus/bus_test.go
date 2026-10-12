@@ -1029,6 +1029,69 @@ func TestPublishDoesNotMutateEvent(t *testing.T) {
 	}
 }
 
+// TestPublishEventOwnership 验证 Publish 复制事件并把副本交给处理器：
+// 调用方在投递后可以立即复用事件对象（池化适配器的典型行为），处理结果不受影响。
+func TestPublishEventOwnership(t *testing.T) {
+	t.Run("投递后立即覆写不影响处理", func(t *testing.T) {
+		b := New(Options{Workers: 1, QueueSize: 8, Logger: testLogger()})
+		defer closeBus(t, b)
+
+		type seen struct {
+			ev   *bot.Event
+			text string
+		}
+		got := make(chan seen, 1)
+		release := newGate()
+		mustSubscribe(t, b, func(_ context.Context, ev *bot.Event) {
+			release.wait() // 等调用方完成覆写
+			got <- seen{ev: ev, text: ev.Text()}
+		})
+
+		ev := newEvent("pooled", "pooled-id")
+		ev.Message.Segments[0].Data[bot.KeyText] = "原文"
+		mustPublish(t, b, ev)
+
+		// 池化适配器的典型行为：投递后立刻把对象交还池并覆写字段。
+		*ev = bot.Event{ID: "reused-by-pool", Type: bot.EventNotice, Platform: "test", BotID: "bot"}
+		release.release()
+
+		select {
+		case s := <-got:
+			if s.ev == ev {
+				t.Fatal("处理器拿到的仍是调用方的事件对象，Publish 未复制")
+			}
+			if s.ev.ID != "pooled-id" || s.text != "原文" {
+				t.Fatalf("处理结果被调用方的覆写影响: id=%q text=%q", s.ev.ID, s.text)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("处理器未收到事件")
+		}
+	})
+
+	t.Run("并发复用不产生竞态", func(t *testing.T) {
+		b := New(Options{Workers: 2, QueueSize: 64, Logger: testLogger()})
+		defer closeBus(t, b)
+
+		mustSubscribe(t, b, func(_ context.Context, ev *bot.Event) {
+			// 读取事件字段：若总线未复制，这里会与调用方的覆写竞态。
+			_ = ev.ID
+			_ = ev.Text()
+			_ = ev.SessionKey()
+		})
+
+		for i := range 20 {
+			ev := newEvent("pooled", fmt.Sprintf("pooled-%d", i))
+			// 队列满（handler 慢）不影响本用例要验证的竞态：丢弃是可接受结果。
+			if err := b.Publish(context.Background(), ev); err != nil && !errors.Is(err, ErrQueueFull) {
+				t.Fatalf("Publish(%d): %v", i, err)
+			}
+			// 投递后立刻复用：整体覆写并放回「池」。
+			*ev = bot.Event{ID: "reused", Type: bot.EventNotice}
+			ev.ID = fmt.Sprintf("reused-%d", i)
+		}
+	})
+}
+
 // TestDefaultsApplied 验证零值 Options 使用默认配置仍可正常工作。
 func TestDefaultsApplied(t *testing.T) {
 	b := New(Options{})
