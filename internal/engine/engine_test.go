@@ -627,7 +627,7 @@ func TestDisabledBotWhitelistNarrowing(t *testing.T) {
 	h := startEngine(t, cfg, []bot.Plugin{plugin}, ads)
 
 	// 规则适用范围必须排除被停用的 mock-c（它不可能收到事件）。
-	for _, rule := range h.eng.Router().Rules() {
+	for _, rule := range h.eng.Rules() {
 		for _, id := range rule.BotIDs {
 			if id == "mock-c" {
 				t.Fatalf("停用实例不应出现在规则白名单: %+v", rule.BotIDs)

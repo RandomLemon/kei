@@ -481,8 +481,17 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
 	}
 }
 
-// Router 返回路由器，供测试与扩展使用。
-func (e *Engine) Router() *router.Router { return e.router }
+// Rules 返回规则表的快照副本，供集成方与测试审计实际生效的路由规则。
+//
+// 返回值与内部状态完全隔离（规则结构体及其切片都已复制），修改它不会影响引擎；
+// 规则表本身由插件注册与引擎的启动期调整决定，引擎不对外暴露可写入口。
+func (e *Engine) Rules() []*bot.Rule { return e.router.Rules() }
+
+// RegistrationErrors 返回注册阶段累计错误的副本。
+//
+// 插件提供的正则编译失败等无法通过 Setup 返回值上报的错误会记录在这里
+// （Router 同时记 Warn 日志）；引擎自身不消费该列表，供集成方审计。
+func (e *Engine) RegistrationErrors() []error { return e.router.RegistrationErrors() }
 
 // Bus 返回事件总线。
 func (e *Engine) Bus() *eventbus.Bus { return e.bus }

@@ -75,7 +75,7 @@ type AdapterBinding struct {
 
 插件生命周期各阶段超时由 `internal/pluginmgr` 决定，默认 Setup/Start/Stop 各 15s。
 
-`Engine` 实现 `bot.BotAPI`、`bot.PluginCatalog`、`bot.AdapterCatalog` 三个接口，并提供 `Router()`、`Bus()`、`Logger()`、`Storage()`、`Adapter(botID)`、`Adapters()`。`Adapters()` 返回深拷贝快照（`Platforms`/`Permissions`/`Options` 切片全部复制），调用方修改不影响引擎内部状态。
+`Engine` 实现 `bot.BotAPI`、`bot.PluginCatalog`、`bot.AdapterCatalog` 三个接口，并提供 `Rules()`、`RegistrationErrors()`、`Bus()`、`Logger()`、`Storage()`、`Adapter(botID)`、`Adapters()`。`Adapters()` 返回深拷贝快照（`Platforms`/`Permissions`/`Options` 切片全部复制），调用方修改不影响引擎内部状态；`Rules()` 与 `RegistrationErrors()` 同样是隔离副本，引擎不暴露可写的路由器（注册与启动期调整详见第 10 章）。
 
 插件拿到的不是引擎本体：`engine.pluginAPI` 按插件名与元信息包装出专属 `bot.BotAPI`，`Send` 需要 `PermSendMessage`（否则返回 `engine: plugin %s lacks permission %s`），`Reply` 所有插件可用，`Storage()` 在未声明 `PermStorage` 时返回 `storage.Denied()`，`Logger()` 带 `plugin` 字段。详见 [plugin.md](plugin.md)。
 
@@ -386,7 +386,7 @@ type Rule struct {
 - 规则表按 `Priority` **降序**执行，同优先级按注册顺序（`slices.SortStableFunc`）。同一次事件命中的所有规则都会被完整执行，各自的错误用 `errors.Join` 聚合并包装为 `router: 规则 %s 执行失败: %w`；没有任何规则命中时 `Dispatch` 返回 nil。
 - `Dispatch` 在 `ev.Command == nil && ev.Message != nil` 时用配置的前缀（默认 `["/"]`）解析命令并写回 `ev`（`bot.ParseCommand`）。
 - 每条命中规则注入独立的 `bot.Route`（`Plugin`、`RuleID`、`Trigger`、`Priority`、`AdminOnly`、`RegexMatches`），并创建独立的 `bot.Reply`（`internal/reply.Builder`，每次规则调用一次，`Send` 时才真正发送；工厂缺失时退化为 `bot.NoopReply`），避免多条规则的回复互相污染。
-- 规则表以「不可变快照 + 原子替换」发布：`Dispatch` 可被多个总线 worker 并发调用，注册与 `UpdateRules` 由写锁串行化。`UpdateRules(fn)` 在写锁内把 `fn` 应用到规则本体（引擎用它写入 `BotIDs`），随后按优先级重建快照；`fn` 为 nil 或把某条规则的 `Handler` 置空时返回错误且不发布新快照。`Rules()` 返回深层副本，`RegistrationErrors()` 返回错误副本（无法通过返回值上报的注册错误，例如正则编译失败、重复 ID）。
+- 规则表以「不可变快照 + 原子替换」发布：`Dispatch` 可被多个总线 worker 并发调用，注册与 `UpdateRules` 由写锁串行化。`UpdateRules(fn)` 在写锁内把 `fn` 依次应用到每条规则的**副本**上，全部校验通过后按优先级重建快照并整体替换（引擎用它写入 `BotIDs`）；中途失败（`fn` 为 nil 或把某条规则的 `Handler` 置空）时已应用的改动一并丢弃，既不发布新快照也不改到已发布的规则，因此不存在半更新状态。`Rules()` 返回深层副本，`RegistrationErrors()` 返回错误副本（无法通过返回值上报的注册错误，例如正则编译失败、重复 ID）。引擎只经 `Engine.Rules()`/`Engine.RegistrationErrors()` 暴露只读视图，不暴露可写的 `Router`。
 
 ### 10.4 中间件洋葱模型
 

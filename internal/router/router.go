@@ -141,13 +141,14 @@ func (r *Router) RegistrationErrors() []error {
 
 // UpdateRules 对已注册的规则做最后一次调整，例如引擎按 bot 白名单收窄 Rule.BotIDs。
 //
-// fn 会收到规则表里的原始 *bot.Rule（不是 Rules 返回的拷贝），可以直接修改其字段。
-// 持写锁执行，因此规则表的替换是原子的，不会出现半更新状态；但 Dispatch 读取
-// 规则对象本身不加锁，所以仍必须在开始 Dispatch 之前调用完毕。
+// fn 收到的是规则的副本（既不是已发布快照里的对象，也不是 Rules 返回的拷贝）：
+// 调整先在副本上逐条应用并校验，全部成功后才按 Priority 降序、同优先级按注册
+// 顺序重建快照并整体替换。因此中途失败（某条规则的 Handler 被置空）时已应用的
+// 改动一并丢弃，不会改到已发布的规则，也不会留下半更新状态；只有 UpdateRules
+// 返回 nil 之后，改动才会从 Rules()/Dispatch 可见。
 //
-// 调整完成后会按 Priority 降序、同优先级按注册顺序重建快照并重新排序（fn 不保证
-// 不改 Priority），因此调整后的顺序立即生效。fn 为 nil 时返回错误；
-// 若 fn 把某条规则的 Handler 置空，则返回错误且不发布新快照。
+// 持写锁执行，但仍然必须在开始 Dispatch 之前调用完毕：Dispatch 读取规则对象
+// 不加锁。fn 为 nil 时返回错误。
 func (r *Router) UpdateRules(fn func(*bot.Rule)) error {
 	if fn == nil {
 		return errors.New("router: UpdateRules 的 fn 不能为 nil")
@@ -157,14 +158,15 @@ func (r *Router) UpdateRules(fn func(*bot.Rule)) error {
 
 	entries := make([]*entry, 0, len(r.ordered))
 	for _, old := range r.ordered {
-		fn(old.rule)
-		if old.rule.Handler == nil {
-			return fmt.Errorf("router: 规则 %q 的 Handler 为 nil", old.rule.ID)
+		rule := cloneRule(old.rule)
+		fn(rule)
+		if rule.Handler == nil {
+			return fmt.Errorf("router: 规则 %q 的 Handler 为 nil", rule.ID)
 		}
 		entries = append(entries, &entry{
-			rule:    old.rule,
-			handler: fold(r.globals, old.rule.Middlewares, old.rule.Handler),
-			trigger: triggerOf(old.rule),
+			rule:    rule,
+			handler: fold(r.globals, rule.Middlewares, rule.Handler),
+			trigger: triggerOf(rule),
 		})
 	}
 	slices.SortStableFunc(entries, func(a, b *entry) int {

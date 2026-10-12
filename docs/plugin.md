@@ -128,7 +128,7 @@ type Option func(*Rule)
 | `OnEvent` | `EventType`（不限定会话类型与平台） | `RegistrationErrors` |
 | `OnAll` | 无过滤条件，所有事件都会命中 | `RegistrationErrors` |
 
-与注释不一致处：`OnRegex` 的文档注释称「编译失败会在插件 Setup 阶段返回错误」，实际通道是 `Router.RegistrationErrors()`（`recordErr` 累计并记 Warn 日志），非法正则只是不注册该规则，`Setup` 本身仍返回 nil；引擎当前不读取 `RegistrationErrors`，需要审计正则问题的调用方可自行读取（`Engine.Router()` 暴露路由器）。
+与注释不一致处：`OnRegex` 的文档注释称「编译失败会在插件 Setup 阶段返回错误」，实际通道是 `Router.RegistrationErrors()`（`recordErr` 累计并记 Warn 日志），非法正则只是不注册该规则，`Setup` 本身仍返回 nil；引擎当前不读取 `RegistrationErrors`，需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取（引擎只暴露只读副本，见 [engine.md](engine.md) 10.3）。
 
 `Use` 只影响调用 `Use` 之后为该插件注册的规则：每条规则在注册时把当前的插件中间件列表复制进 `Rule.Middlewares`，此前已注册的规则保持不变。折叠顺序由内到外为 handler → 插件 `Use` 中间件 → 全局中间件；同一组内按注册顺序由外到内包裹，即「先注册的先执行」。
 

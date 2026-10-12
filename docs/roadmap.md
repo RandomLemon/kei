@@ -32,7 +32,7 @@
 - [x] 已完成：实现 `internal/eventbus`，支持 Publish/Subscribe、worker pool、去重、保序。
   - 证据：`internal/eventbus/bus.go:118`、`:161`、`:207`、`:269`（New/Publish/Subscribe/Stats）；分片 worker、保序、去重与队列满语义见 [engine.md](engine.md) 8.1–8.6。测试 23 个（`internal/eventbus/bus_test.go`）。
 - [x] 已完成：实现 `internal/router`，支持命令、正则、关键词、事件类型匹配。
-  - 证据：`internal/router/registrar.go:35`、`:47`、`:61`、`:70`、`:78`（注册入口与兜底）；匹配与优先级语义见 [engine.md](engine.md) 10.3。测试 27 个（`internal/router/router_test.go`）。
+  - 证据：`internal/router/registrar.go:35`、`:47`、`:61`、`:70`、`:78`（注册入口与兜底）；匹配与优先级语义见 [engine.md](engine.md) 10.3。测试 28 个（`internal/router/router_test.go`）。
 - [x] 已完成：实现 `internal/middleware`，至少包含 Recover、Logger、Timeout、Dedup。
   - 证据：`internal/middleware/middleware.go:58`、`:93`、`:146`、`:185`、`:283`、`:307`、`:337`，`internal/middleware/chain.go:13`、`:32`；7 个中间件的签名与执行顺序见 [engine.md](engine.md) 10.4–10.5。测试 23 个。
 - [x] 已完成：实现 `internal/engine`，串联 Adapter、EventBus、Router、Plugin；引擎只接收 `AdapterBinding`，不感知平台名。

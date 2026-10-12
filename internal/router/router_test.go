@@ -652,7 +652,7 @@ func TestRulesCopyIsolation(t *testing.T) {
 	}
 }
 
-// TestUpdateRules 验证 UpdateRules 直接改动内部规则对象、重排序并重建快照，
+// TestUpdateRules 验证 UpdateRules 在副本上应用改动、重排序并重建快照，
 // 同时 Rules() 仍返回拷贝。
 func TestUpdateRules(t *testing.T) {
 	rec := &recorder{}
@@ -761,6 +761,58 @@ func TestUpdateRulesRejectsNilHandler(t *testing.T) {
 	}
 	if got := rec.order(); !slices.Equal(got, []string{"keep"}) {
 		t.Errorf("失败后不应发布新快照, 实际 %v", got)
+	}
+}
+
+// TestUpdateRulesFailureLeavesPublishedRulesUntouched 验证 fn 中途失败时，
+// 之前已应用的改动不会落到已发布快照里的规则上（不产生半更新状态）。
+func TestUpdateRulesFailureLeavesPublishedRulesUntouched(t *testing.T) {
+	rec := &recorder{}
+	r := New(Options{})
+	r.Registrar("p").OnAll(tagHandler(rec, "first"))
+	r.Registrar("p").OnAll(tagHandler(rec, "second"))
+
+	// 先改第一条规则的适用范围，再让第二条规则报错。
+	err := r.UpdateRules(func(rule *bot.Rule) {
+		switch rule.ID {
+		case "p:all:0":
+			rule.BotIDs = []string{"other-bot"}
+			rule.Priority = 99
+		case "p:all:1":
+			rule.Handler = nil
+		}
+	})
+	if err == nil {
+		t.Fatal("第二条规则的 Handler 为 nil 时应返回错误")
+	}
+
+	// Rules() 里两条规则都必须保持原值。
+	for _, rule := range r.Rules() {
+		if len(rule.BotIDs) != 0 || rule.Priority != 0 {
+			t.Fatalf("失败的 UpdateRules 改到了已发布规则: %+v", rule)
+		}
+	}
+	// 行为也必须不变：bot-1 的事件仍命中两条规则。
+	ev := noticeEvent()
+	if err := r.Dispatch(context.Background(), ev); err != nil {
+		t.Fatalf("Dispatch 返回错误: %v", err)
+	}
+	if got := rec.order(); !slices.Equal(got, []string{"first", "second"}) {
+		t.Fatalf("失败后规则行为被改变, 命中 = %v, 期望 [first second]", got)
+	}
+
+	// 修好 fn 后仍能正常发布。
+	if err := r.UpdateRules(func(rule *bot.Rule) {
+		if rule.ID == "p:all:0" {
+			rule.BotIDs = []string{"other-bot"}
+		}
+	}); err != nil {
+		t.Fatalf("修正后的 UpdateRules 返回错误: %v", err)
+	}
+	for _, rule := range r.Rules() {
+		if rule.ID == "p:all:0" && len(rule.BotIDs) != 1 {
+			t.Fatalf("成功的 UpdateRules 未生效: %+v", rule)
+		}
 	}
 }
 
