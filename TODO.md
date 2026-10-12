@@ -72,8 +72,8 @@
 
 ## P1 — 行为/契约偏差
 
-- [ ] **10. 全局中间件顺序：重复事件先消耗限流额度、Dedup 落在 Timeout 的 detached goroutine 内** `[读码]`
-  - 位置：`internal/engine/engine.go:257-266`；实现 `internal/middleware/middleware.go:234`（`Allow`）与 `:203`（`Add`）
+- [x] **10. 全局中间件顺序：重复事件先消耗限流额度、Dedup 落在 Timeout 的 detached goroutine 内** `[已复现]` — 完成 723ce16：全局链改为 `Recover → Logger → Metrics → Auth → Dedup → RateLimit → Timeout → Recover`——框架自身的策略判定（`Auth`/`Dedup`/`RateLimit`）全部移到 `Timeout` 之外、在调用者 goroutine 中同步执行，`Timeout` 只包裹第三方代码（插件 `Use` 中间件与 Handler）；`Dedup` 提到 `RateLimit` 之前，重投先判重、不消耗 `limits.handler_rate` 配额；去重标记在启动超时 goroutine 之前写入。语义决策：**去重是「标记开始」**（首次出现即写入，随后成功/报错/超时/panic 都不回滚），与总线层在 `Publish` 时写入一致；代价（超时的尝试仍占用槽位、TTL 内重投被丢弃）与理由写进 `middleware.Dedup` 注释与 `docs/engine.md` 10.5/10.6。TODO 原修复建议（`Timeout → Recover → Auth → Dedup → RateLimit`）只覆盖前半：它仍把 `Dedup` 留在 `Timeout` 的 goroutine 内，故采用当前顺序。回归测试 `internal/engine/pluginapi_test.go` 的 `TestGlobalMiddlewareChainSemantics`（「重投不消耗限流额度」：突发 1 的限流器下同一事件重投须得 `ErrDuplicate`、同用户新事件须得 `ErrRateLimited`；「超时的尝试仍占用去重槽位」：阻塞 Handler 超时后重投须得 `ErrDuplicate`）。取证：临时 worktree 里把链改回旧顺序，同一测试必失败（`重投应先被去重拦下（ErrDuplicate），got middleware: rate limited: scope=user key=u1`）；`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/engine.md` 7.8/10.5/10.6 与 `docs/testing.md`（engine 行 28→29、中间件顺序条目）、`docs/roadmap.md` 的 middleware 行号引用同步。
+  - 位置：`internal/engine/engine.go` 的 `globalMiddlewares`（原 257-266）；实现 `internal/middleware/middleware.go` 的 `Dedup`（`set.Add`，现 `:207`/`:218`）与 `RateLimit`（`l.Allow`，现 `:231`/`:249`）
   - 问题：`RateLimit`（`ScopeUser`）在 `Dedup` 外层 → 重投先扣配额再判重；超时后 handler 仍在跑但已“记录已处理”。
   - 修复：调整为 `Recover → Logger → Metrics → Timeout → Recover → Auth → Dedup → RateLimit`；决定并文档化“去重是标记开始还是标记成功”。
   - 验收：新增顺序相关测试；同步 `docs/engine.md` 10.5/10.6。
