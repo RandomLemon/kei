@@ -310,6 +310,8 @@ func TestLogEnvOverrides(t *testing.T) {
 	cfg := &config.Config{EnvOverrides: []config.EnvOverride{
 		{Key: "KEI_LOG_LEVEL", Path: "log.level", Value: "debug"},
 		{Key: "KEI_BOTS_FEISHU_MAIN_APP_SECRET", Path: "bots.feishu-main.settings.app_secret", Value: "top-secret"},
+		{Key: "KEI_STORAGE_DSN", Path: "storage.dsn", Value: "user:pa55w0rd@tcp(127.0.0.1:3306)/db?parseTime=true"},
+		{Key: "KEI_PLUGINS_REPORT_OPTIONS_ENDPOINT", Path: "plugins.report.settings.endpoint", Value: "alice:s3cr3t@tcp(db:3306)/logs"},
 	}}
 	logEnvOverrides(logger, cfg)
 
@@ -319,11 +321,49 @@ func TestLogEnvOverrides(t *testing.T) {
 			t.Fatalf("缺少 %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(out, "config=bots.feishu-main.settings.app_secret") {
-		t.Fatalf("缺少敏感项路径:\n%s", out)
+	for _, want := range []string{"config=bots.feishu-main.settings.app_secret", "config=storage.dsn", "config=plugins.report.settings.endpoint"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺少敏感项路径 %q:\n%s", want, out)
+		}
 	}
-	if strings.Contains(out, "top-secret") || !strings.Contains(out, "value=******") {
-		t.Fatalf("敏感取值未被掩码:\n%s", out)
+	for _, secret := range []string{"top-secret", "pa55w0rd", "s3cr3t"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("敏感取值 %q 未掩码:\n%s", secret, out)
+		}
+	}
+	if !strings.Contains(out, "value=******") {
+		t.Fatalf("敏感取值未掩码:\n%s", out)
+	}
+}
+
+// TestRedactEnvValue 覆盖按变量名与按取值形态两道脱敏判定。
+func TestRedactEnvValue(t *testing.T) {
+	const mask = "******"
+	cases := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{"普通键原样输出", "KEI_LOG_LEVEL", "debug", "debug"},
+		{"空值原样输出", "KEI_LOG_LEVEL", "", ""},
+		{"DSN 键名命中", "KEI_STORAGE_DSN", "/var/lib/kei/storage.db", mask},
+		{"PASS 键名命中", "KEI_BOTS_X_PASS", "abc", mask},
+		{"SECRET 键名命中", "KEI_BOTS_X_APP_SECRET", "abc", mask},
+		{"值形如 mysql DSN", "KEI_PLUGINS_REPORT_OPTIONS_ENDPOINT", "user:pass@tcp(db:3306)/logs", mask},
+		{"值形如 URL userinfo", "KEI_PLUGINS_REPORT_OPTIONS_ENDPOINT", "postgres://alice:s3cr3t@db:5432/app", mask},
+		{"值形如关键字式 DSN", "KEI_PLUGINS_REPORT_OPTIONS_ENDPOINT", "host=db user=app password=s3cr3t", mask},
+		{"无凭据 URL 不掩码", "KEI_PLUGINS_REPORT_OPTIONS_ENDPOINT", "https://example.com/hook", "https://example.com/hook"},
+		{"无密码 userinfo 不掩码", "KEI_PLUGINS_REPORT_OPTIONS_ENDPOINT", "ssh://git@example.com/repo", "ssh://git@example.com/repo"},
+		{"sqlite 路径不掩码", "KEI_PLUGINS_REPORT_OPTIONS_FILE", "file:/var/lib/kei/storage.db", "file:/var/lib/kei/storage.db"},
+		{"普通地址不掩码", "KEI_METRICS_ADDR", "127.0.0.1:9090", "127.0.0.1:9090"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactEnvValue(tc.key, tc.value); got != tc.want {
+				t.Fatalf("redactEnvValue(%q, %q) = %q, want %q", tc.key, tc.value, got, tc.want)
+			}
+		})
 	}
 }
 

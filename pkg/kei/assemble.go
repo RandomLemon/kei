@@ -141,11 +141,14 @@ func newLogger(c config.LogConfig) *slog.Logger {
 	return slog.New(handler)
 }
 
+// redactMask 是 DEBUG 日志中敏感取值的掩码占位。
+const redactMask = "******"
+
 // sensitiveEnvMarkers 是判定环境变量取值是否敏感的关键字（比较前转大写）。
 // 命中时 DEBUG 日志只输出掩码，避免密钥类配置被写进日志。
 var sensitiveEnvMarkers = []string{
-	"SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL",
-	"API_KEY", "APIKEY", "ACCESS_KEY", "PRIVATE_KEY", "ENCRYPT_KEY",
+	"SECRET", "TOKEN", "PASS", "CREDENTIAL",
+	"API_KEY", "APIKEY", "ACCESS_KEY", "PRIVATE_KEY", "ENCRYPT_KEY", "DSN",
 }
 
 // logEnvOverrides 以 DEBUG 逐条输出本次启动实际生效的环境变量覆盖，
@@ -162,6 +165,10 @@ func logEnvOverrides(logger *slog.Logger, cfg *config.Config) {
 }
 
 // redactEnvValue 对敏感环境变量的取值做掩码；其余原样返回。
+//
+// 两道判定：变量名命中 sensitiveEnvMarkers，或取值本身形如带凭据的连接串
+// （见 looksLikeCredentialValue）。后者兜底「变量名不含敏感字、值里却带密码」
+// 的情况，如 `KEI_PLUGINS_X_OPTIONS_ENDPOINT=user:pass@tcp(db:3306)/logs`。
 func redactEnvValue(key, value string) string {
 	if value == "" {
 		return value
@@ -169,10 +176,45 @@ func redactEnvValue(key, value string) string {
 	upper := strings.ToUpper(key)
 	for _, marker := range sensitiveEnvMarkers {
 		if strings.Contains(upper, marker) {
-			return "******"
+			return redactMask
 		}
 	}
+	if looksLikeCredentialValue(value) {
+		return redactMask
+	}
 	return value
+}
+
+// looksLikeCredentialValue 判断取值是否形如带凭据的连接串，覆盖三类写法：
+//
+//	scheme://user:pass@host/path    URL 的 userinfo 里带密码
+//	user:pass@tcp(host)/db          go-sql-driver/mysql DSN
+//	host=db user=app password=xxx   关键字/值式 DSN
+//
+// 判定保守：只认「userinfo 含密码」的形态，宁可漏报也不误伤普通取值
+// （误报只会多掩码一条 DEBUG 日志）。
+func looksLikeCredentialValue(value string) bool {
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "password=") || strings.Contains(lower, "passwd=") {
+		return true
+	}
+	if i := strings.Index(value, "://"); i >= 0 {
+		authority := value[i+3:]
+		if j := strings.IndexAny(authority, "/?#"); j >= 0 {
+			authority = authority[:j]
+		}
+		if at := strings.LastIndexByte(authority, '@'); at > 0 && strings.Contains(authority[:at], ":") {
+			return true
+		}
+	}
+	if at := strings.LastIndexByte(value, '@'); at > 0 {
+		userinfo, rest := value[:at], value[at+1:]
+		if strings.Contains(userinfo, ":") && !strings.ContainsAny(userinfo, " \t/") &&
+			(strings.HasPrefix(rest, "tcp(") || strings.HasPrefix(rest, "unix(") || strings.Contains(rest, "/")) {
+			return true
+		}
+	}
+	return false
 }
 
 // serveMetrics 在独立 HTTP 服务上暴露 Prometheus 指标。
