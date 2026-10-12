@@ -26,8 +26,8 @@ auth:
     - "u1"
     - "u2"
 bots:
-  - name: feishu-main
-    adapter: feishu
+  - name: telegram-main
+    adapter: telegram
     app_id: app-1
     app_secret: secret-1
     http_timeout: 3s
@@ -65,23 +65,23 @@ func TestLoadBytesFullYAML(t *testing.T) {
 		t.Fatalf("bots 数量 = %d", len(cfg.Bots))
 	}
 
-	feishu := cfg.Bots[0]
-	if feishu.Name != "feishu-main" || feishu.Adapter != "feishu" {
-		t.Fatalf("bots[0] = %+v", feishu)
+	telegram := cfg.Bots[0]
+	if telegram.Name != "telegram-main" || telegram.Adapter != "telegram" {
+		t.Fatalf("bots[0] = %+v", telegram)
 	}
-	if feishu.Settings["app_id"] != "app-1" || feishu.Settings["app_secret"] != "secret-1" {
-		t.Fatalf("bots[0].Settings = %v", feishu.Settings)
+	if telegram.Settings["app_id"] != "app-1" || telegram.Settings["app_secret"] != "secret-1" {
+		t.Fatalf("bots[0].Settings = %v", telegram.Settings)
 	}
-	if feishu.Settings["http_timeout"] != "3s" {
-		t.Fatalf("http_timeout = %#v，期望字符串 %q", feishu.Settings["http_timeout"], "3s")
+	if telegram.Settings["http_timeout"] != "3s" {
+		t.Fatalf("http_timeout = %#v，期望字符串 %q", telegram.Settings["http_timeout"], "3s")
 	}
 	for _, reserved := range []string{"name", "adapter", "plugins"} {
-		if _, ok := feishu.Settings[reserved]; ok {
-			t.Fatalf("Settings 不应包含保留键 %q: %v", reserved, feishu.Settings)
+		if _, ok := telegram.Settings[reserved]; ok {
+			t.Fatalf("Settings 不应包含保留键 %q: %v", reserved, telegram.Settings)
 		}
 	}
-	if len(feishu.Plugins) != 1 || feishu.Plugins[0] != "weather" {
-		t.Fatalf("bots[0].Plugins = %v", feishu.Plugins)
+	if len(telegram.Plugins) != 1 || telegram.Plugins[0] != "weather" {
+		t.Fatalf("bots[0].Plugins = %v", telegram.Plugins)
 	}
 	if cfg.Bots[1].Plugins != nil {
 		t.Fatalf("bots[1].Plugins 应为空: %v", cfg.Bots[1].Plugins)
@@ -240,14 +240,14 @@ plugins:
 func TestEnvOverrides(t *testing.T) {
 	env := []string{
 		"KEI_LOG_LEVEL=warn",
-		"kei_log_format=json",                    // 前缀与键名都不区分大小写
-		"KEI_METRICS_ADDR=:9090",                 // 顶层直接字段
-		"KEI_LIMITS_HANDLER_RATE=7.5",            // 浮点
-		"KEI_LIMITS_SEND_BURST=4",                // 整数
-		"KEI_AUTH_ADMIN_USERS=u1, u2 ,",          // 逗号分隔，忽略空项
-		"KEI_BOTS_FEISHU_MAIN_APP_ID=new-app-id", // bot 名 feishu-main → FEISHU_MAIN
-		"KEI_BOTS_feishu-main_APP_SECRET=s2",     // "-" 与 "_" 等价
-		"KEI_BOTS_FEISHU_MAIN_http_timeout=9s",   // 已有键名沿用原写法
+		"kei_log_format=json",                      // 前缀与键名都不区分大小写
+		"KEI_METRICS_ADDR=:9090",                   // 顶层直接字段
+		"KEI_LIMITS_HANDLER_RATE=7.5",              // 浮点
+		"KEI_LIMITS_SEND_BURST=4",                  // 整数
+		"KEI_AUTH_ADMIN_USERS=u1, u2 ,",            // 逗号分隔，忽略空项
+		"KEI_BOTS_TELEGRAM_MAIN_APP_ID=new-app-id", // bot 名 telegram-main → TELEGRAM_MAIN
+		"KEI_BOTS_telegram-main_APP_SECRET=s2",     // "-" 与 "_" 等价
+		"KEI_BOTS_TELEGRAM_MAIN_http_timeout=9s",   // 已有键名沿用原写法
 		"KEI_BOTS_QQ_MAIN_ADAPTER=mock",
 		"KEI_BOTS_QQ_MAIN_PLUGINS=echo,weather",
 		"KEI_PLUGINS_WEATHER_ENABLED=false",   // 布尔覆盖
@@ -278,18 +278,18 @@ func TestEnvOverrides(t *testing.T) {
 		t.Fatalf("auth.admin_users = %q", got)
 	}
 
-	feishu := cfg.Bots[0]
-	if feishu.Settings["app_id"] != "new-app-id" {
-		t.Fatalf("app_id = %#v", feishu.Settings["app_id"])
+	telegram := cfg.Bots[0]
+	if telegram.Settings["app_id"] != "new-app-id" {
+		t.Fatalf("app_id = %#v", telegram.Settings["app_id"])
 	}
-	if feishu.Settings["app_secret"] != "s2" {
-		t.Fatalf("app_secret = %#v", feishu.Settings["app_secret"])
+	if telegram.Settings["app_secret"] != "s2" {
+		t.Fatalf("app_secret = %#v", telegram.Settings["app_secret"])
 	}
-	if feishu.Settings["http_timeout"] != "9s" {
-		t.Fatalf("http_timeout = %#v", feishu.Settings["http_timeout"])
+	if telegram.Settings["http_timeout"] != "9s" {
+		t.Fatalf("http_timeout = %#v", telegram.Settings["http_timeout"])
 	}
-	if feishu.Adapter != "feishu" {
-		t.Fatalf("feishu.adapter 不应被 QQ 的覆盖影响: %q", feishu.Adapter)
+	if telegram.Adapter != "telegram" {
+		t.Fatalf("telegram.adapter 不应被 QQ 的覆盖影响: %q", telegram.Adapter)
 	}
 
 	qq := cfg.Bots[1]
@@ -460,15 +460,15 @@ func TestLoadInvalidYAMLReportsPath(t *testing.T) {
 }
 
 func TestEnvLongestBotNameWins(t *testing.T) {
-	// 规范化后 "feishu" 是 "feishu_main" 的前缀，KEI_BOTS_FEISHU_MAIN_X
-	// 应只命中名字更长的 feishu-main。
+	// 规范化后 "telegram" 是 "telegram_main" 的前缀，KEI_BOTS_TELEGRAM_MAIN_X
+	// 应只命中名字更长的 telegram-main。
 	cfg := mustLoadBytes(t, `
 bots:
-  - name: feishu
+  - name: telegram
     adapter: mock
-  - name: feishu-main
+  - name: telegram-main
     adapter: mock
-`, []string{"KEI_BOTS_FEISHU_MAIN_TOKEN=t1"}...)
+`, []string{"KEI_BOTS_TELEGRAM_MAIN_TOKEN=t1"}...)
 
 	if _, ok := cfg.Bots[0].Settings["main_token"]; ok {
 		t.Fatalf("短名 bot 被误命中: %v", cfg.Bots[0].Settings)
@@ -522,7 +522,7 @@ func TestValidateErrors(t *testing.T) {
 		},
 		{
 			name:   "adapter 非法字符",
-			yaml:   "bots:\n  - name: a\n    adapter: Feishu!\n",
+			yaml:   "bots:\n  - name: a\n    adapter: telegram!\n",
 			substr: "bots[0].adapter",
 		},
 		{
@@ -917,7 +917,7 @@ func TestEnvOverridesRecorded(t *testing.T) {
 		"KEI_LOG_LEVEL=warn",
 		"KEI_LIMITS_SEND_RATE=3",
 		"KEI_AUTH_ADMIN_USERS=u9",
-		"KEI_BOTS_FEISHU_MAIN_APP_SECRET=s2",
+		"KEI_BOTS_TELEGRAM_MAIN_APP_SECRET=s2",
 		"KEI_BOTS_QQ_MAIN_ENABLED=false",
 		"KEI_PLUGINS_WEATHER_ENABLED=false",
 		"KEI_STORAGE_TYPE=sqlite",
@@ -933,7 +933,7 @@ func TestEnvOverridesRecorded(t *testing.T) {
 		{Key: "KEI_LOG_LEVEL", Path: "log.level", Value: "warn"},
 		{Key: "KEI_LIMITS_SEND_RATE", Path: "limits.send_rate", Value: "3"},
 		{Key: "KEI_AUTH_ADMIN_USERS", Path: "auth.admin_users", Value: "u9"},
-		{Key: "KEI_BOTS_FEISHU_MAIN_APP_SECRET", Path: "bots.feishu-main.settings.app_secret", Value: "s2"},
+		{Key: "KEI_BOTS_TELEGRAM_MAIN_APP_SECRET", Path: "bots.telegram-main.settings.app_secret", Value: "s2"},
 		{Key: "KEI_BOTS_QQ_MAIN_ENABLED", Path: "bots.qq-main.enabled", Value: "false"},
 		{Key: "KEI_PLUGINS_WEATHER_ENABLED", Path: "plugins.weather.enabled", Value: "false"},
 		{Key: "KEI_STORAGE_TYPE", Path: "storage.type", Value: "sqlite"},
@@ -976,7 +976,7 @@ func TestEmptyEnvValuesDoNotOverride(t *testing.T) {
 		"KEI_STORAGE_TYPE=",
 		"KEI_STORAGE_DSN=",
 		"KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=",
-		"KEI_BOTS_FEISHU_MAIN_APP_SECRET=",
+		"KEI_BOTS_TELEGRAM_MAIN_APP_SECRET=",
 		"KEI_BOTS_QQ_MAIN_ENABLED=",
 		"KEI_PLUGINS_WEATHER_API_KEY=",
 		"KEI_ADAPTERS_MYIM_ENABLED=",

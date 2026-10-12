@@ -13,7 +13,7 @@
 
 目标：构建一个 Go 语言编写的 chatbot 框架，满足：
 
-1. 可接入不同 IM 平台：QQ、微信、飞书等。
+1. 可接入不同 IM 平台：QQ、微信等。
 2. 平台协议与业务逻辑解耦。
 3. 第三方开发者可以方便快捷地开发功能插件。
 4. 插件支持消息处理、回复、命令触发、正则触发、关键词触发、事件监听等能力。
@@ -25,16 +25,16 @@
 1. 不实现个人微信逆向协议。
 2. 不实现完整管理后台 UI。
 3. 不实现复杂的自然语言处理模型。
-4. 不追求一次性覆盖所有 IM 平台：仓库内置适配器为 `adapters/mock`、`adapters/onebot`（OneBot v11）、`adapters/feishu` 三种，其余平台按 [adapter.md](adapter.md) 第 6 章的适配器契约由第三方以独立包或独立 module 形式接入。
+4. 不追求一次性覆盖所有 IM 平台：仓库内置适配器为 `adapters/mock`、`adapters/onebot`（OneBot v11）两种，其余平台按 [adapter.md](adapter.md) 第 6 章的适配器契约由第三方以独立包或独立 module 形式接入。
 
-当前内置适配器的注册与启用方式：`cmd/bot/main.go` 空导入三个内置适配器包，各包在自己的 `init()` 中调用 `bot.RegisterAdapter`，是否实例化由配置中的 `bots[].adapter` 决定。装配逻辑本身不在 `cmd/bot`，而在公开包 `pkg/kei`（见 3.1）：`cmd/bot` 只是「flag + 信号 + 空导入 + 一次 `kei.Run`」的薄壳，库使用者无需复制它就能跑起一个 chatbot。
+当前内置适配器的注册与启用方式：`cmd/bot/main.go` 空导入两个内置适配器包，各包在自己的 `init()` 中调用 `bot.RegisterAdapter`，是否实例化由配置中的 `bots[].adapter` 决定。装配逻辑本身不在 `cmd/bot`，而在公开包 `pkg/kei`（见 3.1）：`cmd/bot` 只是「flag + 信号 + 空导入 + 一次 `kei.Run`」的薄壳，库使用者无需复制它就能跑起一个 chatbot。
 
 ---
 
 ## 3. 总体架构
 
 ```text
-飞书 / OneBot / Mock / 第三方适配器
+OneBot / Mock / 第三方适配器
         │
         ▼
 ┌──────────────────┐
@@ -62,14 +62,14 @@
 
 与上图对应的实际包：
 
-- 适配层：`adapters/mock`、`adapters/onebot`、`adapters/feishu`。
+- 适配层：`adapters/mock`、`adapters/onebot`。
 - 事件总线：`internal/eventbus`，按 `bot.Event.SessionKey` 哈希分片，同一会话由同一 goroutine 串行处理，去重由 `internal/dedup` 提供。
 - 引擎：`internal/engine`（BotAPI 实现与发送链路）、`internal/middleware`（中间件）、`internal/router`（路由与 Registrar 实现）、`internal/pluginmgr`（插件生命周期管理）。
 - 回复与发送：`internal/reply` 提供 `bot.Reply` 默认构建器；发送统一经 `bot.Degrade` 降级后交给 `bot.Adapter.Send`。
 
 核心原则：
 
-1. 平台无关：插件不直接依赖 QQ、飞书、微信 SDK。
+1. 平台无关：插件不直接依赖 QQ、微信等平台的 SDK。
 2. 插件轻量：第三方只需实现接口、注册命令/正则/关键词。
 3. 适配器可插拔：新增平台只需实现 Adapter 并在自己的包（可以是独立 module）内注册，核心代码零改动。
 4. 插件与适配器同构：同样的注册表、元信息与权限声明、配置驱动装配。
@@ -125,7 +125,6 @@ kei/
 ├── adapters/                     # 内置适配器；第三方适配器不放在这里（见 4.1）
 │   ├── mock/                     # 本地测试适配器：HTTP 控制面注入事件、观察发送
 │   ├── onebot/                   # OneBot v11：按 mode 选 HTTP 上报 + HTTP API / 反向 WebSocket / 正向 WebSocket
-│   └── feishu/                   # 飞书开放平台：事件订阅回调 + 消息发送
 ├── plugins/
 │   ├── echo/                     # 示例插件：/echo
 │   └── manage/                   # 管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、/manage status、/manage help

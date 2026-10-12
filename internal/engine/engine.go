@@ -44,7 +44,7 @@ const (
 
 // AdapterBinding 把一个适配器实例绑定到配置中的 bot 名称。
 //
-// 同一平台可以有多个 bot（例如两个飞书应用），因此适配器必须显式绑定 BotID。
+// 同一平台可以有多个 bot（例如两个 Telegram bot），因此适配器必须显式绑定 BotID。
 type AdapterBinding struct {
 	// BotID 是配置中的 bot 名称。
 	BotID string

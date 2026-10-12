@@ -59,24 +59,24 @@
 
 交付物：`adapters/mock/`、`plugins/echo/`、`pkg/kei/`（当前装配门面）、`cmd/bot/main.go`、`internal/engine/engine_test.go`。
 
-### 阶段 4：飞书 Adapter 或 OneBot Adapter
+### 阶段 4：飞书 Adapter 或 OneBot Adapter（现仅保留 OneBot）
 
 - [x] 已完成：选择飞书或 OneBot 之一实现 Adapter，并在包内 `init()` 中 `RegisterAdapter`。
-  - 证据：两者**都已实现**（超出「之一」）：`adapters/feishu/register.go:19`、`adapters/onebot/register.go:19` 各自在 `init()` 中注册工厂；现状见 [adapter.md](adapter.md) 6.7，测试数（36 / 40）见 [testing.md](testing.md) 第 15 章「实际测试分布」。
-- [x] 已完成：飞书：实现事件订阅 HTTP 回调、challenge 校验、签名校验、快速 ACK、异步事件投递。
-  - 证据：`adapters/feishu/feishu.go:210`、`:269`、`:323`、`:342`、`:353-360`、`:375`，`adapters/feishu/crypto.go`；协议细节见 [adapter.md](adapter.md) 6.7 › feishu。
+  - 证据：两者**都曾实现**（超出「之一」）：`adapters/onebot/register.go:19` 至今在 `init()` 中注册工厂；`adapters/feishu` 已按后续决定从仓库移除（现状见 [adapter.md](adapter.md) 6.7）。
+- [x] 已完成（后移除）：飞书：实现事件订阅 HTTP 回调、challenge 校验、签名校验、快速 ACK、异步事件投递。
+  - 证据：曾位于 `adapters/feishu/`（`feishu.go`、`event.go`、`send.go`、`crypto.go`、`register.go`）；该目录已从仓库删除，`docs/adapter.md` 6.7 不再列出该适配器。
 - [x] 已完成：OneBot：实现 WebSocket 或 HTTP 接入，解析事件，调用发送 API。
   - 证据：`adapters/onebot/onebot.go:64`、`:225`、`:385`，`adapters/onebot/ws.go`、`reverse.go`、`forward.go`、`event.go`、`message.go`；四种 `mode` 的拓扑与忽略规则见 [adapter.md](adapter.md) 6.7 › onebot。
 - [x] 已完成：实现消息段与平台消息互转，如实声明 Capabilities 与 Permissions。
-  - 证据：`adapters/feishu/event.go:161`、`:227`，`adapters/feishu/feishu.go:160`，`adapters/onebot/onebot.go:307`、`:367`，`adapters/feishu/register.go:25`、`adapters/onebot/register.go:25`；能力位与权限清单见 [adapter.md](adapter.md) 6.3、6.7。
+  - 证据：`adapters/onebot/onebot.go:307`、`:367`，`adapters/onebot/register.go:25`；能力位与权限清单见 [adapter.md](adapter.md) 6.3、6.7。
 - [x] 已完成：实现 Capabilities 降级（复用 `bot.Degrade`）。
-  - 证据：`pkg/bot/degrade.go:13`；调用点 `adapters/feishu/send.go:111`、`adapters/onebot/onebot.go:644`、`internal/engine/send.go:46`；降级规则表见 [adapter.md](adapter.md) 6.4。
+  - 证据：`pkg/bot/degrade.go:13`；调用点 `adapters/onebot/onebot.go:644`、`internal/engine/send.go:46`；降级规则表见 [adapter.md](adapter.md) 6.4。
 - [x] 已完成：编写适配器单元测试。
-  - 证据：`adapters/feishu`（36，`feishu_test.go`/`register_test.go` 及 `crypto.go` 相关测试）、`adapters/onebot`（40，`onebot_test.go`/`mode_test.go`/`reverse_test.go`/`forward_test.go`/`register_test.go`）；测试手法与覆盖清单见 [testing.md](testing.md) 第 15 章第 5 条与实际测试分布表。
+  - 证据：`adapters/onebot`（40，`onebot_test.go`/`mode_test.go`/`reverse_test.go`/`forward_test.go`/`register_test.go`）；测试手法与覆盖清单见 [testing.md](testing.md) 第 15 章第 5 条与实际测试分布表。
 - [x] 已完成：验收：可本地 Mock 平台请求，事件进入 Engine 并触发插件回复；新增平台未改动 `cmd/` 与 `internal/`。
   - 证据：`cmd/bot/thirdparty_adapter_test.go:79`（TestThirdPartyAdapterEndToEnd）在不修改核心代码的前提下只注册第三方适配器并跑通「事件 → echo 回复」；独立 module 形态另有 `examples/kei-adapter-myim/`。
 
-交付物：`adapters/feishu/`（`feishu.go`、`event.go`、`send.go`、`crypto.go`、`register.go`）、`adapters/onebot/`（`onebot.go`、`event.go`、`message.go`、`ws.go`、`reverse.go`、`forward.go`、`register.go`）。
+交付物：`adapters/onebot/`（`onebot.go`、`event.go`、`message.go`、`ws.go`、`reverse.go`、`forward.go`、`register.go`）；`adapters/feishu/` 曾作为交付物，现已从仓库移除。
 
 ### 阶段 5：配置与生命周期
 
@@ -98,7 +98,7 @@
 - [x] 已完成：`bots[].enabled`（实例级开关，与 `adapters.<name>.enabled` 同向、作用范围只到单个实例）。
   - 证据：`internal/config/config.go:90`（BotConfig）、`:100`（`Enabled *bool`）、`:109`（IsEnabled）、`:255`（decodeBot 的 `case "enabled"`），`internal/config/env.go:110`（applyBotEnv 的 `case "enabled"`），`internal/adaptermgr/adaptermgr.go:68`（Validate 跳过条件）、`:152`、`:154`（Build 先判实例开关并记 info），`internal/engine/engine.go:402`、`:416`（applyBotPluginFilter 的 `if !b.IsEnabled()`）。
   - 测试：`internal/config/config_test.go:789`（TestBotEnabled）、`internal/adaptermgr/adaptermgr_test.go:353`（TestBuildSkipsDisabledBot）、`:389`（TestValidateDisabledBotSkipsReservedOption）、`internal/engine/engine_test.go`（TestDisabledBotExcludedFromPluginWhitelist、TestDisabledBotWhitelistNarrowing）、`cmd/bot/main_test.go`（TestExampleConfigLoads）。
-  - 语义、环境变量覆盖与两层开关的区别见 [configuration.md](configuration.md) 12.2、12.8 第 6 条与 [adapter.md](adapter.md) 6.7；示例配置 `configs/config.yaml` 的 `feishu-main: enabled: false` 即实测样本。
+  - 语义、环境变量覆盖与两层开关的区别见 [configuration.md](configuration.md) 12.2、12.8 第 6 条与 [adapter.md](adapter.md) 6.7。
 - [x] 已完成：可插拔存储后端 —— `storage.type` 选 `memory`（默认）/`sqlite`/`mysql`，新增类型只需一个包 + `init()` 注册，核心不改配置结构。
   - 证据：`internal/storage/registry.go`（`Register`/`Open`/`Kinds`）、`internal/storage/memory.go`（`init()` 注册）、`internal/storage/sqlstore/`（GORM 通用实现）、`internal/storage/sqlite/`、`internal/storage/mysql/`、`internal/config/config.go`（`StorageConfig`/`decodeStorage`/`StorageConfig.validate`）、`internal/config/env.go`（`KEI_STORAGE_*`）、`pkg/kei/assemble.go`（`buildStorage` 注入优先、否则按配置构造）。
   - 语义、参数与未知类型报错文案见 [configuration.md](configuration.md) 12.5；SQL 实现与内存实现的一致性见 [plugin.md](plugin.md) 11.2；测试 `internal/storage/registry_test.go`、`internal/storage/sqlite/sqlite_test.go`（`internal/storage/mysql/mysql_test.go` 默认跳过）。
@@ -145,10 +145,10 @@
 1. 完整 Go 项目源码。**存在**：根 module 的 `go list ./...` 解析出 `pkg/`、`internal/`、`adapters/`、`plugins/`、`cmd/` 下的全部包（逐目录职责见 [architecture.md](architecture.md) 第 4 章）；另有独立 module `examples/kei-adapter-myim/`。
 2. `AGENTS.md`：全局硬性规则、代码约定与质量门，并指向 `docs/README.md` 作为唯一文档索引（设计与实现内容不在其中）。**存在**：仓库根 `AGENTS.md`。
 3. `README.md` 使用说明。**存在**：仓库根 `README.md`（安装与快速开始、写插件、写适配器、可观测性、测试与验证、已知限制）。
-4. `configs/config.yaml` 示例配置。**存在**：`configs/config.yaml`（`mock-main`、`feishu-main`、`qq-main` 三个 bot；`adapters:` 段示例以注释给出；`feishu-main` 经实例级 `enabled: false` 停用）。加载校验测试 `cmd/bot/main_test.go`（TestExampleConfigLoads）与 `pkg/kei/assemble_test.go`；bot 与键的语义见 [configuration.md](configuration.md) 12.2、12.7。
+4. `configs/config.yaml` 示例配置。**存在**：`configs/config.yaml`（`mock-main`、`qq-main` 两个 bot；`adapters:` 段示例以注释给出）。加载校验测试 `cmd/bot/main_test.go`（TestExampleConfigLoads）与 `pkg/kei/assemble_test.go`；bot 与键的语义见 [configuration.md](configuration.md) 12.2、12.7。
 5. `plugins/echo` 示例插件。**存在**：`plugins/echo/echo.go`（`:44` 注册，`:12` Plugin）；实现全文见 [plugin.md](plugin.md) 9.4，测试 3 个。
 6. `adapters/mock` Mock 适配器（经注册表接入）。**存在**：`adapters/mock/`（`register.go:15` 注册工厂、`mock.go` 实现）；行为见 [adapter.md](adapter.md) 6.7 › mock，测试 13 个。
-7. 至少一个真实平台适配器（飞书或 OneBot），经注册表接入。**存在且超额**：`adapters/feishu/`（`register.go:19`）与 `adapters/onebot/`（`register.go:19`）均已实现并注册；现状见 [adapter.md](adapter.md) 6.7。
+7. 至少一个真实平台适配器（飞书或 OneBot），经注册表接入。**存在**：`adapters/onebot/`（`register.go:19`）已实现并注册（`adapters/feishu/` 曾同样满足本项，后从仓库移除）；现状见 [adapter.md](adapter.md) 6.7。
 8. 第三方适配器示例：只依赖 `pkg/bot` 的独立 module 注册示例。**存在**：`examples/kei-adapter-myim/`（独立 module，11 个测试，不新增 `go.work`、不改根 module 任何文件）。
 9. 测试用例。**存在**：根 module 各包均有 `*_test.go`，逐包统计与覆盖见 [testing.md](testing.md) 第 15 章「实际测试分布」；另有独立 module `examples/kei-adapter-myim`（11 个测试，不计入根 module 统计）。
 

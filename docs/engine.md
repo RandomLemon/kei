@@ -200,7 +200,7 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
 - `bots[].adapter` 既未注册、也未在 `adapters:` 段声明（且该 bot 与适配器均未被 `enabled: false` 禁用）时报错，错误信息必须列出所有已注册适配器名与 `adapters` 段已声明名（空列表显示「无」）：
 
   ```text
-  config: bots[3].adapter: 未知适配器 "myim"（已注册: feishu, mock, onebot；adapters 段已声明: 无）
+  config: bots[3].adapter: 未知适配器 "myim"（已注册: mock, onebot；adapters 段已声明: 无）
   ```
 
 - 注册表校验（`ValidateRegistry`）报错条件：注册名重复（`adaptermgr: 适配器注册名重复: %s`）、元信息缺 `Platforms`（`adaptermgr: 适配器 %s 未声明 Platforms`）、声明了仅插件可用的 `PermAll`；另有被拒绝的注册（见附注）。

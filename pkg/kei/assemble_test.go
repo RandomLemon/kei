@@ -16,7 +16,6 @@ import (
 	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 
-	_ "github.com/RandomLemon/kei/adapters/feishu"
 	_ "github.com/RandomLemon/kei/adapters/mock"
 	_ "github.com/RandomLemon/kei/adapters/onebot"
 	_ "github.com/RandomLemon/kei/plugins/echo"
@@ -70,13 +69,6 @@ func TestAdaptermgrBuild(t *testing.T) {
 				"api_url": "http://127.0.0.1:3000", "listen_addr": "127.0.0.1:0",
 			}},
 			platform: "onebot",
-		},
-		{
-			name: "feishu",
-			bot: config.BotConfig{Name: "feishu-main", Adapter: "feishu", Settings: map[string]any{
-				"app_id": "cli_x", "app_secret": "s", "verification_token": "t", "listen_addr": "127.0.0.1:0",
-			}},
-			platform: "feishu",
 		},
 		{
 			name:    "未注册的适配器",
@@ -309,7 +301,7 @@ func TestLogEnvOverrides(t *testing.T) {
 	logger, buf := testLogger()
 	cfg := &config.Config{EnvOverrides: []config.EnvOverride{
 		{Key: "KEI_LOG_LEVEL", Path: "log.level", Value: "debug"},
-		{Key: "KEI_BOTS_FEISHU_MAIN_APP_SECRET", Path: "bots.feishu-main.settings.app_secret", Value: "top-secret"},
+		{Key: "KEI_BOTS_QQ_MAIN_SECRET", Path: "bots.qq-main.settings.secret", Value: "top-secret"},
 		{Key: "KEI_STORAGE_DSN", Path: "storage.dsn", Value: "user:pa55w0rd@tcp(127.0.0.1:3306)/db?parseTime=true"},
 		{Key: "KEI_PLUGINS_REPORT_OPTIONS_ENDPOINT", Path: "plugins.report.settings.endpoint", Value: "alice:s3cr3t@tcp(db:3306)/logs"},
 	}}
@@ -321,7 +313,7 @@ func TestLogEnvOverrides(t *testing.T) {
 			t.Fatalf("缺少 %q:\n%s", want, out)
 		}
 	}
-	for _, want := range []string{"config=bots.feishu-main.settings.app_secret", "config=storage.dsn", "config=plugins.report.settings.endpoint"} {
+	for _, want := range []string{"config=bots.qq-main.settings.secret", "config=storage.dsn", "config=plugins.report.settings.endpoint"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("缺少敏感项路径 %q:\n%s", want, out)
 		}

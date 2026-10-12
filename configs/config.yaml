@@ -3,7 +3,7 @@
 # 所有键都可以用环境变量覆盖，规则见 README「配置」一节：
 #   KEI_LOG_LEVEL=debug
 #   KEI_METRICS_ADDR=127.0.0.1:9090
-#   KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx     # 替换 bots 中 name=feishu-main 的 app_secret
+#   KEI_BOTS_QQ_MAIN_SECRET=xxx            # 覆盖 bots 中 name=qq-main 的 secret
 #   KEI_PLUGINS_WEATHER_API_KEY=xxx
 #   KEI_AUTH_ADMIN_USERS=ou_xxx,123456
 #   KEI_STORAGE_TYPE=sqlite
@@ -37,14 +37,13 @@ limits:
 auth:
   admin_users: []
 
-# 适配器声明（可选）：只用 enabled 控制启用（缺省 true）。
-# 可用 KEI_ADAPTERS_FEISHU_ENABLED 覆盖。
-# 被禁用的适配器不装配，其 bots[] 条目也会跳过（日志会记警告）。
-# bots[] 条目上的 enabled 是实例级开关（缺省 true），只跳过该 bot，可用 KEI_BOTS_<NAME>_ENABLED 覆盖。
-adapters:
-  # 临时停用内置平台（不需要删掉下面的 feishu bot）
-  # feishu:
-  #   enabled: false
+# 适配器声明（可选）：只用 enabled 控制启用（缺省 true），也可用 KEI_ADAPTERS_<NAME>_ENABLED 覆盖。
+# enabled: false 的适配器不装配，其 bots[] 条目也会跳过（日志会记警告）。
+# 与 bots[].enabled 的区别：adapters.<name> 禁用整个平台，实例级开关只跳过单个 bot。
+# 例：
+#   adapters:
+#     onebot:
+#       enabled: false
 
 bots:
   # Mock 适配器：本地联调用，通过 HTTP 控制面手动注入事件并观察发送结果。
@@ -54,21 +53,6 @@ bots:
     adapter: mock
     platform: mock
     listen_addr: 127.0.0.1:18080
-
-  # 飞书：在开放平台把事件订阅地址配置为 https://<你的域名>/feishu/event，
-  # 并把 verification_token / encrypt_key 填成开放平台上的值。
-  # app_secret 建议用 KEI_BOTS_FEISHU_MAIN_APP_SECRET 覆盖而不是写在文件里。
-  # enabled: false 只停用这一个实例（缺省启用），其监听端口与适配器装配一并跳过；
-  # 要停用整个平台用 adapters.feishu.enabled: false。
-  - name: feishu-main
-    enabled: false
-    adapter: feishu
-    app_id: cli_xxx
-    app_secret: xxx
-    verification_token: xxx
-    encrypt_key: ""
-    listen_addr: 127.0.0.1:18081
-    path: /feishu/event
 
   # OneBot v11：mode 四选一，一次只启用一种接入方式（缺省 reverse_ws）。
   # 与所选 mode 无关的键会被忽略并记一条 warn，因此可以保留全部键、只改 mode。

@@ -90,7 +90,7 @@ func TestRuleMatches(t *testing.T) {
 	}{
 		{name: "事件类型不匹配", rule: Rule{EventType: EventNotice}, want: false},
 		{name: "会话类型不匹配", rule: Rule{Kind: MessagePrivate}, want: false},
-		{name: "平台不匹配", rule: Rule{Platforms: []string{"feishu"}}, want: false},
+		{name: "平台不匹配", rule: Rule{Platforms: []string{"telegram"}}, want: false},
 		{name: "命令大小写不敏感", rule: Rule{Command: "echo"}, want: true},
 		{name: "命令不匹配", rule: Rule{Command: "say"}, want: false},
 		{name: "正则命中", rule: Rule{Regex: regexp.MustCompile(`^hello`)}, want: true},

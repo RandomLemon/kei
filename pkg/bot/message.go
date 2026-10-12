@@ -11,7 +11,7 @@ const (
 	MessagePrivate MessageKind = "private"
 	// MessageGroup 是群聊消息。
 	MessageGroup MessageKind = "group"
-	// MessageChannel 是频道消息，例如飞书的会话频道。
+	// MessageChannel 是频道消息，例如 Telegram 的频道。
 	MessageChannel MessageKind = "channel"
 )
 

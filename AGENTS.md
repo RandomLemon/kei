@@ -13,7 +13,7 @@
 
 - 公开包只有三个：`pkg/bot`（唯一 SDK，禁止 import `internal/`）、`pkg/message`（消息段构建器，只依赖 `pkg/bot`）、`pkg/kei`（装配门面：唯一允许 import `internal/` 的公开包，只做装配，不含平台分支与业务逻辑）。
 - 核心逻辑只放 `internal/`；平台专属代码只允许出现在 `adapters/<platform>/` 或第三方适配器包/module 中；插件代码只放 `plugins/` 或第三方包/module，且只依赖 `pkg/bot`。
-- `cmd/` 与 `internal/` 中禁止出现平台名分支（`switch adapter`、`if platform == "feishu"` 等）。适配器只能经 `bot.LookupAdapter` + `internal/adaptermgr` 装配，插件只能经注册表 + `internal/pluginmgr` 装配。
+- `cmd/` 与 `internal/` 中禁止出现平台名分支（`switch adapter`、`if platform == "onebot"` 等）。适配器只能经 `bot.LookupAdapter` + `internal/adaptermgr` 装配，插件只能经注册表 + `internal/pluginmgr` 装配。
 - 适配器与插件同等对待：任何「为某平台写死」的改动都说明注册表被绕过，先修设计再加平台。新增平台的自检问题：只加一个新包（或新 module）+ 一段配置能否跑通？完整示例见 `examples/kei-adapter-myim/`（独立 module，只依赖 `pkg/bot`）。
 - 第三方适配器/插件不得要求核心仓库改动任何文件；核心仓库不为第三方改代码。新增/改动注册表 API 时必须同步维护 `examples/kei-adapter-myim/`。
 - 配置与密钥只能经配置对象读取（插件 `PluginContext.Config`、适配器 `AdapterContext.Config`）；适配器/插件不得直接读环境变量或文件。

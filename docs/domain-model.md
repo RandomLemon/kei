@@ -112,7 +112,7 @@ const (
 	MessagePrivate MessageKind = "private"
 	// MessageGroup 是群聊消息。
 	MessageGroup MessageKind = "group"
-	// MessageChannel 是频道消息，例如飞书的会话频道。
+	// MessageChannel 是频道消息，例如 Telegram 的频道。
 	MessageChannel MessageKind = "channel"
 )
 ```
@@ -242,7 +242,7 @@ const (
 约定：
 
 1. 除 `KeyCard` 外，各键的取值均为 `string`；读取方按 `seg.Data[bot.KeyX].(string)` 类型断言，类型不符时按缺失处理（`bot.Message.PlainText` 即如此）。
-2. 适配器在读取平台消息构造段时，值为空的键应省略而不是写入空串（例如飞书、OneBot 适配器对 `KeyUserName`、`KeyFileName` 的处理）。
+2. 适配器在读取平台消息构造段时，值为空的键应省略而不是写入空串（例如 OneBot 适配器对 `KeyUserName`、`KeyFileName` 的处理）。
 3. 适配器在发送时对 `SegImage`、`SegFile` 同时尝试 `KeyFile` 与 `KeyURL`，两者都为空视为不可发送。
 4. 未知的 `SegmentType` 或未知 `Data` 键不影响类型契约：消费方必须忽略而不报错。
 

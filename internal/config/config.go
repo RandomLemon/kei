@@ -2,8 +2,8 @@
 //
 // 配置有两层来源：YAML 文件与环境变量。环境变量统一以 KEI_ 为前缀，
 // 路径段之间用 "_" 连接；匹配时不区分大小写，且 "-"、"." 与 "_" 等价。
-// 例如 KEI_LOG_LEVEL 覆盖 Log.Level，KEI_BOTS_FEISHU_MAIN_APP_ID 覆盖
-// 名为 "feishu-main" 的 bot 的 Settings["app_id"]。未匹配任何已知路径的
+// 例如 KEI_LOG_LEVEL 覆盖 Log.Level，KEI_BOTS_TELEGRAM_MAIN_APP_ID 覆盖
+// 名为 "telegram-main" 的 bot 的 Settings["app_id"]。未匹配任何已知路径的
 // KEI_* 变量会被忽略（不报错）。
 //
 // 顶层允许的键为 log、metrics、bots、plugins、adapters、limits、auth、storage，

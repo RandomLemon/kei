@@ -15,7 +15,7 @@ const OptListenAddr = "listen_addr"
 // AdapterFactory 依据 AdapterContext 构造一个适配器实例。
 //
 // 注册的是工厂而不是单例：同一平台可以有多个实例（配置中的多个 bot，
-// 例如两个飞书应用），因此实例状态不得放在包级变量里。
+// 例如两个 Telegram bot），因此实例状态不得放在包级变量里。
 type AdapterFactory func(ctx AdapterContext) (Adapter, error)
 
 // AdapterContext 是构造适配器实例所需的依赖与配置。

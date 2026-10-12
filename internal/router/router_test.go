@@ -303,15 +303,15 @@ func TestDispatchPlatformFilter(t *testing.T) {
 	r := New(Options{})
 	reg := r.Registrar("p")
 	reg.OnAll(tagHandler(rec, "qq-only"), bot.WithPlatforms("qq"))
-	reg.OnAll(tagHandler(rec, "feishu"), bot.WithPlatforms("feishu"))
+	reg.OnAll(tagHandler(rec, "telegram"), bot.WithPlatforms("telegram"))
 
 	ev := noticeEvent()
-	ev.Platform = "feishu"
+	ev.Platform = "telegram"
 	if err := r.Dispatch(context.Background(), ev); err != nil {
 		t.Fatalf("Dispatch 返回错误: %v", err)
 	}
-	if got := rec.order(); !slices.Equal(got, []string{"feishu"}) {
-		t.Fatalf("命中 = %v, 期望 [feishu]", got)
+	if got := rec.order(); !slices.Equal(got, []string{"telegram"}) {
+		t.Fatalf("命中 = %v, 期望 [telegram]", got)
 	}
 }
 

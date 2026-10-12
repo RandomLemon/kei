@@ -52,7 +52,7 @@ kei/
 ├── adapters/
 │   ├── mock/              本地测试适配器（HTTP 控制面注入事件、观察发送）
 │   ├── onebot/            OneBot v11（按 mode 选 HTTP 双向 / 反向 WebSocket / 正向 WebSocket，零第三方依赖）
-│   └── feishu/            飞书开放平台（事件订阅回调 + 消息发送）
+│   └── （平台适配器按需新增，见「写一个适配器」）
 ├── plugins/
 │   ├── echo/              示例插件：/echo
 │   └── manage/            管理命令：/manage ping、/manage version、/manage plugins、/manage adapters、/manage admin、/manage status、/manage help
@@ -197,14 +197,14 @@ cp configs/config.yaml configs/mybot.yaml   # 保留需要的 bots[]/plugins，�
 
 | 需求 | 做法 |
 | --- | --- |
-| 平台已内置（`mock`/`onebot`/`feishu`） | 只填 `bots[]` 配置，见「配置」与「写一个适配器」的接入小节 |
+| 平台已内置（`mock`/`onebot`） | 只填 `bots[]` 配置，见「配置」与「写一个适配器」的接入小节 |
 | 平台无内置适配器（含企业微信） | 写适配器：独立包/独立 module 调 `bot.RegisterAdapter`（见「写一个适配器」），核心零改动 |
 | 本地联调 | 用 `mock` 适配器注入事件、观察发送，无需真实平台 |
 
 平台凭证只经配置读取，密钥用环境变量覆盖而不落盘（见「环境变量覆盖」）：
 
 ```bash
-KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx \
+KEI_BOTS_QQ_MAIN_SECRET=xxx \
   nix develop --command go run ./cmd/bot -config configs/mybot.yaml
 ```
 
@@ -263,8 +263,7 @@ log:     { level: info, format: text }     # text | json
 metrics: { addr: 127.0.0.1:19090 }         # 空表示不暴露
 limits:  { handler_rate: 0, send_rate: 0 } # 0 表示不限流
 auth:    { admin_users: [] }               # 配合 bot.WithAdmin() 规则
-adapters:                                # 可选：启用/禁用适配器（仅支持 enabled 键）
-  feishu:  { enabled: false }            # 示例：禁用内置适配器（其 bot 一并跳过）
+adapters:                                # 可选：启用/禁用适配器（仅支持 enabled 键，如 onebot: { enabled: false }）
 bots:
   - name: mock-main
     adapter: mock
@@ -280,9 +279,9 @@ plugins:
 - `bots[].adapter` 决定使用哪个适配器，其余键按适配器要求传入（拼错会打 warn 日志）。
 - `bots[].enabled` 是实例级开关，**缺省 true**：写 `enabled: false` 只跳过该实例
   （不装配、不监听、不接收事件），可用于临时停用某个账号；也可用
-  `KEI_BOTS_<BOTNAME>_ENABLED=false` 覆盖（bot 名规范化后比较，`feishu-main` 即
-  `KEI_BOTS_FEISHU_MAIN_ENABLED`）。
-- 同一个平台可以配置多个 bot（例如两个飞书应用），此时发送必须显式指定 `Target.BotID`。
+  `KEI_BOTS_<BOTNAME>_ENABLED=false` 覆盖（bot 名规范化后比较，`qq-main` 即
+  `KEI_BOTS_QQ_MAIN_ENABLED`）。
+- 同一个平台可以配置多个 bot（例如两个 OneBot 账号），此时发送必须显式指定 `Target.BotID`。
 - `bots[].plugins` 是该 bot 的插件白名单；只要有一个 bot 配置了非空白名单，规则就会按
   「哪些 bot 允许它」收窄（未配置白名单的 bot 允许全部）。
 - `plugins.<name>` 未列出 = 不启用；想启用必须写 `enabled: true`。
@@ -299,7 +298,7 @@ KEI_LOG_LEVEL=debug
 KEI_METRICS_ADDR=127.0.0.1:9090
 KEI_LIMITS_SEND_RATE=5
 KEI_AUTH_ADMIN_USERS=ou_xxx,123456
-KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx      # bot 名 feishu-main → 其 app_secret
+KEI_BOTS_QQ_MAIN_SECRET=xxx              # bot 名 qq-main → 其 secret
 KEI_PLUGINS_WEATHER_API_KEY=xxx
 KEI_STORAGE_TYPE=sqlite                  # 切换存储后端（默认 memory）
 KEI_STORAGE_DSN=/var/lib/kei/storage.db
@@ -433,10 +432,10 @@ type Adapter interface {
 约定：
 
 - `Start` 必须在返回前完成监听/连接，随后阻塞到 `ctx.Done()`；`Stop` 幂等。
-- 平台回调要在超时前返回（飞书 3 秒），业务事件经 `sink.Emit` 异步投递。
+- 平台回调要在平台超时前返回，业务事件经 `sink.Emit` 异步投递。
 - 用 `bot.Key*` 常量读写 `Segment.Data`，不要写字面量键。
 - 发送前调用 `bot.Degrade(msg, a.Capabilities())`，平台不支持的消息段会自动降级为文本。
-- `Event.ID` 用于去重，必须稳定（飞书用 `header.event_id`，OneBot 用 `message_id`）。
+- `Event.ID` 用于去重，必须稳定且平台内唯一（例如 OneBot 用 `message_id`）。
 
 已内置的适配器与能力：
 
@@ -444,7 +443,6 @@ type Adapter interface {
 | --- | --- | --- |
 | `mock` | HTTP 控制面注入/观察 | 全能力，用于本地联调与测试 |
 | `onebot` | 按 `mode` 选择 HTTP 双向（HTTP 上报 + HTTP API）/ 反向 WebSocket / 正向 WebSocket；发送优先走 WebSocket 连接，否则回落 HTTP API | 文本/图片/At/表情/引用/文件；不支持 Markdown、卡片 |
-| `feishu` | 事件订阅回调（challenge、签名校验、AES 解密、3s 内 ACK）+ 开放平台 API | 文本/Markdown/图片/At/卡片/引用/文件 |
 
 ### OneBot v11 的接入方式
 
@@ -547,7 +545,7 @@ bots:
 
 ```yaml
 adapters:
-  feishu: { enabled: false }   # 缺省为 true；也可用 KEI_ADAPTERS_FEISHU_ENABLED=false
+  onebot: { enabled: false }   # 缺省为 true；也可用 KEI_ADAPTERS_ONEBOT_ENABLED=false
 ```
 
 独立 module 形式（推荐给第三方）：
@@ -604,14 +602,15 @@ nix develop --command go test -race ./...
 
 测试覆盖：命令/正则/关键词/事件触发、优先级与中间件顺序、panic 恢复、超时、
 事件去重、同会话保序、优雅关闭排空、发送限流与重试、能力降级、
-Mock→EventBus→Router→Plugin→Reply 全链路集成、飞书回调（challenge/签名/AES 解密/ACK）、
+Mock→EventBus→Router→Plugin→Reply 全链路集成、
 OneBot 事件与 API、OneBot 反向 WebSocket（握手/Accept 校验、鉴权、事件上行与分片重组、
 按 echo 并行发送、role/self_id 过滤、心跳与半开连接回收、协议错误、停止时关闭连接）、
 OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 发送、断线重连）。
 
 ## 已知限制
 
-- 个人微信逆向协议不支持（`adapters/wecom` 尚未实现，企业微信可参考飞书适配器结构接入）。
+- 个人微信逆向协议不支持；平台内置适配器只有 `mock` 与 `onebot`，企业微信、飞书等平台需按
+  「写一个适配器」自行接入（独立包或独立 module，核心零改动）。
 - `BotAPI` 没有 `reply_to` 参数：插件回复当前会话无法携带引用；需要引用时用
   `Engine.SendRequest`。
 - 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称；

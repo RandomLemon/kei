@@ -34,7 +34,7 @@ func TestCounters(t *testing.T) {
 	r := New()
 	r.EventPublished("onebot")
 	r.EventPublished("onebot")
-	r.EventPublished("feishu")
+	r.EventPublished("telegram")
 	r.EventDropped("onebot", "duplicate")
 	r.EventDropped("onebot", "duplicate")
 	r.EventDropped("onebot", "panic")
@@ -50,7 +50,7 @@ func TestCounters(t *testing.T) {
 
 	wants := []string{
 		"# TYPE kei_events_published_total counter",
-		`kei_events_published_total{platform="feishu"} 1`,
+		`kei_events_published_total{platform="telegram"} 1`,
 		`kei_events_published_total{platform="onebot"} 2`,
 		`kei_events_dropped_total{platform="onebot",reason="duplicate"} 2`,
 		`kei_events_dropped_total{platform="onebot",reason="panic"} 1`,
@@ -191,7 +191,7 @@ func TestConcurrentRecording(t *testing.T) {
 			defer wg.Done()
 			platform := "onebot"
 			if w%2 == 0 {
-				platform = "feishu"
+				platform = "telegram"
 			}
 			for i := range perWorker {
 				r.EventPublished(platform)
@@ -224,7 +224,7 @@ func TestConcurrentRecording(t *testing.T) {
 	// 每类写入 workers*perWorker 次（EventHandled 成功/失败各占一半写入）。
 	wants := []string{
 		`kei_events_published_total{platform="onebot"} 200`,
-		`kei_events_published_total{platform="feishu"} 200`,
+		`kei_events_published_total{platform="telegram"} 200`,
 		`kei_events_dropped_total{platform="onebot",reason="duplicate"} 200`,
 		`kei_events_handled_total{plugin="p",result="ok",rule="r"} 400`,
 		`kei_rules_matched_total{plugin="p",rule="r"} 400`,

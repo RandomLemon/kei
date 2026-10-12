@@ -98,11 +98,11 @@ type BotConfig struct {
 - 解码：`decodeBot` 识别 `name`/`adapter`/`enabled`/`plugins`，`enabled` 不进入 `Settings`；非布尔值报 `bots[i].enabled: ...`（错误信息里的索引即条目位置）。
 - 效果：停用实例不装配适配器、不接收事件，也不参与适配器校验（未知适配器名与保留键 `listen_addr` 都跳过），`internal/adaptermgr.Build` 记 info 日志 `bot 已禁用，跳过`（字段 `bot`、`adapter`）。
 - 环境变量覆盖：`KEI_BOTS_<BOTNAME>_ENABLED=false|true`（`internal/config/env.go` 的 `applyBotEnv` 新增 `enabled` 分支，用 `envBool` 解析；值无法解析为布尔时静默忽略）。
-- 与 `adapters.<name>.enabled` 的区别：`bots[].enabled` 只停用**一个实例**（跳过该实例的装配、监听端口与校验）；`adapters.<name>.enabled: false` 停用**整个平台适配器**，其全部 `bots[]` 条目一并跳过（见 12.4）。示例配置里 `feishu-main` 的 `enabled: false` 现在真的生效：该 bot 不再装配、不监听端口。
+- 与 `adapters.<name>.enabled` 的区别：`bots[].enabled` 只停用**一个实例**（跳过该实例的装配、监听端口与校验）；`adapters.<name>.enabled: false` 停用**整个平台适配器**，其全部 `bots[]` 条目一并跳过（见 12.4）。
 
 **保留键 `listen_addr`**（常量 `bot.OptListenAddr`）：只允许出现在声明了 `net_listen` 权限的适配器实例上。`internal/adaptermgr.checkReservedOptions` 在 `Validate` 阶段检查，命中时报 `config: bot <name> 配置了保留键 listen_addr，但适配器 <adapter> 未声明 net_listen 权限`。判定「已配置」的规则是该键存在且 `fmt.Sprint` 后去空白非空；核心不解释它的取值，由适配器自行解析。被 `bots[].enabled: false` 停用的实例不参与该校验。
 
-**同平台多实例与 `Target.BotID`**：插件发送时构造 `bot.Target{Platform, BotID, ChannelID, ...}`。`Engine.resolve` 的行为是：`BotID` 非空时按 bot 名定位实例，并要求该实例的平台与 `Target.Platform` 一致（不一致报 `engine: bot %q is on platform %q, not %q`）；`BotID` 为空时，只有该平台恰好一个 bot 才自动选择，0 个报 `no adapter for platform %q`，多个报 `platform %q has %d bots, target.BotID is required`。因此同一平台配置多个 bot（例如两个飞书应用、同适配器的多个实例）时发送必须显式指定 `BotID`；回复当前会话用 `TargetFromEvent` 自动带上事件的 `BotID`。每个 `bots[]` 条目都会得到一个独立的适配器实例（由工厂构造），实例状态互不影响。
+**同平台多实例与 `Target.BotID`**：插件发送时构造 `bot.Target{Platform, BotID, ChannelID, ...}`。`Engine.resolve` 的行为是：`BotID` 非空时按 bot 名定位实例，并要求该实例的平台与 `Target.Platform` 一致（不一致报 `engine: bot %q is on platform %q, not %q`）；`BotID` 为空时，只有该平台恰好一个 bot 才自动选择，0 个报 `no adapter for platform %q`，多个报 `platform %q has %d bots, target.BotID is required`。因此同一平台配置多个 bot（例如两个 OneBot 账号、同适配器的多个实例）时发送必须显式指定 `BotID`；回复当前会话用 `TargetFromEvent` 自动带上事件的 `BotID`。每个 `bots[]` 条目都会得到一个独立的适配器实例（由工厂构造），实例状态互不影响。
 
 ### 12.3 `plugins.<name>`
 
@@ -159,7 +159,7 @@ type StorageConfig struct {
 
 - 只有以 `KEI_` 开头（前缀不区分大小写）的变量参与覆盖；其余一律忽略。`KEY=VALUE` 中缺少 `=` 的元素、以及空的 `KEI_` 被忽略。
 - **空白值（`strings.TrimSpace(value) == ""`，即 `KEY=` 或只有空白字符）对所有键一律等同「未设置」**：不覆盖 YAML（因此不会把 `storage.type: sqlite` 打回默认的 `memory`、也不会清空 `auth.admin_users`）、不记入 `EnvOverrides`。compose/systemd 里 `KEY=${UNSET}` 展开成空串时依赖这条规则（`internal/config/env.go` 的 `applyEnvPath` 入口统一拦截）。
-- 路径段之间用 `_` 连接；每一段都做规范化：转小写，`-` 与 `.` 视作 `_`，空段丢弃。因此 `KEI_BOTS_FEISHU_MAIN_APP_ID` 与 `KEI_BOTS_feishu-main_APP_ID` 命中同一个 bot 的同名键。
+- 路径段之间用 `_` 连接；每一段都做规范化：转小写，`-` 与 `.` 视作 `_`，空段丢弃。因此 `KEI_BOTS_TELEGRAM_MAIN_APP_ID` 与 `KEI_BOTS_telegram-main_APP_ID` 命中同一个 bot 的同名键。
 - 顶层段的固定路径（`applyEnvPath` 直接赋值或经 `envFloat`/`envInt` 解析）：
 
 | 环境变量 | 目标字段 |
@@ -191,7 +191,7 @@ KEI_LOG_LEVEL=debug
 KEI_METRICS_ADDR=127.0.0.1:9090
 KEI_LIMITS_SEND_RATE=5
 KEI_AUTH_ADMIN_USERS=ou_xxx,123456
-KEI_BOTS_FEISHU_MAIN_APP_SECRET=xxx      # bot 名 feishu-main → Settings["app_secret"]
+KEI_BOTS_QQ_MAIN_SECRET=xxx              # bot 名 qq-main → Settings["secret"]
 KEI_PLUGINS_ECHO_ENABLED=false           # 只对已列出的插件生效
 KEI_ADAPTERS_MYIM_ENABLED=false          # 只对 adapters 段已声明的适配器生效
 KEI_STORAGE_TYPE=sqlite                  # 切换存储后端
@@ -201,7 +201,7 @@ KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=5m   # storage.Params["cleanup_interval"] = 
 
 ### 12.7 示例
 
-以下片段取自 `configs/config.yaml`（注释与未改动的部分已省略），键名与取值均为该文件中的真实键名；其中 `adapters.feishu` 在示例文件里处于注释状态，这里是展开后的形态：
+以下片段取自 `configs/config.yaml`（注释与未改动的部分已省略），键名与取值均为该文件中的真实键名：
 
 ```yaml
 log:
@@ -220,23 +220,11 @@ limits:
 auth:
   admin_users: []
 
-adapters:
-  feishu:                   # 可选声明：只允许 enabled 键
-    enabled: false
-
 bots:
   - name: mock-main
     adapter: mock
     platform: mock
     listen_addr: 127.0.0.1:18080
-  - name: feishu-main
-    enabled: false           # 实例级开关：只跳过这一个 bot（缺省启用）
-    adapter: feishu
-    app_id: cli_xxx
-    app_secret: xxx
-    verification_token: xxx
-    listen_addr: 127.0.0.1:18081
-    path: /feishu/event
   - name: qq-main
     adapter: onebot
     mode: reverse_ws         # forward_http / reverse_http / forward_ws / reverse_ws，缺省 reverse_ws

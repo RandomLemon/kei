@@ -124,17 +124,16 @@ kei v0.1.0 · manage v0.1.0
 | 没有绑定实例 | 追加 `没有已绑定的适配器实例` |
 | 否则 | 追加 `已绑定 N 个实例：` + 每实例一行 `- <BotID> → <适配器注册名>`（按 `BotID` 升序） |
 
-真实输出（`cmd/bot` 空导入了 `mock`/`feishu`/`onebot`，但配置里只装配了 `mock-main`）：
+真实输出（`cmd/bot` 空导入了 `mock`/`onebot`，但配置里只装配了 `mock-main`）：
 
 ```
-已注册 3 个适配器：
-- feishu v0.1.0 (feishu) [network,net_listen] — 飞书（Lark）适配器：事件经开放平台事件订阅回调进入，发送经开放平台 IM 接口发出。
+已注册 2 个适配器：
 - mock v0.1.0 (mock) [net_listen] — Mock 适配器：不连接真实平台，事件经 Inject 或 HTTP 控制面手动注入，发送结果记录在内存中，用于本地联调与测试。
 - onebot v0.3.0 (onebot) [network,net_listen] — OneBot v11 适配器：按 mode 选择 HTTP 双向 / 正向 WebSocket / 反向 WebSocket，事件入站与发送通道随接入方式切换。
-已绑定 1 个实例：
+已绑定 2 个实例：
 - mock-main → mock
+- qq-main → onebot
 ```
-
 两段天然可以不一致，这是设计意图而非缺陷：
 
 - 注册表来自 `pkg/bot` 的编译期注册表（`pkg/bot/adapter_registry.go:152`），列出二进制内**所有**已注册适配器，包括未在 `bots[]` 中引用、或经 `adapters.<name>.enabled: false`/`bots[].enabled: false` 停用的适配器。

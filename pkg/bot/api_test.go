@@ -142,13 +142,13 @@ func TestNoopReply(t *testing.T) {
 
 func TestTargetFromEvent(t *testing.T) {
 	ev := &Event{
-		Platform: "feishu", BotID: "feishu-main",
+		Platform: "telegram", BotID: "telegram-main",
 		Message: &Message{Kind: MessageGroup},
 		Channel: &Channel{ID: "chat1", Kind: MessageGroup},
 		Sender:  &User{ID: "ou_1"},
 	}
 	got := TargetFromEvent(ev)
-	want := Target{Platform: "feishu", BotID: "feishu-main", ChannelID: "chat1", UserID: "ou_1", Kind: MessageGroup}
+	want := Target{Platform: "telegram", BotID: "telegram-main", ChannelID: "chat1", UserID: "ou_1", Kind: MessageGroup}
 	if got != want {
 		t.Fatalf("TargetFromEvent = %+v, want %+v", got, want)
 	}

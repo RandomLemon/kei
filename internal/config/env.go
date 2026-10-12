@@ -112,7 +112,7 @@ func recordEnv(c *Config, key, path, value string) {
 // applyBotEnv 处理 KEI_BOTS_<BOTNAME>_... 形式的覆盖。
 //
 // bot 名与键名都做了规范化（小写，"-"/"." 视作 "_"），因此
-// KEI_BOTS_FEISHU_MAIN_APP_ID 能命中名为 "feishu-main" 的 bot。
+// KEI_BOTS_TELEGRAM_MAIN_APP_ID 能命中名为 "telegram-main" 的 bot。
 // 同时命中多个 bot 时取名字规范化后最长者，长度相同时全部应用。
 func applyBotEnv(c *Config, botNames []string, rest, value, key string) {
 	best, tail := -1, ""

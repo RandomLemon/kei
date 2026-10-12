@@ -25,7 +25,7 @@ func TestExampleConfigLoads(t *testing.T) {
 	for _, b := range cfg.Bots {
 		adapters[b.Adapter] = true
 	}
-	for _, want := range []string{"mock", "feishu", "onebot"} {
+	for _, want := range []string{"mock", "onebot"} {
 		if !adapters[want] {
 			t.Fatalf("示例配置缺少 %s 适配器示例: %v", want, adapters)
 		}
@@ -51,19 +51,25 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Fatalf("mock bot 的 platform = %q, want mock", mockBot.Settings["platform"])
 	}
 
-	// 示例配置用实例级 enabled: false 停用飞书 bot：快速开始依赖「只跑 mock」，
-	// 该开关必须真的生效（而不是像早期那样落入 Settings 静默失效）。
-	var feishuBot config.BotConfig
+	// 示例配置里的 OneBot bot 必须是 onebot 适配器可用的设置。
+	var qqBot config.BotConfig
 	for _, b := range cfg.Bots {
-		if b.Adapter == "feishu" {
-			feishuBot = b
+		if b.Adapter == "onebot" {
+			qqBot = b
 		}
 	}
-	if feishuBot.IsEnabled() {
-		t.Fatal("示例配置的飞书 bot 应通过 enabled: false 停用")
+	// README 的 OneBot 接入说明依赖这些键的取值与示例一致。
+	if got, _ := qqBot.Settings["mode"].(string); got != "reverse_ws" {
+		t.Fatalf("示例配置的 onebot bot mode = %q, want reverse_ws", qqBot.Settings["mode"])
 	}
-	if _, ok := feishuBot.Settings["enabled"]; ok {
-		t.Fatalf("enabled 不应落入 Settings: %+v", feishuBot.Settings)
+	if got, _ := qqBot.Settings["listen_addr"].(string); got != "127.0.0.1:18082" {
+		t.Fatalf("示例配置的 onebot bot listen_addr = %q", qqBot.Settings["listen_addr"])
+	}
+	if !qqBot.IsEnabled() {
+		t.Fatal("示例配置的 onebot bot 缺省应启用")
+	}
+	if _, ok := qqBot.Settings["enabled"]; ok {
+		t.Fatalf("enabled 不应落入 Settings: %+v", qqBot.Settings)
 	}
 }
 

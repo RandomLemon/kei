@@ -1,6 +1,6 @@
 # kei 平台适配器
 
-覆盖 `pkg/bot` 中的适配器契约（`Adapter`/`EventSink`/`SendRequest`/`Target`/`SendResult`/`Capabilities`/`Degrade`）、注册表与工厂（`AdapterFactory`/`AdapterContext`/`AdapterMetadata`/`RegisterAdapter`/`RegisteredAdapters`/`AdapterRegistrationErrors`/`LookupAdapter`）、元信息与权限裁剪、能力降级规则、第三方适配器接入方式，以及 `internal/adaptermgr` 的装配行为和 `adapters/` 下三个内置适配器的现状。
+覆盖 `pkg/bot` 中的适配器契约（`Adapter`/`EventSink`/`SendRequest`/`Target`/`SendResult`/`Capabilities`/`Degrade`）、注册表与工厂（`AdapterFactory`/`AdapterContext`/`AdapterMetadata`/`RegisterAdapter`/`RegisteredAdapters`/`AdapterRegistrationErrors`/`LookupAdapter`）、元信息与权限裁剪、能力降级规则、第三方适配器接入方式，以及 `internal/adaptermgr` 的装配行为和 `adapters/` 下两个内置适配器的现状。
 不覆盖：`Event`/`Message`/`Segment`/`Target` 等消息段类型的逐字段定义（见 [domain-model.md](domain-model.md)）、发送侧限流/重试与 Engine 生命周期（见 [engine.md](engine.md)）、`bots`/`adapters` 配置键全表（见 [configuration.md](configuration.md)）。
 插件侧的 `Permission`/`Metadata` 与权限模型见 [plugin.md](plugin.md)；面向用户的适配器编写教程与示例配置见 [../README.md](../README.md) 的「写一个适配器」小节。
 
@@ -12,11 +12,11 @@
 
 ### 6.1 适配器接口
 
-在 `pkg/bot/adapter.go` 中定义。一个 Adapter 实例对应配置文件中的一个 bot（例如一个飞书应用或一个 OneBot 实现）；实现方负责签名校验、协议解析、事件转换与消息发送。
+在 `pkg/bot/adapter.go` 中定义。一个 Adapter 实例对应配置文件中的一个 bot（例如一个 Telegram bot 或一个 OneBot 实现）；实现方负责签名校验、协议解析、事件转换与消息发送。
 
 ```go
 type Adapter interface {
-	// Name 返回平台名，例如 "feishu"、"onebot"、"mock"。
+	// Name 返回平台名，例如 "onebot"、"mock"。
 	Name() string
 	// Start 启动事件接收，阻塞直到 ctx 结束或发生不可恢复错误。
 	// 启动前必须完成监听/连接，保证返回后即可接收事件。
@@ -142,7 +142,7 @@ const OptListenAddr = "listen_addr"
 // AdapterFactory 依据 AdapterContext 构造一个适配器实例。
 //
 // 注册的是工厂而不是单例：同一平台可以有多个实例（配置中的多个 bot，
-// 例如两个飞书应用），因此实例状态不得放在包级变量里。
+// 例如两个 Telegram bot），因此实例状态不得放在包级变量里。
 type AdapterFactory func(ctx AdapterContext) (Adapter, error)
 
 // AdapterContext 是构造适配器实例所需的依赖与配置。
@@ -294,7 +294,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 
 ### 6.4 能力与降级
 
-1. 引擎在调用 `Adapter.Send` 之前统一执行 `bot.Degrade(msg, caps)`，适配器只需如实声明 `Capabilities`。执行点是 `internal/engine.SendRequest`：解析出适配器后调用 `bot.Degrade(req.Message, ad.Capabilities())`，再组装 `bot.SendRequest`。内置 feishu/onebot 适配器在自己的 `Send` 里也调用 `bot.Degrade`（对已降级的消息是幂等操作），OneBot 的 `buildArray` 另对 Markdown 段做了兜底映射。
+1. 引擎在调用 `Adapter.Send` 之前统一执行 `bot.Degrade(msg, caps)`，适配器只需如实声明 `Capabilities`。执行点是 `internal/engine.SendRequest`：解析出适配器后调用 `bot.Degrade(req.Message, ad.Capabilities())`，再组装 `bot.SendRequest`。内置 onebot 适配器在自己的 `Send` 里也调用 `bot.Degrade`（对已降级的消息是幂等操作），其 `buildArray` 另对 Markdown 段做了兜底映射。
 2. 降级规则（`pkg/bot/degrade.go` 逐条对应）：
 
 ```go
@@ -392,23 +392,23 @@ bots:
 
 第 6 章对适配器的要求与实现证据。通用硬性规则（分层与依赖、运行时契约、质量门）以 [`../AGENTS.md`](../AGENTS.md) 第 2 章为唯一规则本体，本节不重复其条款，只列适配器侧的落地要求与证据。
 
-1. 内置适配器放 `adapters/<platform>`；第三方适配器放独立包或独立 module，只依赖 `pkg/bot`，不得依赖 `internal/`，也不得要求核心侧改动。**已实现**：`adapters/mock`、`adapters/onebot`、`adapters/feishu` 的非测试源码只 import 标准库与 `github.com/RandomLemon/kei/pkg/bot`（测试另用 `pkg/message` 构造消息，同属公开 SDK）。
-2. 适配器必须在自己的 `init()` 中调用 `RegisterAdapter`；主程序通过空导入启用，是否实例化由配置中的 `bots[].adapter` 决定。**已实现**：三个内置适配器的 `register.go` 都在 `init()` 注册；`cmd/bot/main.go` 空导入 feishu/mock/onebot。注册名或工厂不合法的注册不会静默失效：`RegisterAdapter` 拒绝该次注册并记入 `AdapterRegistrationErrors`，启动校验（`adaptermgr.ValidateRegistry`）据此报错，而不是让它在运行时表现为「未注册」。
-3. Adapter 负责签名校验、协议解析、事件转换为统一 `Event`、把统一 `Message` 转为平台消息并发送。**已实现**：飞书的签名/解密/token 校验与开放平台调用、OneBot 的 `Authorization` 校验与 HTTP 上报解析均在各适配器包内。
+1. 内置适配器放 `adapters/<platform>`；第三方适配器放独立包或独立 module，只依赖 `pkg/bot`，不得依赖 `internal/`，也不得要求核心侧改动。**已实现**：`adapters/mock`、`adapters/onebot` 的非测试源码只 import 标准库与 `github.com/RandomLemon/kei/pkg/bot`（测试另用 `pkg/message` 构造消息，同属公开 SDK）。
+2. 适配器必须在自己的 `init()` 中调用 `RegisterAdapter`；主程序通过空导入启用，是否实例化由配置中的 `bots[].adapter` 决定。**已实现**：两个内置适配器的 `register.go` 都在 `init()` 注册；`cmd/bot/main.go` 空导入 mock/onebot。注册名或工厂不合法的注册不会静默失效：`RegisterAdapter` 拒绝该次注册并记入 `AdapterRegistrationErrors`，启动校验（`adaptermgr.ValidateRegistry`）据此报错，而不是让它在运行时表现为「未注册」。
+3. Adapter 负责签名校验、协议解析、事件转换为统一 `Event`、把统一 `Message` 转为平台消息并发送。**已实现**：OneBot 的 `Authorization` 校验与 HTTP 上报解析、各连接类型的事件转换与发送序列化都在 `adapters/onebot` 包内。
 4. 必须声明 `Capabilities` 与 `Permissions`，声明必须与实现一致；错报能力会导致发送失败或内容丢失。**已实现**：内置适配器的能力位与权限见 6.7，并与发送路径逐一对齐（例如 OneBot 不声明 `Markdown`/`Card`）。
-5. 工厂必须支持同平台多实例：状态只能挂在实例上，`New` 每次返回互相隔离的实例。**已实现**：三个内置适配器的可变状态都在 `Adapter` 结构体上；`adaptermgr` 对每个 bot 调一次工厂。
+5. 工厂必须支持同平台多实例：状态只能挂在实例上，`New` 每次返回互相隔离的实例。**已实现**：两个内置适配器的可变状态都在 `Adapter` 结构体上；`adaptermgr` 对每个 bot 调一次工厂。
 6. `Event.ID` 必须稳定且平台内唯一（用于去重），`Event.Platform` 必须属于 `AdapterMetadata.Platforms`，`Event.BotID` 必须等于 `AdapterContext.BotID`。**已实现（含以下边界）**：核心只在装配期用 warn 日志提示不一致——若 `adapter.Name()` 非空但不在 `meta.Platforms` 中，记 `适配器返回的平台名未在元信息中声明`，但不再报错；`adapter.Name()` 为空则装配失败。事件被投递后，去重由事件总线按 `Event.ID` + TTL 完成（`internal/eventbus` 与 `internal/dedup`），未知段类型等字段不做校验。
-7. `Start` 返回前必须完成监听/连接；`Stop` 必须幂等并等待已接收事件投递完毕；适配器内部 goroutine 必须有退出机制，不得泄漏。**已实现**：OneBot `Start` 只在当前 `mode` 需要监听时（`forward_http`/`reverse_http`/`reverse_ws`）先 `net.Listen` 再进入 `Serve`，`forward_ws` 不监听端口而是主动拨号；飞书 `Start` 同样先监听、退出前 `Shutdown` + 等 worker（`wg.Wait`）、并给队列剩余事件 5s 排空预算；OneBot 在退出时显式收尾 hijacked 的反向 WebSocket 连接并取消正向重连循环。
-8. 平台回调必须快速 ACK：先 ACK 平台，再异步投递到核心；`EventSink.Emit` 返回只表示已入队。入队失败必须记录日志与指标，不得静默丢弃。**已实现（日志层面）**：飞书校验通过后先回 `200 {"code":0}` 再入队（队列容量 1024、2 个 worker，满时丢弃并记 warn `飞书事件队列已满，丢弃事件`）；OneBot 上报先回 `204` 再 `Emit`，失败记 warn `onebot: 投递事件失败`。**指标缺口**：上述丢弃与投递失败都没有对应指标，只有日志。
+7. `Start` 返回前必须完成监听/连接；`Stop` 必须幂等并等待已接收事件投递完毕；适配器内部 goroutine 必须有退出机制，不得泄漏。**已实现**：OneBot `Start` 只在当前 `mode` 需要监听时（`forward_http`/`reverse_http`/`reverse_ws`）先 `net.Listen` 再进入 `Serve`，`forward_ws` 不监听端口而是主动拨号；退出时显式收尾 hijacked 的反向 WebSocket 连接并取消正向重连循环。
+8. 平台回调必须快速 ACK：先 ACK 平台，再异步投递到核心；`EventSink.Emit` 返回只表示已入队。入队失败必须记录日志与指标，不得静默丢弃。**已实现（日志层面）**：OneBot 上报先回 `204` 再 `Emit`，失败记 warn `onebot: 投递事件失败`。**指标缺口**：投递失败没有对应指标，只有日志。
 9. 配置与密钥只能经 `AdapterContext.Config` 读取，不得直接读环境变量或文件。**已实现**：`adapters/` 下没有 `os.Getenv`/`os.ReadFile`/`os.Open` 调用；环境变量覆盖由配置加载层统一完成。
-10. 重复投递同一事件必须安全（核心按 `Event.ID` 去重），但适配器不得依赖去重来掩盖自身的重复投递。**已实现**：事件总线在 `Publish` 时用 TTL + 容量上限的去重集合丢弃重复 ID；内置适配器生成稳定 ID（飞书优先 `header.event_id`、缺失时用平台名 + bot 名 + 纳秒时间 + 自增序号兜底；OneBot 消息事件优先 `message_id`，其余类型用 `self_id`/`post_type`/时间/子类型确定性拼接）。
+10. 重复投递同一事件必须安全（核心按 `Event.ID` 去重），但适配器不得依赖去重来掩盖自身的重复投递。**已实现**：事件总线在 `Publish` 时用 TTL + 容量上限的去重集合丢弃重复 ID；内置适配器生成稳定 ID（OneBot 消息事件优先 `message_id`，其余类型用 `self_id`/`post_type`/时间/子类型确定性拼接）。
 11. Mock Adapter 必须实现，用于本地测试和事件回放。**已实现**：`adapters/mock`（见 6.7）。
 
 ### 6.7 内置适配器现状
 
-三个内置适配器都在 `cmd/bot/main.go` 中空导入。`wecom`（企业微信）**未实现**：仓库中没有 `adapters/wecom` 目录，`pkg/kei/assemble_test.go` 的 `TestAdaptermgrBuild` 把 `adapter: wecom` 当作「未注册适配器」的失败用例，[../README.md](../README.md) 的「已知限制」也记录了这一点（企业微信可参考飞书适配器的结构接入）。
+两个内置适配器都在 `cmd/bot/main.go` 中空导入。`wecom`（企业微信）**未实现**：仓库中没有 `adapters/wecom` 目录，`pkg/kei/assemble_test.go` 的 `TestAdaptermgrBuild` 把 `adapter: wecom` 当作「未注册适配器」的失败用例，[../README.md](../README.md) 的「已知限制」也记录了这一点（企业微信需按第 6 章的适配器契约自行接入）。
 
-`bots[]` 条目上的 `enabled: false` 是实例级开关（缺省 true，可用 `KEI_BOTS_<NAME>_ENABLED` 覆盖）：`adaptermgr.Validate` 与 `Build` 都跳过该实例，跳过时不校验保留键、不装配、不记未知键告警，`Build` 记一条 `bot 已禁用，跳过` info 日志。它与 `adapters.<name>.enabled` 的区别是作用范围只到单个实例：同一适配器的其他 bot 实例不受影响，内置适配器（`adapters/feishu` 等）无需任何改动即支持。
+`bots[]` 条目上的 `enabled: false` 是实例级开关（缺省 true，可用 `KEI_BOTS_<NAME>_ENABLED` 覆盖）：`adaptermgr.Validate` 与 `Build` 都跳过该实例，跳过时不校验保留键、不装配、不记未知键告警，`Build` 记一条 `bot 已禁用，跳过` info 日志。它与 `adapters.<name>.enabled` 的区别是作用范围只到单个实例：同一适配器的其他 bot 实例不受影响，内置适配器（`adapters/mock` 等）无需任何改动即支持。
 
 #### mock
 
@@ -430,15 +430,6 @@ bots:
 - 发送：优先经可承载 API 的 WebSocket 连接（正向或反向）下发（按 `echo` 匹配响应），没有可用连接时回落到 `api_url` 的 HTTP API；回落规则与 `mode` 无关，只要 `api_url` 非空它就是可用通道，`api_url` 为空且无连接时返回错误。目标类型为空时按 `ChannelID`/`UserID` 推断群聊或私聊，群聊用 `send_group_msg`、私聊用 `send_private_msg`。
 - 能力：`Text`/`Image`/`At`/`File`/`Reply`/`Private`/`Group` 为 true；`Markdown`、`Card` 为 false；表情段由 `Text` 支撑，因此 Markdown/卡片会在发送前被 `bot.Degrade` 转成文本。
 - 工厂：`newFromContext` 在 `ac.HTTPClient == nil`（即未授予 `network`）时直接失败，不回落到默认客户端。
-
-#### feishu
-
-- 注册名/平台：`feishu`（`adapters/feishu` 的 `PlatformName`）；版本 `v0.1.0`，作者 `core`。
-- 权限：`[network, net_listen]`；配置键（`Options`）：`app_id`、`app_secret`、`verification_token`、`encrypt_key`、`listen_addr`、`path`、`base_url`。
-- 接入方式：开放平台事件订阅回调。必填 `Name`、`AppID`、`AppSecret`、`VerificationToken`、`ListenAddr`；`path` 默认 `/feishu/event`，`base_url` 默认 `https://open.feishu.cn`。`encrypt_key` 非空时校验 `X-Lark-Signature`（时间戳 + nonce + body）并解密加密事件；`url_verification` 用 body 中的 token 校验后原样回写 `challenge`；正常事件校验 token 后先回 `200 {"code":0}` 再入队异步投递（队列容量 1024、2 个 worker，队列满丢弃并告警）。
-- 发送：用 `tenant_access_token` 调开放平台 IM 接口。一条飞书消息只能有一种 `msg_type`，因此统一消息会被切成若干块依次发送（连续文本与 `@` 合并为 `text`，图片单独 `image`，卡片单独 `interactive`，文件给出 `file_key` 时按 `file` 发送），返回最后一块的 `message_id`；`ReplyTo` 或消息中的引用段决定回复目标，否则按 `Target.Kind`/`UserID`/`ChannelID` 解析 `receive_id`。
-- 能力：`Text`/`Markdown`/`Image`/`At`/`Card`/`File`/`Reply`/`Private`/`Group` 全为 true。注意 `Markdown` 只是「不会在降级时被转成文本」：`buildChunks` 把 `SegMarkdown` 按纯文本写入 `text` 分块（飞书的 `text` 类型不渲染 Markdown，源码注释指明需要富文本时应改用卡片段），因此该能力位描述的是「Markdown 内容可原样送达」，而不是「飞书会渲染 Markdown」。
-- 工厂：`newFromContext` 在 `ac.HTTPClient == nil`（即未授予 `network`）时直接失败。
 
 ---
 

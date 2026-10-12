@@ -410,7 +410,7 @@ func TestEngineSendResolvesAdapter(t *testing.T) {
 
 	record(h.eng.Send(ctx, bot.Target{Platform: "mock", ChannelID: "c1"}, textMessage("hi")))
 	record(h.eng.Send(ctx, bot.Target{Platform: "mock", BotID: "mock-main", ChannelID: "c1"}, textMessage("hi")))
-	record(h.eng.Send(ctx, bot.Target{Platform: "feishu", ChannelID: "c1"}, textMessage("hi")))
+	record(h.eng.Send(ctx, bot.Target{Platform: "telegram", ChannelID: "c1"}, textMessage("hi")))
 	record(h.eng.Send(ctx, bot.Target{Platform: "mock", BotID: "missing", ChannelID: "c1"}, textMessage("hi")))
 	record(h.eng.Send(ctx, bot.Target{ChannelID: "c1"}, textMessage("hi")))
 	record(h.eng.Send(ctx, bot.Target{Platform: "mock"}, nil))

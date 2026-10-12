@@ -37,12 +37,6 @@
   - 补注：两分支同时就绪的概率不低——起完适配器 goroutine 后还有 `engine started` 日志等开销，失败适配器往往在进入 `select` 之前就完成“写 channel + cancel”。用等价最小复现（同一 `select` 结构 + 1ms 前置延迟）跑 200 次：旧逻辑 107 次返回 `nil`，新逻辑 0 次。
   - 验收：测试模拟 `Adapter.Start` 返回非 `ctx.Canceled` 错误，断言 `Run` 返回非 nil 错误（重复运行以覆盖随机性）。
 
-- [ ] **4. 飞书：先 ACK 成功后丢事件** `[读码]`
-  - 位置：`adapters/feishu/feishu.go:375-377`（ACK 先于 enqueue）、`:315-321`（满队列 `default` 丢弃）
-  - 问题：队列 1024、worker 2；满时飞书收到 `code:0` 不再重试 → 事件永久丢失，仅一条 warn。违反 `AGENTS.md` 2.3 的“快速 ACK + 异步投递”本意（ACK 必须代表已受理）。
-  - 修复：`enqueue` 返回 bool；失败时回非 0 code（或 503）让飞书重试，`writeJSON` 移到 enqueue 之后。
-  - 验收：单测构造满队列，断言返回非 2xx / 非 0 code。
-
 - [x] **5. MySQL 后端：`key` 是保留字，Get/Delete 语法错误** `[读码]` — 完成 10ec513：新增 `sqlstore.whereKey(key)`（`clause.Eq{Column: clause.Column{Name: "key"}, Value: key}`），`Get`/惰性清理/`Delete` 全部改用它，列名交由 dialector 按方言引用（与 `Set` 的 `OnConflict` 同一约定）。回归测试 `internal/storage/sqlstore/sqlstore_test.go` 的 `TestKeyColumnQuotedForMySQL`（MySQL 方言 dry-run 断言 `WHERE \`key\` = 'k1'`，不需要真实服务器）。实机取证：podman 起 MySQL 8.4，修复前 `go test ./internal/storage/mysql/` 两个用例均报 `Error 1064 … near 'key = ? ORDER BY …'`，修复后往返与 TTL 全绿。文档：`docs/testing.md` 的 sqlstore 行 2→3。
   - 位置：`internal/storage/sqlstore/sqlstore.go:77`、`:86`、`:107`（裸 `Where("key = ?", …)`）、`Entry.Key`（`:22-23`）
   - 问题：GORM 对字符串条件原样下发；`KEY` 在 MySQL 8 是保留字（需引用），SQLite 宽容 → 仅 MySQL 后端全挂。`internal/storage/mysql/mysql_test.go:25` 未设 `KEI_TEST_MYSQL_DSN` 即 Skip，CI 覆盖不到。
@@ -122,7 +116,7 @@
 
 - [ ] **17. onebot：`Capabilities.File=true` 但 URL-only 文件段发不出去** `[读码]`
   - 位置：`adapters/onebot/onebot.go:311`、`adapters/onebot/message.go:147-151`；构造器 `pkg/message/message.go:55-57`
-  - 问题：`message.File(url,name)` 只给 `KeyURL`，OneBot `file` 字段要求 `file://`/本地路径 → 发送失败，且能力位为 true 使 `bot.Degrade` 不做文本兜底。Feishu 反而只在有 `KeyFile` 时发文件。
+  - 问题：`message.File(url,name)` 只给 `KeyURL`，OneBot `file` 字段要求 `file://`/本地路径 → 发送失败，且能力位为 true 使 `bot.Degrade` 不做文本兜底。
   - 修复：`File:false`（让引擎降级为文本），或仅在有 `KeyFile` 时发文件、否则回退文本链接。
   - 验收：单测 URL-only 文件段按声明行为处理。
 
@@ -131,42 +125,6 @@
   - 问题：`hub.shutdown` 先耗尽 ctx 预算（失败再等 1s），之后 `srv.Shutdown` 继承已耗尽 ctx；`Start` defer 又用新的 5s 预算，单次启停可叠加。
   - 修复：`Stop` 顶部定一个 deadline，`srv.Shutdown` 先于 `hub.shutdown`，各阶段显式子预算；`Start` defer 复用有界 ctx。
   - 验收：测试卡住的 WS 会话下 `Stop` 在预算内返回。
-
-- [ ] **19. 飞书：`Stop` 不等待 `Serve` goroutine、不清 `addr`** `[静态]`
-  - 位置：`adapters/feishu/feishu.go:248-278`、`Addr()` 注释 `:108-116`
-  - 问题：`Start`/`Stop` 由引擎不同 goroutine 调用；`Stop` 返回后 `Addr()` 仍可能非空、`started` 仍可能为 true，与注释“已停止时为空串”不符。
-  - 修复：用 done channel 与 Serve goroutine 同步，并在 `Stop` 内加锁清理 `addr`/`started`；或改写注释为弱保证。
-  - 验收：单测 `Stop` 后 `Addr()==""`。
-
-- [ ] **20. 飞书：排空循环无 deadline 且 `default` 会漏事件** `[读码]`
-  - 位置：`adapters/feishu/feishu.go:289-312`
-  - 问题：`default` 在 channel 瞬时为空即返回，之后入队的事件无人消费；`drainCtx` 只传给 `Emit`，循环本身无计时 → 既超预算又丢事件。`docs/adapter.md` 声称“5s 排空预算”。
-  - 修复：循环内加 `case <-drainCtx.Done()`；排空前先关闭入队（置 draining 标志），或排空至 deadline 并统计残留。
-  - 验收：单测慢 sink + 并发 enqueue，断言残留事件被计数/告警。
-
-- [ ] **21. 飞书：多 chunk 发送 + 引擎重试 = 重复投递** `[静态]`
-  - 位置：`adapters/feishu/send.go:141-148`（顺序发 N 段，仅返回最后 ID）、重试 `internal/engine/send.go`（默认 2 次）
-  - 问题：第 3 段失败 → 引擎重试整条 → 前两段重复；错误也无“已发部分”信息。
-  - 修复：为每段带 Lark `uuid` 去重；或返回结构化错误让引擎不重试多段消息。
-  - 验收：单测模拟第 N 段失败，断言无重复段。
-
-- [ ] **22. 飞书：token 刷新在锁内做网络调用、失败不清缓存** `[静态]`
-  - 位置：`adapters/feishu/send.go:438-458`、`:481-483`
-  - 问题：`fetchToken` 在 `tokRefresh` 内 → 慢/挂起的 token 端点串行化整个发送路径；鉴权失败后旧 token 仍留在缓存直到 margin 到期，不会自愈。
-  - 修复：网络调用移出锁（发布时二次检查），鉴权类错误清 `tok`/`tokExpire`。
-  - 验收：单测并发 Send + 挂起 token 端点，断言不超过一次 fetch 且失败后能重取。
-
-- [ ] **23. 飞书：`parsePost` 随机选 locale** `[读码]`
-  - 位置：`adapters/feishu/event.go:366-374`（map 首个键 `break`）
-  - 问题：多 locale 的 post 文本随机，关键词规则随投递不同而命中不同。
-  - 修复：按固定优先级（如 `zh_cn`→`en_us`→字典序首键）取值。
-  - 验收：单测多 locale 输入结果确定。
-
-- [ ] **24. 飞书：`Capabilities.Markdown=true` 但按纯文本发送** `[读码]`
-  - 位置：`adapters/feishu/feishu.go:163`、`adapters/feishu/send.go:199-203`；`pkg/bot/adapter.go:80`（注释“支持 Markdown 富文本”）
-  - 问题：能力位语义（此处仅表示“不降级为文本”）与字段名/注释承诺不一致，插件 `Reply.Markdown` 得到字面 `**bold**`。
-  - 修复：置 `Markdown:false` 让引擎降级为文本（线上结果相同、声明诚实），或真正用 `lark_md` 卡片发送；同时校正 `Capabilities` 注释与 `docs/adapter.md`。
-  - 验收：单测按所选语义断言。
 
 - [ ] **25. mock：`started` 置位早于 listen；`kind` 不校验** `[静态]`
   - 位置：`adapters/mock/mock.go:110-127`、`:349-355`、`:305-309`
@@ -240,8 +198,8 @@
   - 修复：按现实改写注释；`OnRegex` 若要真报错需改 `Setup` 行为并同步 `docs/plugin.md` 9.2。
 
 - [ ] **37. `Reply.Send` 写入的 `msg.ID` 是死字段** `[读码]`
-  - 位置：`internal/reply/reply.go:89-91`、`docs/plugin.md:220`；消费方 `adapters/feishu/send.go:124-127/151-158`、`adapters/onebot/message.go`
-  - 问题：注释称“用于平台侧引用回复”，但无任何适配器读待发 `Message.ID`（feishu 走 `req.ReplyTo`/`SegReply`，onebot 只序列化 `SegReply`）→ 引用回复静默失效。
+  - 位置：`internal/reply/reply.go:89-91`、`docs/plugin.md:220`；消费方 `adapters/onebot/message.go`
+  - 问题：注释称“用于平台侧引用回复”，但无任何适配器读待发 `Message.ID`（onebot 只序列化 `SegReply`）→ 引用回复静默失效。
   - 修复：实现意图（`Builder.Send` 设 `SendRequest.ReplyTo` 或追加 `SegReply`），或删除赋值并改文档。
 
 - [ ] **38. 注册器静默陷阱：空参数退化成兜底、`WithPlatforms`/`WithBotIDs` 空参语义相反、`Keywords` 不拷贝** `[读码]`
@@ -276,16 +234,16 @@
   - 验收：`!manage ping` 可通过配置跑通；`docs/engine.md` 7.x 与 `docs/configuration.md` 同步。
 
 - [ ] **43. 适配器重复实现抽取到共享层** `[读码]`
-  - 位置：`firstNonEmpty` ×5（`adapters/feishu/event.go:426`、`adapters/onebot/message.go:213`、`pkg/bot/degrade.go:87`、`internal/engine/logging.go:122`、`examples/kei-adapter-myim/myim.go:511`）；`dataString` ×3 语义不同（`adapters/onebot/message.go:183` 走 `jsonString`，`adapters/feishu/send.go:531`、`internal/engine/logging.go:116` 只认 `string`）；`truncate` ×3
-  - 问题：同一 `bot.Segment` 在不同适配器上取值行为不同（数字型 `@` 目标在 feishu 静默丢）；违反“禁止并存第二套约定”。
+  - 位置：`firstNonEmpty` ×4（`adapters/onebot/message.go:213`、`pkg/bot/degrade.go:87`、`internal/engine/logging.go:122`、`examples/kei-adapter-myim/myim.go:511`）；`dataString` ×3 语义不同（`adapters/onebot/message.go:183` 走 `jsonString`，`internal/engine/logging.go:116` 只认 `string`，`examples/kei-adapter-myim/myim.go` 又写一套）；`truncate` ×3
+  - 问题：同一 `bot.Segment` 在不同适配器上取值行为不同；违反“禁止并存第二套约定”。
   - 修复：把 `Segment.Data` 取值约定收进 `pkg/bot`（紧邻 `Key*` 常量），适配器只保留平台特有逻辑。
-  - 验收：新增测试断言两种取值在 feishu/onebot 上一致。
+  - 验收：新增测试断言两种取值在 onebot 与示例适配器上一致。
 
-- [ ] **44. 入站 HTTP 事件源模式两份且已分叉** `[读码]`
-  - 位置：`adapters/feishu/feishu.go:197-217`（仅 `ReadHeaderTimeout`）、`adapters/onebot/onebot.go:414-420`（完整四项）；ACK/排空策略亦不同
-  - 问题：慢速 POST 可长期占用飞书连接；ACK/丢弃/排空语义各写一套。
+- [ ] **44. 入站 HTTP 事件源的服务器超时未按需配置** `[读码]`
+  - 位置：`adapters/onebot/onebot.go:414-420`（完整四项，但与事件源的实际风险面不一定匹配）
+  - 问题：入站 HTTP 事件源目前只剩 OneBot 一处，但服务器超时默认值、body 上限与 ACK/丢弃/排空语义没有共享实现；后续新增 HTTP 回调型适配器（如企业内部 IM）时会再次各写一套。
   - 修复：抽 `internal/adapterkit`：body 上限读取、鉴权钩子、ACK 策略、有界队列 + worker、带 deadline 排空、服务器超时默认值；适配器只提供 auth/parse/convert。
-  - 验收：两适配器共用同一实现；`docs/adapter.md` 同步。
+  - 验收：OneBot 迁移到共享实现，现有行为测试保持通过；`docs/adapter.md` 同步。
 
 - [ ] **45. `docs/adapter.md` 与 `AdapterContext.Config` 注释过时** `[静态]`
   - 位置：`docs/adapter.md:384` vs `pkg/bot/adapter_registry.go:29`
@@ -313,8 +271,10 @@
 
 1. P0 全部（1-9）：静默丢事件/丢错误/后端不可用，优先。
 2. P1 契约类（10-15、34、38）：中间件顺序、Publish 契约、注册器语义。
-3. P1 适配器类（16-26）：按 feishu → onebot → mock。
+3. P1 适配器类（16-18、25-26）：按 onebot → mock。
 4. P1 基础设施（27-33、35-37、39-40）。
 5. P2 结构与文档（41-48）。
+
+> 注：编号 4、19-24 原为飞书适配器缺陷；飞书适配器已从仓库移除，这些条目随之删除，编号保留空位以维持其余条目的稳定性。
 
 > 注：第 1、2 条已在本地用临时用例复现（结论：`Seen(X)==false`；`order` 由 4 涨到 20001），已落地为 `internal/dedup` 的回归测试 `TestStaleOrderSlotDoesNotEvictReAddedID`、`TestOrderStaysBoundedUnderReAdd`（修复前均失败，修复后通过）。

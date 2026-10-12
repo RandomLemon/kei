@@ -4,11 +4,11 @@ import "context"
 
 // Adapter 是平台适配层接口。
 //
-// 一个 Adapter 实例对应配置文件中的一个 bot（例如一个飞书应用或一个
+// 一个 Adapter 实例对应配置文件中的一个 bot（例如一个 Telegram bot 或一个
 // OneBot 实现）。实现方负责签名校验、协议解析、事件转换与消息发送，
 // 并把平台调用统一为 Send/SendRequest。
 type Adapter interface {
-	// Name 返回平台名，例如 "feishu"、"onebot"、"mock"。
+	// Name 返回平台名，例如 "telegram"、"onebot"、"mock"。
 	Name() string
 	// Start 启动事件接收，阻塞直到 ctx 结束或发生不可恢复错误。
 	// 启动前必须完成监听/连接，保证返回后即可接收事件。
