@@ -43,7 +43,7 @@
   - 修复：`enqueue` 返回 bool；失败时回非 0 code（或 503）让飞书重试，`writeJSON` 移到 enqueue 之后。
   - 验收：单测构造满队列，断言返回非 2xx / 非 0 code。
 
-- [x] **5. MySQL 后端：`key` 是保留字，Get/Delete 语法错误** `[读码]` — 完成：新增 `sqlstore.whereKey(key)`（`clause.Eq{Column: clause.Column{Name: "key"}, Value: key}`），`Get`/惰性清理/`Delete` 全部改用它，列名交由 dialector 按方言引用（与 `Set` 的 `OnConflict` 同一约定）。回归测试 `internal/storage/sqlstore/sqlstore_test.go` 的 `TestKeyColumnQuotedForMySQL`（MySQL 方言 dry-run 断言 `WHERE \`key\` = 'k1'`，不需要真实服务器）。实机取证：podman 起 MySQL 8.4，修复前 `go test ./internal/storage/mysql/` 两个用例均报 `Error 1064 … near 'key = ? ORDER BY …'`，修复后往返与 TTL 全绿。文档：`docs/testing.md` 的 sqlstore 行 2→3。
+- [x] **5. MySQL 后端：`key` 是保留字，Get/Delete 语法错误** `[读码]` — 完成 10ec513：新增 `sqlstore.whereKey(key)`（`clause.Eq{Column: clause.Column{Name: "key"}, Value: key}`），`Get`/惰性清理/`Delete` 全部改用它，列名交由 dialector 按方言引用（与 `Set` 的 `OnConflict` 同一约定）。回归测试 `internal/storage/sqlstore/sqlstore_test.go` 的 `TestKeyColumnQuotedForMySQL`（MySQL 方言 dry-run 断言 `WHERE \`key\` = 'k1'`，不需要真实服务器）。实机取证：podman 起 MySQL 8.4，修复前 `go test ./internal/storage/mysql/` 两个用例均报 `Error 1064 … near 'key = ? ORDER BY …'`，修复后往返与 TTL 全绿。文档：`docs/testing.md` 的 sqlstore 行 2→3。
   - 位置：`internal/storage/sqlstore/sqlstore.go:77`、`:86`、`:107`（裸 `Where("key = ?", …)`）、`Entry.Key`（`:22-23`）
   - 问题：GORM 对字符串条件原样下发；`KEY` 在 MySQL 8 是保留字（需引用），SQLite 宽容 → 仅 MySQL 后端全挂。`internal/storage/mysql/mysql_test.go:25` 未设 `KEI_TEST_MYSQL_DSN` 即 Skip，CI 覆盖不到。
   - 修复：改用 `clause.Eq{Column: clause.Column{Name:"key"}, Value:key}` 或 `Where(map[string]any{"key": key})`，由 dialector 负责引用。
