@@ -16,14 +16,15 @@ import (
 type Registry struct {
 	mu sync.RWMutex
 
-	published map[string]*counter
-	dropped   map[droppedKey]*counter
-	handled   map[handledKey]*counter
-	handling  map[pluginRuleKey]*histogram
-	sent      map[platformResultKey]*counter
-	sending   map[string]*histogram
-	matched   map[pluginRuleKey]*counter
-	overruns  map[pluginRuleKey]*counter
+	published   map[string]*counter
+	dropped     map[droppedKey]*counter
+	handled     map[handledKey]*counter
+	handling    map[pluginRuleKey]*histogram
+	sent        map[platformResultKey]*counter
+	sending     map[string]*histogram
+	matched     map[pluginRuleKey]*counter
+	overruns    map[pluginRuleKey]*counter
+	matchPanics map[pluginRuleKey]*counter
 }
 
 // droppedKey 是丢弃计数的标签组合。
@@ -44,14 +45,15 @@ type platformResultKey struct{ platform, result string }
 // New 构造指标注册表。
 func New() *Registry {
 	return &Registry{
-		published: make(map[string]*counter),
-		dropped:   make(map[droppedKey]*counter),
-		handled:   make(map[handledKey]*counter),
-		handling:  make(map[pluginRuleKey]*histogram),
-		sent:      make(map[platformResultKey]*counter),
-		sending:   make(map[string]*histogram),
-		matched:   make(map[pluginRuleKey]*counter),
-		overruns:  make(map[pluginRuleKey]*counter),
+		published:   make(map[string]*counter),
+		dropped:     make(map[droppedKey]*counter),
+		handled:     make(map[handledKey]*counter),
+		handling:    make(map[pluginRuleKey]*histogram),
+		sent:        make(map[platformResultKey]*counter),
+		sending:     make(map[string]*histogram),
+		matched:     make(map[pluginRuleKey]*counter),
+		overruns:    make(map[pluginRuleKey]*counter),
+		matchPanics: make(map[pluginRuleKey]*counter),
 	}
 }
 
@@ -103,6 +105,14 @@ func (r *Registry) RuleOverrun(plugin, rule string) {
 		return
 	}
 	counterFor(&r.mu, r.overruns, pluginRuleKey{plugin, rule}).inc()
+}
+
+// RuleMatchPanic 记录一次规则匹配阶段 panic。
+func (r *Registry) RuleMatchPanic(plugin, rule string) {
+	if r == nil {
+		return
+	}
+	counterFor(&r.mu, r.matchPanics, pluginRuleKey{plugin, rule}).inc()
 }
 
 // resultOf 把错误映射为结果标签值。
@@ -169,9 +179,10 @@ func (r *Registry) render(b *strings.Builder) {
 		return
 	}
 	r.mu.RLock()
-	published, dropped, handled, handling, sent, sending, matched, overruns :=
+	published, dropped, handled, handling, sent, sending, matched, overruns, matchPanics :=
 		copyMap(r.published), copyMap(r.dropped), copyMap(r.handled), copyMap(r.handling),
-		copyMap(r.sent), copyMap(r.sending), copyMap(r.matched), copyMap(r.overruns)
+		copyMap(r.sent), copyMap(r.sending), copyMap(r.matched), copyMap(r.overruns),
+		copyMap(r.matchPanics)
 	r.mu.RUnlock()
 
 	writeFamily(b, metricEventsPublished, helpEventsPublished, typeCounter, func() {
@@ -225,6 +236,13 @@ func (r *Registry) render(b *strings.Builder) {
 			writeLine(b, metricRuleOverruns,
 				sortLabels([]label{{"plugin", k.plugin}, {"rule", k.rule}}),
 				formatUint(overruns[k].value()))
+		}
+	})
+	writeFamily(b, metricRuleMatchPanics, helpRuleMatchPanics, typeCounter, func() {
+		for _, k := range sortedKeys(matchPanics, func(k pluginRuleKey) string { return k.plugin + "\x00" + k.rule }) {
+			writeLine(b, metricRuleMatchPanics,
+				sortLabels([]label{{"plugin", k.plugin}, {"rule", k.rule}}),
+				formatUint(matchPanics[k].value()))
 		}
 	})
 }

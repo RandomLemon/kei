@@ -780,6 +780,9 @@ func (f *fakeRecorder) RuleOverrun(plugin, rule string) {
 	f.gotOverrun.plugin, f.gotOverrun.rule = plugin, rule
 }
 
+// RuleMatchPanic 实现 metrics.Recorder（本包不使用，留空）。
+func (f *fakeRecorder) RuleMatchPanic(string, string) {}
+
 // TestMetricsMiddleware 验证指标中间件上报插件、规则、耗时与错误。
 func TestMetricsMiddleware(t *testing.T) {
 	rec := &fakeRecorder{}

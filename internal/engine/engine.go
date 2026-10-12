@@ -211,7 +211,8 @@ func New(opts Options) (*Engine, error) {
 		Replies: func(_ context.Context, ev *bot.Event) bot.Reply {
 			return reply.New(e, ev)
 		},
-		Logger: e.log,
+		Logger:  e.log,
+		Metrics: e.met,
 	})
 	e.bus = eventbus.New(eventbus.Options{
 		Workers:       orInt(opts.BusWorkers, defaultBusWorkers),

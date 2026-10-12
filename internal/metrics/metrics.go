@@ -30,6 +30,8 @@ type Recorder interface {
 	RuleMatched(plugin, rule string)
 	// RuleOverrun 记录一次规则 Handler 未在 RuleTimeout 内返回（超时时刻仍未退出）。
 	RuleOverrun(plugin, rule string)
+	// RuleMatchPanic 记录一次规则匹配阶段 panic（规则被跳过，其余规则照常执行）。
+	RuleMatchPanic(plugin, rule string)
 }
 
 // 指标名。
@@ -42,6 +44,7 @@ const (
 	metricMessageSend     = "kei_message_send_seconds"
 	metricRulesMatched    = "kei_rules_matched_total"
 	metricRuleOverruns    = "kei_rule_overruns_total"
+	metricRuleMatchPanics = "kei_rule_match_panics_total"
 )
 
 // 指标帮助文本。
@@ -54,6 +57,7 @@ const (
 	helpMessageSend     = "消息发送耗时（秒）"
 	helpRulesMatched    = "规则命中总数"
 	helpRuleOverruns    = "规则 Handler 未在 RuleTimeout 内返回的次数"
+	helpRuleMatchPanics = "规则匹配阶段 panic 的次数（该规则被跳过，其余规则照常执行）"
 )
 
 // 结果标签取值。

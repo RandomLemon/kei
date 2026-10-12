@@ -12,14 +12,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/RandomLemon/kei/internal/metrics"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
+
+// ErrMatchPanic 表示规则匹配阶段发生 panic。Dispatch 会跳过该条规则并继续执行
+// 其余规则，该错误进入聚合返回值，可用 errors.Is 判定。
+var ErrMatchPanic = errors.New("router: 规则匹配 panic")
 
 // Options 是 Router 的构造参数。
 type Options struct {
@@ -34,6 +40,8 @@ type Options struct {
 	Replies bot.ReplyFactory
 	// Logger 是可选日志器，用于记录规则注册与命中。
 	Logger *slog.Logger
+	// Metrics 是指标记录器，用于上报规则匹配 panic（RuleMatchPanic）；nil 时不上报。
+	Metrics metrics.Recorder
 }
 
 // entry 是不可变的规则执行单元。
@@ -62,6 +70,7 @@ type Router struct {
 	globals  []bot.Middleware
 	logger   *slog.Logger
 	replies  bot.ReplyFactory
+	metrics  metrics.Recorder
 
 	// mu 保护写入侧状态（规则表有序切片、错误累计、ID 与序号、插件中间件）。
 	mu       sync.RWMutex
@@ -86,6 +95,7 @@ func New(opts Options) *Router {
 		globals:  slices.Clone(opts.Middlewares),
 		logger:   opts.Logger,
 		replies:  opts.Replies,
+		metrics:  opts.Metrics,
 		seq:      make(map[string]int),
 		ids:      make(map[string]struct{}),
 		pluginMW: make(map[string][]bot.Middleware),
@@ -185,6 +195,10 @@ func (r *Router) UpdateRules(fn func(*bot.Rule)) error {
 // 事件非空且 Command 为空但 Message 非空时，会用配置的前缀解析命令并写回 ev；
 // 同一次事件命中的多条规则都会被完整执行，其错误用 errors.Join 聚合返回，
 // 没有任何规则命中时返回 nil。
+//
+// 单条规则的匹配 panic（插件自定义断言、事件文本解析）不会中止其余规则：
+// 该规则被跳过，panic 记 Error 日志与 rec.RuleMatchPanic，错误（包装
+// ErrMatchPanic）进入聚合返回值。
 func (r *Router) Dispatch(ctx context.Context, ev *bot.Event) error {
 	if ev == nil {
 		return nil
@@ -198,7 +212,13 @@ func (r *Router) Dispatch(ctx context.Context, ev *bot.Event) error {
 	}
 	var errs []error
 	for _, e := range set.entries {
-		if !e.rule.Matches(ev) {
+		matched, err := r.match(e.rule, ev)
+		if err != nil {
+			// 匹配阶段 panic 只跳过该条规则：跨插件爆炸半径收敛到单条规则。
+			errs = append(errs, err)
+			continue
+		}
+		if !matched {
 			continue
 		}
 		if r.logger != nil {
@@ -221,6 +241,32 @@ func (r *Router) Dispatch(ctx context.Context, ev *bot.Event) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// match 调用 Rule.Matches 并隔离 panic，返回的错误包装 ErrMatchPanic。
+//
+// 匹配阶段的 panic 来自插件提供的 Match 断言或事件文本解析，只影响当前规则：
+// 调用方跳过该规则、继续匹配与执行其余规则。Error 日志带 plugin/rule/event_id
+// 与堆栈，便于定位到具体插件；r.metrics 非 nil 时同时计入 RuleMatchPanic。
+func (r *Router) match(rule *bot.Rule, ev *bot.Event) (matched bool, err error) {
+	defer func() {
+		v := recover()
+		if v == nil {
+			return
+		}
+		if r.logger != nil {
+			r.logger.Error("router: 规则匹配 panic",
+				"plugin", rule.Plugin, "rule", rule.ID,
+				"platform", ev.Platform, "type", string(ev.Type), "event_id", ev.ID,
+				"panic", fmt.Sprint(v), "stack", string(debug.Stack()),
+			)
+		}
+		if r.metrics != nil {
+			r.metrics.RuleMatchPanic(rule.Plugin, rule.ID)
+		}
+		matched, err = false, fmt.Errorf("%w: 规则 %s: %v", ErrMatchPanic, rule.ID, v)
+	}()
+	return rule.Matches(ev), nil
 }
 
 // newReply 为单次规则调用创建独立的回复构建器，工厂不可用时退化为 NoopReply。

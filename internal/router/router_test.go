@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
@@ -651,6 +652,91 @@ func TestRulesCopyIsolation(t *testing.T) {
 		t.Errorf("规则 ID 被外部修改为 %q", got)
 	}
 }
+
+// matchPanicRecorder 只记录 RuleMatchPanic 上报，用于验证匹配 panic 的计数。
+type matchPanicRecorder struct {
+	mu     sync.Mutex
+	calls  int
+	plugin string
+	rule   string
+}
+
+// EventHandled 实现 metrics.Recorder（本测试不使用，留空）。
+func (m *matchPanicRecorder) EventHandled(string, string, time.Duration, error) {}
+
+// EventPublished 实现 metrics.Recorder（本测试不使用，留空）。
+func (m *matchPanicRecorder) EventPublished(string) {}
+
+// EventDropped 实现 metrics.Recorder（本测试不使用，留空）。
+func (m *matchPanicRecorder) EventDropped(string, string) {}
+
+// MessageSent 实现 metrics.Recorder（本测试不使用，留空）。
+func (m *matchPanicRecorder) MessageSent(string, time.Duration, error) {}
+
+// RuleMatched 实现 metrics.Recorder（本测试不使用，留空）。
+func (m *matchPanicRecorder) RuleMatched(string, string) {}
+
+// RuleOverrun 实现 metrics.Recorder（本测试不使用，留空）。
+func (m *matchPanicRecorder) RuleOverrun(string, string) {}
+
+// RuleMatchPanic 实现 metrics.Recorder。
+func (m *matchPanicRecorder) RuleMatchPanic(plugin, rule string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	m.plugin, m.rule = plugin, rule
+}
+
+// TestMatchPanicIsIsolated 验证规则匹配 panic 只跳过该条规则，其余规则照常命中。
+func TestMatchPanicIsIsolated(t *testing.T) {
+	rec := &recorder{}
+	var logs strings.Builder
+	met := &matchPanicRecorder{}
+	r := New(Options{
+		Logger:  slog.New(slog.NewTextHandler(&logs, nil)),
+		Metrics: met,
+	})
+	r.Registrar("a").OnAll(tagHandler(rec, "first"), bot.WithPriority(100))
+	r.Registrar("b").OnAll(tagHandler(rec, "boom"), bot.WithPriority(50), bot.WithMatch(func(*bot.Event) bool {
+		panic("匹配炸弹")
+	}))
+	r.Registrar("c").OnAll(tagHandler(rec, "last"))
+
+	err := r.Dispatch(context.Background(), noticeEvent())
+	if err == nil {
+		t.Fatal("匹配 panic 应经聚合错误返回")
+	}
+	if !errors.Is(err, ErrMatchPanic) {
+		t.Fatalf("错误应包装 ErrMatchPanic: %v", err)
+	}
+	if !strings.Contains(err.Error(), "匹配炸弹") || !strings.Contains(err.Error(), "b:all:0") {
+		t.Fatalf("错误应带 panic 值与规则标识: %v", err)
+	}
+
+	// 前一条与后一条规则都必须照常执行，panic 的规则自己被跳过。
+	if got := rec.order(); !slices.Equal(got, []string{"first", "last"}) {
+		t.Fatalf("命中顺序 = %v, 期望 [first last]（b 的匹配 panic 只跳过 b）", got)
+	}
+
+	met.mu.Lock()
+	calls, plugin, rule := met.calls, met.plugin, met.rule
+	met.mu.Unlock()
+	if calls != 1 || plugin != "b" || rule != "b:all:0" {
+		t.Fatalf("RuleMatchPanic 上报 = %d 次 plugin=%q rule=%q, 期望 1/b/b:all:0", calls, plugin, rule)
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "规则匹配 panic") || !strings.Contains(got, "plugin=b") || !strings.Contains(got, "匹配炸弹") {
+		t.Fatalf("panic 未按插件与规则归因:\n%s", got)
+	}
+	if !strings.Contains(got, "stack=") {
+		t.Fatalf("panic 日志应带堆栈:\n%s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateRules
+// ---------------------------------------------------------------------------
 
 // TestUpdateRules 验证 UpdateRules 在副本上应用改动、重排序并重建快照，
 // 同时 Rules() 仍返回拷贝。

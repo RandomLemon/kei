@@ -235,7 +235,7 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 2. 链层：中间件 `Timeout(RuleTimeout)` 对单条规则的**插件中间件与 Handler** 施加独立超时；框架自身的策略判定（`Auth`/`Dedup`/`RateLimit`）在 `Timeout` 之外同步执行，见 10.5。`Recover` 在链中出现两次（见 10.5）。
 3. 总线层：`eventbus` 的 worker 对每个处理器单独 `recover`，某个处理器 panic 不影响其它处理器，也不终止 worker；该事件计入 `Failed`，否则计入 `Handled`。
 
-适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。`Timeout` 只放弃等待，不会终止内层 goroutine；不响应 ctx 的插件中间件或 Handler 会留下悬空 goroutine，直到自行返回。这类调用按 10.5 的清单被归因：规则超时那一刻仍未返回的调用计入 `kei_rule_overruns_total{plugin,rule}` 并记 Warn 日志（plugin/rule/event_id/timeout_ms）；它随后返回时另记一条含实际耗时的 Warn，超时后经过同样长的时间仍未返回时记一次含全部 goroutine 堆栈的 Error（每个 `Timeout` 实例至多转储一次），`EventTimeout`/引擎关闭导致的取消不计入。
+适配器与插件实现因此允许 panic 与阻塞，但必须响应 ctx 取消（超时通过 ctx 传递，Handler 需要感知取消才能真正释放）。`Timeout` 只放弃等待，不会终止内层 goroutine；不响应 ctx 的插件中间件或 Handler 会留下悬空 goroutine，直到自行返回。这类调用按 10.5 的清单被归因：规则超时那一刻仍未返回的调用计入 `kei_rule_overruns_total{plugin,rule}` 并记 Warn 日志（plugin/rule/event_id/timeout_ms）；它随后返回时另记一条含实际耗时的 Warn，超时后经过同样长的时间仍未返回时记一次含全部 goroutine 堆栈的 Error（每个 `Timeout` 实例至多转储一次），`EventTimeout`/引擎关闭导致的取消不计入。匹配阶段（`Rule.Matches`/插件断言）的 panic 不在上述保护范围内，由路由层按规则单独隔离，见 10.3。
 
 ### 7.9 管理命令 `/manage adapters`
 
@@ -391,6 +391,7 @@ type Rule struct {
 - `Dispatch` 在 `ev.Command == nil && ev.Message != nil` 时用配置的前缀（默认 `["/"]`）解析命令并写回 `ev`（`bot.ParseCommand`）。
 - 每条命中规则注入独立的 `bot.Route`（`Plugin`、`RuleID`、`Trigger`、`Priority`、`AdminOnly`、`RegexMatches`），并创建独立的 `bot.Reply`（`internal/reply.Builder`，每次规则调用一次，`Send` 时才真正发送；工厂缺失时退化为 `bot.NoopReply`），避免多条规则的回复互相污染。
 - 规则表以「不可变快照 + 原子替换」发布：`Dispatch` 可被多个总线 worker 并发调用，注册与 `UpdateRules` 由写锁串行化。`UpdateRules(fn)` 在写锁内把 `fn` 依次应用到每条规则的**副本**上，全部校验通过后按优先级重建快照并整体替换（引擎用它写入 `BotIDs`）；中途失败（`fn` 为 nil 或把某条规则的 `Handler` 置空）时已应用的改动一并丢弃，既不发布新快照也不改到已发布的规则，因此不存在半更新状态。`Rules()` 返回深层副本，`RegistrationErrors()` 返回错误副本（无法通过返回值上报的注册错误，例如正则编译失败、重复 ID）。引擎只经 `Engine.Rules()`/`Engine.RegistrationErrors()` 暴露只读视图，不暴露可写的 `Router`。
+- 匹配阶段的 panic 按规则隔离：`Rule.Matches`（插件的 `WithMatch` 断言、事件文本解析）在 `Dispatch` 内部逐条 recover，panic 只跳过该条规则——其余规则照常匹配与执行，panic 记 `Error` 日志（`plugin`/`rule`/`platform`/`type`/`event_id`/`panic`/`stack`）并计入 `RuleMatchPanic`（`kei_rule_match_panics_total{plugin,rule}`），错误以 `router: 规则匹配 panic: 规则 <id>: <panic>` 形式（包装 `ErrMatchPanic`，可用 `errors.Is` 判定）进入 `Dispatch` 的聚合返回值。修复前该类 panic 会冒泡出 `Dispatch`，被事件总线的「处理器 panic」兜底捕获并中止该事件的所有剩余规则，且日志里没有 rule 标识。
 
 ### 10.4 中间件洋葱模型
 
@@ -456,9 +457,11 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 两者不相等：`Metrics` 在全局链中位于 `Timeout`/`Auth`/`RateLimit`/`Dedup` 之外（见上表顺序），所以被去重或限流拦下的调用同样计入 `RuleMatched`，而只在 `EventHandled` 上体现为 `result="error"`。据此可从两者差值读出「命中但被拒绝」的比例。
 
-`internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`、`kei_rule_overruns_total{plugin,rule}`。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
+`internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`、`kei_rule_overruns_total{plugin,rule}`、`kei_rule_match_panics_total{plugin,rule}`。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
 
 `kei_rule_overruns_total{plugin,rule}` 记录**规则超时那一刻仍未返回**的调用数：父 ctx 结束（引擎关闭、`EventTimeout` 到期）导致的取消不计入——那不是规则超时；超时后很快退出的良性情况也计入（对应日志里的实际耗时可用于分辨），持续不退出者另有 Error 级堆栈告警（见 7.8）。
+
+`kei_rule_match_panics_total{plugin,rule}` 记录**规则匹配阶段 panic** 的次数：每次 panic 只跳过该条规则、不影响同一事件的其余规则（见 10.3），该计数用于发现反复抛 panic 的插件断言（`WithMatch`）。
 
 引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。该中间件位于 `Dedup` 之内，重投的重复事件不消耗配额（见 10.5）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
 
