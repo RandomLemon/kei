@@ -76,10 +76,18 @@ func NewWithClock(db *gorm.DB, cleanup time.Duration, now func() time.Time) (*St
 	return s, nil
 }
 
+// whereKey 生成按主键 key 过滤的条件。key 是 MySQL 8 保留字：字符串条件
+// （`Where("key = ?", key)`）由 GORM 原样下发，MySQL 会报 Error 1064 语法错误
+// （SQLite 宽容，问题只在 MySQL 暴露）。用 clause.Eq 把列名交给 dialector 引用，
+// 与 Set 的 OnConflict 保持同一约定。
+func whereKey(key string) clause.Eq {
+	return clause.Eq{Column: clause.Column{Name: "key"}, Value: key}
+}
+
 // Get 读取键值；键不存在或已过期时返回 bot.ErrNotFound。
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	var e Entry
-	err := s.db.WithContext(ctx).Where("key = ?", key).First(&e).Error
+	err := s.db.WithContext(ctx).Where(whereKey(key)).First(&e).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, bot.ErrNotFound
 	}
@@ -88,7 +96,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 	if e.ExpiresAt != nil && !e.ExpiresAt.After(s.now()) {
 		// 惰性清理：过期行 best-effort 删除，忽略错误。
-		_ = s.db.WithContext(ctx).Where("key = ?", key).Delete(&Entry{}).Error
+		_ = s.db.WithContext(ctx).Where(whereKey(key)).Delete(&Entry{}).Error
 		return nil, bot.ErrNotFound
 	}
 	return append([]byte(nil), e.Value...), nil
@@ -109,7 +117,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 
 // Delete 删除键值，键不存在时不返回错误。
 func (s *Store) Delete(ctx context.Context, key string) error {
-	return s.db.WithContext(ctx).Where("key = ?", key).Delete(&Entry{}).Error
+	return s.db.WithContext(ctx).Where(whereKey(key)).Delete(&Entry{}).Error
 }
 
 // Close 停止后台清理并关闭底层数据库，可重复调用；db 的所有权语义见 New。
