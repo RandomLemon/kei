@@ -284,6 +284,9 @@ func Card(card any) bot.Segment
 // File 构造文件段。
 func File(url, name string) bot.Segment
 
+// FileID 通过本地文件路径或平台文件标识构造文件段。
+func FileID(file, name string) bot.Segment
+
 // New 按会话类型构造消息。
 func New(kind bot.MessageKind, segs ...bot.Segment) *bot.Message
 

@@ -203,7 +203,7 @@ reg.OnRegex(`^天气\s+(\S+)$`, func(ctx context.Context, _ *bot.Event, r bot.Re
 
 ### 9.3 回复构建器
 
-`Reply` 由引擎在调用 Handler 时注入（`pkg/bot/reply.go`）。所有链式方法返回 `Reply` 自身以便连续构建；一次 Handler 调用只应调用一次 `Send`，重复 `Send` 会重复发送。构建过程不加锁，`Reply` 不可跨 goroutine 使用。引擎注入的默认实现在事件携带消息 ID 时自动引用原消息（在消息首位追加 `SegReply`）；平台不支持引用时该段在降级阶段被丢弃。
+`Reply` 由引擎在调用 Handler 时注入（`pkg/bot/reply.go`）。所有链式方法返回 `Reply` 自身以便连续构建；一次 Handler 调用只应调用一次 `Send`，重复 `Send` 会重复发送。构建过程不加锁，`Reply` 不可跨 goroutine 使用。引擎注入的默认实现在事件携带消息 ID 时自动引用原消息（在消息首位追加 `SegReply`）；平台不支持引用时该段在降级阶段被丢弃。需要文件段、本地路径或平台文件标识的图片、表情、显式引用或平台发送结果时，用可选接口 `ExtendedReply`（下文的单独代码块；引擎注入的默认实现与 `bot.NoopReply` 都实现它，第三方 `Reply` 实现可以不实现）。
 
 ```go
 type Reply interface {
@@ -226,11 +226,48 @@ type Reply interface {
 type ReplyFactory func(ctx context.Context, ev *Event) Reply
 ```
 
+可选扩展接口（同一文件）：
+
+```go
+// ExtendedReply 是 Reply 的可选扩展能力，引擎注入的默认构建器与 NoopReply
+// 都实现它。
+//
+// 第三方 Reply 实现可以不实现该接口，因此使用前必须类型断言，未实现时降级到
+// Reply 的基础方法：
+//
+//	if ext, ok := r.(bot.ExtendedReply); ok {
+//		_, err = ext.Quote(msgID).File(url, name).SendResult(ctx)
+//	} else {
+//		err = r.Text(url).Send(ctx)
+//	}
+//
+// 扩展方法返回 ExtendedReply（而非 Reply）以便连续构建与以 SendResult 收尾。
+type ExtendedReply interface {
+	Reply
+	// ImageFile 追加图片段，参数为本地文件路径或平台文件标识（写入 KeyFile）。
+	ImageFile(file string) ExtendedReply
+	// File 追加文件段，url 为可下载地址、name 为文件名（写入 KeyURL/KeyFileName）。
+	File(url, name string) ExtendedReply
+	// FileID 追加文件段，file 为本地文件路径或平台文件标识（写入 KeyFile/KeyFileName）。
+	FileID(file, name string) ExtendedReply
+	// Face 追加表情段，id 为平台表情 ID（写入 KeyFaceID）。
+	Face(id string) ExtendedReply
+	// Quote 追加引用段，引用指定消息 ID（写入 KeyMessageID）；显式引用优先，
+	// 消息中已有引用段时 Send/SendResult 不再追加对事件消息的自动引用。
+	Quote(messageID string) ExtendedReply
+	// SendResult 发送已构建的消息并返回平台发送结果，失败语义与 Send 相同。
+	SendResult(ctx context.Context) (*SendResult, error)
+}
+```
+
+`SegFile` 的 `KeyFile` 是本地路径或平台文件标识（是否可发送由适配器与降级决定，例如 OneBot 的 `file` 字段要求本地路径、`file://` 或 base64，只有 `KeyURL` 的文件段会降级为文本链接，见 [domain-model.md](domain-model.md) 5.6 与 [adapter.md](adapter.md) 6.4）。
+
 默认实现是 `internal/reply.Builder`（`reply.New(api bot.BotAPI, ev *bot.Event)`），由引擎通过 `Router.Options.Replies` 注入；`Router.Options.Replies` 为空时路由器退化为 `bot.NoopReply`。语义：
 
 - `Text`/`Markdown`/`Image`/`At`/`Card` 分别追加 `SegText`+`KeyText`、`SegMarkdown`+`KeyText`、`SegImage`+`KeyURL`、`SegAt`+`KeyUserID`、`SegCard`+`KeyCard` 段。参数为空串或 `nil` 时**不追加任何段**（调用仍可继续链式）。
+- 扩展方法（`ExtendedReply`）：`ImageFile`/`File`/`FileID`/`Face`/`Quote` 分别追加 `SegImage`+`KeyFile`、`SegFile`+`KeyURL`（可选 `KeyFileName`）、`SegFile`+`KeyFile`（可选 `KeyFileName`）、`SegFace`+`KeyFaceID`、`SegReply`+`KeyMessageID` 段；空参数同样不追加段，`name` 为空时省略 `KeyFileName`。
 - 会话类型在 `New` 时确定：优先取 `ev.Message.Kind`，其次 `ev.Channel.Kind`，都取不到时用 `bot.MessagePrivate`。
-- `Send` 把累积的段组装成 `bot.Message` 后交给 `BotAPI.Reply` 一次；事件消息带 ID 时在段列表首位自动追加 `SegReply`（`KeyMessageID` 为该 ID）引用原消息，平台 `Capabilities.Reply` 为 false 时该段在降级时被丢弃、其余内容照常发送；引用段不写入已累积的段列表，重复 `Send` 不会累积。没有消息段时不发送，返回 `reply: empty message`；`BotAPI` 为 `nil` 时返回 `reply: no bot api configured`。
+- `Send`/`SendResult` 把累积的段组装成 `bot.Message` 后交给 `BotAPI.Reply` 一次（`SendResult` 返回平台发送结果，`Send` 等价于丢弃结果）；事件消息带 ID 且消息中还没有引用段时，在段列表首位自动追加 `SegReply`（`KeyMessageID` 为该 ID；显式 `Quote` 的段优先，不重复追加），平台 `Capabilities.Reply` 为 false 时该段在降级时被丢弃、其余内容照常发送；引用段不写入已累积的段列表，重复发送不会累积。没有消息段时不发送，返回 `reply: empty message`；`BotAPI` 为 `nil` 时返回 `reply: no bot api configured`。
 - `Send` 不清空已累积的段，再次 `Send` 会用同样的段再发一次。
 - `(*Builder).Segments()` 返回消息段的快照副本。
 
@@ -243,9 +280,10 @@ func (r *NoopReply) Message() *Message     // 会话类型来自 SetKind
 func (r *NoopReply) PlainText() string     // 所有文本段拼接结果
 func (r *NoopReply) SetKind(k MessageKind) *NoopReply
 func (r *NoopReply) Send(context.Context) error // 始终返回 nil，无副作用
+func (r *NoopReply) SendResult(context.Context) (*SendResult, error) // 始终返回空结果与 nil
 ```
 
-消息段类型、`Segment.Data` 键名常量与 `Message.PlainText` 的读取规则见 [domain-model.md](domain-model.md)。构建出的消息在发送前由引擎按平台 `Capabilities` 降级，见 [adapter.md](adapter.md)。
+`NoopReply` 同样实现 `ExtendedReply`（`ImageFile`/`File`/`FileID`/`Face`/`Quote` 记录对应段，空参数不追加），因此插件单测可以断言 Handler 构造出的扩展段。消息段类型、`Segment.Data` 键名常量与 `Message.PlainText` 的读取规则见 [domain-model.md](domain-model.md)。构建出的消息在发送前由引擎按平台 `Capabilities` 降级，见 [adapter.md](adapter.md)。
 
 ### 9.4 插件示例
 

@@ -262,6 +262,55 @@ func TestReplyQuoteDroppedByCapability(t *testing.T) {
 	}
 }
 
+// TestExtendedReplyAvailableToHandlers 验证引擎注入的默认 Reply 实现
+// bot.ExtendedReply：插件可经类型断言发送文件段，并经 SendResult 拿到平台结果。
+func TestExtendedReplyAvailableToHandlers(t *testing.T) {
+	ad := newMock("mock-main")
+	results := make(chan *bot.SendResult, 1)
+	plugin := &bot.FuncPlugin{
+		Meta: bot.Metadata{Name: "extreply", Version: "v1"},
+		OnSetup: func(ctx context.Context, reg bot.Registrar) error {
+			reg.OnCommand("sendfile", func(ctx context.Context, e *bot.Event, r bot.Reply) error {
+				ext, ok := r.(bot.ExtendedReply)
+				if !ok {
+					return errors.New("引擎注入的 Reply 必须实现 bot.ExtendedReply")
+				}
+				res, err := ext.File("https://example.com/report.csv", "report.csv").SendResult(ctx)
+				if err != nil {
+					return err
+				}
+				results <- res
+				return nil
+			})
+			return nil
+		},
+	}
+	startEngine(t, mockConfig(config.BotConfig{Name: "mock-main", Adapter: "mock"}), []bot.Plugin{plugin}, map[string]*mock.Adapter{"mock-main": ad})
+
+	if _, err := ad.InjectText(context.Background(), "/sendfile"); err != nil {
+		t.Fatalf("InjectText: %v", err)
+	}
+	if !ad.WaitSent(1, 3*time.Second) {
+		t.Fatal("未在超时内收到回复")
+	}
+	sent := ad.Sent()[0].Message
+	if len(sent.Segments) != 1 {
+		t.Fatalf("段 = %+v, want 单个文件段", sent.Segments)
+	}
+	seg := sent.Segments[0]
+	if seg.Type != bot.SegFile || seg.Data[bot.KeyURL] != "https://example.com/report.csv" || seg.Data[bot.KeyFileName] != "report.csv" {
+		t.Fatalf("文件段 = %+v", seg)
+	}
+	select {
+	case res := <-results:
+		if res == nil || res.MessageID == "" {
+			t.Fatalf("SendResult = %+v, want 平台消息 ID", res)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Handler 未返回发送结果")
+	}
+}
+
 func TestGracefulShutdownDrainsQueuedEvents(t *testing.T) {
 	ad := newMock("mock-main")
 	plugin := newTestPlugin("p")

@@ -106,6 +106,76 @@ func TestBuilderAutoQuote(t *testing.T) {
 	}
 }
 
+// TestBuilderExtendedReply 验证 Builder 实现可选接口 ExtendedReply：扩展方法
+// 写入契约键、空参数不追加段，SendResult 返回平台结果。
+func TestBuilderExtendedReply(t *testing.T) {
+	api := &fakeAPI{}
+	b := New(api, &bot.Event{Message: &bot.Message{Kind: bot.MessageGroup}})
+	ext, ok := any(b).(bot.ExtendedReply)
+	if !ok {
+		t.Fatal("Builder 必须实现 bot.ExtendedReply")
+	}
+	ext.File("https://x/y.zip", "y.zip").
+		FileID("file:///tmp/z.zip", "z.zip").
+		ImageFile("/tmp/a.png").
+		Face("4").
+		Quote("m-1")
+	// 空参数不追加段。
+	ext.File("", "x")
+	ext.FileID("", "x")
+	ext.ImageFile("")
+	ext.Face("")
+	ext.Quote("")
+
+	res, err := ext.SendResult(context.Background())
+	if err != nil {
+		t.Fatalf("SendResult: %v", err)
+	}
+	if res == nil || res.MessageID != "m1" {
+		t.Fatalf("SendResult = %+v, want MessageID m1", res)
+	}
+	want := []bot.Segment{
+		{Type: bot.SegFile, Data: map[string]any{bot.KeyURL: "https://x/y.zip", bot.KeyFileName: "y.zip"}},
+		{Type: bot.SegFile, Data: map[string]any{bot.KeyFile: "file:///tmp/z.zip", bot.KeyFileName: "z.zip"}},
+		{Type: bot.SegImage, Data: map[string]any{bot.KeyFile: "/tmp/a.png"}},
+		{Type: bot.SegFace, Data: map[string]any{bot.KeyFaceID: "4"}},
+		{Type: bot.SegReply, Data: map[string]any{bot.KeyMessageID: "m-1"}},
+	}
+	segs := api.msg.Segments
+	if len(segs) != len(want) {
+		t.Fatalf("段数 = %d, want %d: %+v", len(segs), len(want), segs)
+	}
+	for i := range want {
+		if segs[i].Type != want[i].Type || len(segs[i].Data) != len(want[i].Data) {
+			t.Fatalf("第 %d 段 = %+v, want %+v", i, segs[i], want[i])
+		}
+		for k, v := range want[i].Data {
+			if segs[i].Data[k] != v {
+				t.Fatalf("第 %d 段 Data[%q] = %v, want %v", i, k, segs[i].Data[k], v)
+			}
+		}
+	}
+}
+
+// TestBuilderExplicitQuoteWins 验证显式 Quote 优先于自动引用：事件带消息 ID 时
+// 只保留显式引用段，不再在首位追加对事件消息的自动引用。
+func TestBuilderExplicitQuoteWins(t *testing.T) {
+	api := &fakeAPI{}
+	b := New(api, &bot.Event{Message: &bot.Message{ID: "in-1", Kind: bot.MessageGroup}})
+	b.Text("hi")
+	b.Quote("m-9")
+	if err := b.Send(context.Background()); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	segs := api.msg.Segments
+	if len(segs) != 2 {
+		t.Fatalf("段 = %+v, want [text reply]", segs)
+	}
+	if segs[0].Type != bot.SegText || segs[1].Type != bot.SegReply || segs[1].Data[bot.KeyMessageID] != "m-9" {
+		t.Fatalf("显式引用应抑制自动引用: %+v", segs)
+	}
+}
+
 func TestBuilderErrors(t *testing.T) {
 	ev := &bot.Event{Message: &bot.Message{Kind: bot.MessagePrivate}}
 
@@ -114,6 +184,12 @@ func TestBuilderErrors(t *testing.T) {
 	}
 	if err := New(&fakeAPI{}, ev).Send(context.Background()); err == nil {
 		t.Fatal("空消息应返回错误而不发送")
+	}
+	if _, err := New(nil, ev).SendResult(context.Background()); err == nil {
+		t.Fatal("未配置 BotAPI 时 SendResult 应返回错误")
+	}
+	if _, err := New(&fakeAPI{}, ev).SendResult(context.Background()); err == nil {
+		t.Fatal("空消息时 SendResult 应返回错误而不发送")
 	}
 
 	// 事件带消息 ID 也一样：引用段不算内容，不允许只发引用。
@@ -130,6 +206,11 @@ func TestBuilderErrors(t *testing.T) {
 	api := &fakeAPI{err: want}
 	if err := New(api, ev).Text("x").Send(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("Send = %v, want %v", err, want)
+	}
+	b := New(api, ev)
+	b.Text("x")
+	if _, err := b.SendResult(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("SendResult = %v, want %v", err, want)
 	}
 }
 

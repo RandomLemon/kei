@@ -56,6 +56,11 @@ func File(url, name string) bot.Segment {
 	return bot.Segment{Type: bot.SegFile, Data: map[string]any{bot.KeyURL: url, bot.KeyFileName: name}}
 }
 
+// FileID 通过本地文件路径或平台文件标识构造文件段。
+func FileID(file, name string) bot.Segment {
+	return bot.Segment{Type: bot.SegFile, Data: map[string]any{bot.KeyFile: file, bot.KeyFileName: name}}
+}
+
 // New 按会话类型构造消息。
 func New(kind bot.MessageKind, segs ...bot.Segment) *bot.Message {
 	return &bot.Message{Kind: kind, Segments: append([]bot.Segment(nil), segs...)}

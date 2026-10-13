@@ -22,6 +22,7 @@ func TestSegmentBuilders(t *testing.T) {
 		{name: "表情", seg: Face("1"), wantTyp: bot.SegFace, wantKey: bot.KeyFaceID, wantVal: "1"},
 		{name: "引用", seg: Reply("m1"), wantTyp: bot.SegReply, wantKey: bot.KeyMessageID, wantVal: "m1"},
 		{name: "文件", seg: File("http://x/f.zip", "f.zip"), wantTyp: bot.SegFile, wantKey: bot.KeyURL, wantVal: "http://x/f.zip"},
+		{name: "文件 ID", seg: FileID("file:///tmp/f.zip", "f.zip"), wantTyp: bot.SegFile, wantKey: bot.KeyFile, wantVal: "file:///tmp/f.zip"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,6 +45,9 @@ func TestSegmentBuilders(t *testing.T) {
 	}
 	if f := File("http://x/f.zip", "f.zip"); f.Data[bot.KeyFileName] != "f.zip" {
 		t.Fatalf("File 缺少文件名: %+v", f.Data)
+	}
+	if f := FileID("file:///tmp/f.zip", "f.zip"); f.Data[bot.KeyFile] != "file:///tmp/f.zip" || f.Data[bot.KeyFileName] != "f.zip" {
+		t.Fatalf("FileID = %+v", f.Data)
 	}
 }
 

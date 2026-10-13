@@ -208,6 +208,54 @@ func TestNoopReply(t *testing.T) {
 	}
 }
 
+// TestNoopReplyExtendedReply 验证 NoopReply 实现可选接口 ExtendedReply：
+// 扩展方法写入契约键、空参数不产生段，SendResult 返回空结果且无副作用。
+func TestNoopReplyExtendedReply(t *testing.T) {
+	r := NewNoopReply()
+	ext, ok := any(r).(ExtendedReply)
+	if !ok {
+		t.Fatal("NoopReply 必须实现 ExtendedReply")
+	}
+	ext.File("https://x/y.zip", "y.zip").
+		FileID("file:///tmp/z.zip", "z.zip").
+		ImageFile("/tmp/a.png").
+		Face("4").
+		Quote("m-1")
+	// 空参数不得产生段。
+	ext.File("", "")
+	ext.FileID("", "x")
+	ext.ImageFile("")
+	ext.Face("")
+	ext.Quote("")
+
+	segs := r.Segments()
+	want := []Segment{
+		{Type: SegFile, Data: map[string]any{KeyURL: "https://x/y.zip", KeyFileName: "y.zip"}},
+		{Type: SegFile, Data: map[string]any{KeyFile: "file:///tmp/z.zip", KeyFileName: "z.zip"}},
+		{Type: SegImage, Data: map[string]any{KeyFile: "/tmp/a.png"}},
+		{Type: SegFace, Data: map[string]any{KeyFaceID: "4"}},
+		{Type: SegReply, Data: map[string]any{KeyMessageID: "m-1"}},
+	}
+	if len(segs) != len(want) {
+		t.Fatalf("段数 = %d, want %d: %+v", len(segs), len(want), segs)
+	}
+	for i := range want {
+		if segs[i].Type != want[i].Type || len(segs[i].Data) != len(want[i].Data) {
+			t.Fatalf("第 %d 段 = %+v, want %+v", i, segs[i], want[i])
+		}
+		for k, v := range want[i].Data {
+			if segs[i].Data[k] != v {
+				t.Fatalf("第 %d 段 Data[%q] = %v, want %v", i, k, segs[i].Data[k], v)
+			}
+		}
+	}
+
+	res, err := r.SendResult(context.Background())
+	if err != nil || res == nil || res.MessageID != "" {
+		t.Fatalf("SendResult = %+v, %v（应为空结果与 nil）", res, err)
+	}
+}
+
 func TestTargetFromEvent(t *testing.T) {
 	ev := &Event{
 		Platform: "telegram", BotID: "telegram-main",

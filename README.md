@@ -417,6 +417,19 @@ _ = rule.Handler(ctx, ev, reply)
 fmt.Println(reply.PlainText())
 ```
 
+`Reply` 除基础段方法外，引擎注入的实现与 `bot.NoopReply` 还实现可选接口 `bot.ExtendedReply`：
+文件段（`File` 按 URL、`FileID` 按本地路径/平台文件标识）、本地标识图片（`ImageFile`）、
+表情（`Face`）、显式引用（`Quote`）与带平台结果的发送（`SendResult`，例如拿到 `MessageID`）。
+插件用类型断言访问，第三方 `Reply` 实现未实现时应降级到基础方法：
+
+```go
+if ext, ok := r.(bot.ExtendedReply); ok {
+	_, err := ext.Quote(msgID).File(url, name).SendResult(ctx)
+	return err
+}
+return r.Text(url).Send(ctx)
+```
+
 ## 写一个适配器
 
 ```go
