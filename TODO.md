@@ -155,7 +155,7 @@
   - 修复：读取前先按现在时间补充，再计算 `max(0,(1-tokens)/rate)`。
   - 验收：单测 `Wait` 的实际等待不显著超过速率上限推导值。
 
-- [ ] **29. metrics：直方图抓取可自相矛盾** `[读码]`
+- [x] **29. metrics：直方图抓取可自相矛盾** `[读码]` — 完成 4b2d866：采用「同一临界区内完成快照」方案。`histogram` 的桶计数由 `[]atomic.Uint64` 改为 `[]uint64`，`observe` 把桶自增、`sum`、`total` 放进同一次 `mu` 临界区，`snapshot` 在同一把锁内完成全部读取——导出结果成为自洽的时间点视图（各 le 桶单调不减、最后一个有限桶 ≤ `total`/`+Inf`）。写路径锁次数不变（原先「原子自增 + 加锁」，现在一次加锁），`snapshot` 从 N 次原子 Load + 一次加锁变为一次加锁；结构体、包与 `render` 注释同步。回归测试 `TestHistogramSnapshotConsistency`：8 个观察者循环写入、检查者并发抓取快照，断言桶单调不减且有限桶 ≤ +Inf，并校验最终 `total == 观察次数`。取证：同一测试在 `HEAD` worktree 内 3/3 次失败（`有限桶 9 > +Inf(total 8)`、`655 > 654`、`788 > 787`：即 TODO 所述自相矛盾导出），修复后全绿（含 `-race`）；`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿（23 包）。文档：`docs/testing.md`（metrics 8→9 与用例名）、`docs/roadmap.md` 证据行号刷新（本次改动使 `metrics.go` 的 counter/histogram 行号位移，`registry.go` 的 Handler 引用为顺带修正的陈旧行号）。
   - 位置：`internal/metrics/metrics.go:98-108`（`observe`）、`:111-121`（`snapshot`）
   - 问题：先逐桶 `Load`，再锁内读 `total`；并发写入下可导出 `bucket{le="+Inf"} < 前一桶`，破坏 `histogram_quantile`/`rate`。
   - 修复：同一临界区内完成快照（或在 `total` 读取后再修正 +Inf）。
