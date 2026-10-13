@@ -58,14 +58,51 @@ func TestBuilderSendsAccumulatedSegments(t *testing.T) {
 	if api.msg.Kind != bot.MessageGroup {
 		t.Fatalf("Kind = %q, want group", api.msg.Kind)
 	}
-	if api.msg.ID != "in-1" {
-		t.Fatalf("Message.ID = %q, want in-1", api.msg.ID)
+	if api.msg.ID != "" {
+		t.Fatalf("Message.ID = %q, want 空（待发消息不携带入站消息 ID）", api.msg.ID)
 	}
-	if len(api.msg.Segments) != 3 {
-		t.Fatalf("段数 = %d, want 3", len(api.msg.Segments))
+	if len(api.msg.Segments) != 4 {
+		t.Fatalf("段数 = %d, want 4（自动引用 + 3 个内容段）", len(api.msg.Segments))
+	}
+	quote := api.msg.Segments[0]
+	if quote.Type != bot.SegReply || quote.Data[bot.KeyMessageID] != "in-1" {
+		t.Fatalf("首个段 = %+v, want SegReply(in-1)", quote)
 	}
 	if api.target.ChannelID != "g1" || api.target.BotID != "b1" {
 		t.Fatalf("目标 = %+v", api.target)
+	}
+}
+
+// TestBuilderAutoQuote 覆盖事件消息 ID 触发的自动引用：事件没有消息 ID 时
+// 不追加引用段；有 ID 时每次 Send 都在首位插入一条引用段，且不写入已累积的
+// 段列表（重复 Send 不累积）。
+func TestBuilderAutoQuote(t *testing.T) {
+	api := &fakeAPI{}
+
+	noID := New(api, &bot.Event{Message: &bot.Message{Kind: bot.MessageGroup}})
+	if err := noID.Text("x").Send(context.Background()); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got := len(api.msg.Segments); got != 1 {
+		t.Fatalf("无消息 ID 时段数 = %d, want 1", got)
+	}
+
+	b := New(api, &bot.Event{Message: &bot.Message{ID: "m-7", Kind: bot.MessageGroup}})
+	b.Text("hi")
+	for i := 1; i <= 2; i++ {
+		if err := b.Send(context.Background()); err != nil {
+			t.Fatalf("第 %d 次 Send: %v", i, err)
+		}
+		if got := len(api.msg.Segments); got != 2 {
+			t.Fatalf("第 %d 次 Send 段数 = %d, want 2", i, got)
+		}
+		quote := api.msg.Segments[0]
+		if quote.Type != bot.SegReply || quote.Data[bot.KeyMessageID] != "m-7" {
+			t.Fatalf("第 %d 次 Send 首个段 = %+v, want SegReply(m-7)", i, quote)
+		}
+	}
+	if got := b.Segments(); len(got) != 1 || got[0].Type != bot.SegText {
+		t.Fatalf("引用段不应写入已累积的段列表: %+v", got)
 	}
 }
 
@@ -77,6 +114,16 @@ func TestBuilderErrors(t *testing.T) {
 	}
 	if err := New(&fakeAPI{}, ev).Send(context.Background()); err == nil {
 		t.Fatal("空消息应返回错误而不发送")
+	}
+
+	// 事件带消息 ID 也一样：引用段不算内容，不允许只发引用。
+	emptyAPI := &fakeAPI{}
+	withID := &bot.Event{Message: &bot.Message{ID: "m1", Kind: bot.MessagePrivate}}
+	if err := New(emptyAPI, withID).Send(context.Background()); err == nil {
+		t.Fatal("空消息（即使事件带消息 ID）应返回错误而不发送")
+	}
+	if emptyAPI.calls != 0 {
+		t.Fatalf("空消息不应调用 Reply: %d", emptyAPI.calls)
 	}
 
 	want := errors.New("boom")

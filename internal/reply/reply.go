@@ -78,6 +78,10 @@ func (b *Builder) Card(card any) bot.Reply {
 }
 
 // Send 向事件所在会话发送已构建的消息；没有消息段时返回错误而不发送。
+//
+// 事件携带消息 ID 时自动在段列表首位追加 SegReply 引用该消息：平台声明
+// Capabilities.Reply 时引用原消息，否则该段在降级阶段被丢弃、其余内容照常
+// 发送。引用段按次构建，不写入已累积的段列表，重复 Send 不会累积。
 func (b *Builder) Send(ctx context.Context) error {
 	if b.api == nil {
 		return errors.New("reply: no bot api configured")
@@ -85,10 +89,16 @@ func (b *Builder) Send(ctx context.Context) error {
 	if len(b.segs) == 0 {
 		return errors.New("reply: empty message")
 	}
-	msg := &bot.Message{Kind: b.kind, Segments: b.segs}
-	if b.ev != nil && b.ev.Message != nil {
-		msg.ID = b.ev.Message.ID
+	segs := b.segs
+	if b.ev != nil && b.ev.Message != nil && b.ev.Message.ID != "" {
+		segs = make([]bot.Segment, 0, len(b.segs)+1)
+		segs = append(segs, bot.Segment{
+			Type: bot.SegReply,
+			Data: map[string]any{bot.KeyMessageID: b.ev.Message.ID},
+		})
+		segs = append(segs, b.segs...)
 	}
+	msg := &bot.Message{Kind: b.kind, Segments: segs}
 	_, err := b.api.Reply(ctx, b.ev, msg)
 	return err
 }

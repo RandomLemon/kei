@@ -6,6 +6,9 @@ import "context"
 //
 // 所有链式方法都返回 Reply 自身以便连续构建；一次 Handler 调用只应调用
 // 一次 Send，重复 Send 会重复发送。构建过程不加锁，Reply 不可跨 goroutine 使用。
+//
+// 引擎注入的默认实现在事件携带消息 ID 时自动引用原消息（在消息首位追加
+// SegReply）；平台不支持引用时该段在降级阶段被丢弃。
 type Reply interface {
 	// Text 追加纯文本段。
 	Text(string) Reply

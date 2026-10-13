@@ -196,6 +196,72 @@ func TestEchoIntegrationRoundTrip(t *testing.T) {
 	}
 }
 
+// TestReplyQuotesTriggeringMessage 覆盖端到端引用：事件消息带 ID 时，Handler
+// 的回复在段列表首位携带 SegReply，引用原消息 ID。
+func TestReplyQuotesTriggeringMessage(t *testing.T) {
+	ad := newMock("mock-main")
+	plugin := newTestPlugin("p")
+	startEngine(t, mockConfig(config.BotConfig{Name: "mock-main", Adapter: "mock"}), []bot.Plugin{plugin}, map[string]*mock.Adapter{"mock-main": ad})
+
+	ev := &bot.Event{
+		ID:       "e1",
+		Type:     bot.EventMessage,
+		Message:  &bot.Message{ID: "m-77", Kind: bot.MessageGroup, Segments: []bot.Segment{{Type: bot.SegText, Data: map[string]any{bot.KeyText: "ping"}}}},
+		Sender:   &bot.User{ID: "u1"},
+		Channel:  &bot.Channel{ID: "g1", Kind: bot.MessageGroup},
+		Platform: "mock",
+		BotID:    "mock-main",
+	}
+	if err := ad.Inject(context.Background(), ev); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if !ad.WaitSent(1, 3*time.Second) {
+		t.Fatal("未在超时内收到回复")
+	}
+	sent := ad.Sent()[0].Message
+	if got := len(sent.Segments); got != 2 {
+		t.Fatalf("段数 = %d, want 2（引用 + 文本）: %+v", got, sent.Segments)
+	}
+	quote := sent.Segments[0]
+	if quote.Type != bot.SegReply || quote.Data[bot.KeyMessageID] != "m-77" {
+		t.Fatalf("首个段 = %+v, want SegReply(m-77)", quote)
+	}
+	if got := sent.PlainText(); got != "ping" {
+		t.Fatalf("回复内容 = %q, want ping", got)
+	}
+}
+
+// TestReplyQuoteDroppedByCapability 覆盖降级：平台不支持引用能力时只丢弃引用
+// 段，其余内容照常发送。
+func TestReplyQuoteDroppedByCapability(t *testing.T) {
+	ad := mock.New(mock.Options{Name: "text-only", Platform: "textonly", Capabilities: bot.Capabilities{Text: true}})
+	plugin := newTestPlugin("p")
+	startEngine(t, mockConfig(config.BotConfig{Name: "text-only", Adapter: "mock"}), []bot.Plugin{plugin}, map[string]*mock.Adapter{"text-only": ad})
+
+	ev := &bot.Event{
+		ID:       "e1",
+		Type:     bot.EventMessage,
+		Message:  &bot.Message{ID: "m-8", Kind: bot.MessageGroup, Segments: []bot.Segment{{Type: bot.SegText, Data: map[string]any{bot.KeyText: "ping"}}}},
+		Sender:   &bot.User{ID: "u1"},
+		Channel:  &bot.Channel{ID: "g1", Kind: bot.MessageGroup},
+		Platform: "textonly",
+		BotID:    "text-only",
+	}
+	if err := ad.Inject(context.Background(), ev); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if !ad.WaitSent(1, 3*time.Second) {
+		t.Fatal("未在超时内收到回复")
+	}
+	sent := ad.Sent()[0].Message
+	if got := len(sent.Segments); got != 1 || sent.Segments[0].Type != bot.SegText {
+		t.Fatalf("段 = %+v, want 仅文本（引用段应被降级丢弃）", sent.Segments)
+	}
+	if got := sent.PlainText(); got != "ping" {
+		t.Fatalf("回复内容 = %q, want ping", got)
+	}
+}
+
 func TestGracefulShutdownDrainsQueuedEvents(t *testing.T) {
 	ad := newMock("mock-main")
 	plugin := newTestPlugin("p")

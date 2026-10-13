@@ -203,7 +203,7 @@ reg.OnRegex(`^天气\s+(\S+)$`, func(ctx context.Context, _ *bot.Event, r bot.Re
 
 ### 9.3 回复构建器
 
-`Reply` 由引擎在调用 Handler 时注入（`pkg/bot/reply.go`）。所有链式方法返回 `Reply` 自身以便连续构建；一次 Handler 调用只应调用一次 `Send`，重复 `Send` 会重复发送。构建过程不加锁，`Reply` 不可跨 goroutine 使用。
+`Reply` 由引擎在调用 Handler 时注入（`pkg/bot/reply.go`）。所有链式方法返回 `Reply` 自身以便连续构建；一次 Handler 调用只应调用一次 `Send`，重复 `Send` 会重复发送。构建过程不加锁，`Reply` 不可跨 goroutine 使用。引擎注入的默认实现在事件携带消息 ID 时自动引用原消息（在消息首位追加 `SegReply`）；平台不支持引用时该段在降级阶段被丢弃。
 
 ```go
 type Reply interface {
@@ -230,7 +230,7 @@ type ReplyFactory func(ctx context.Context, ev *Event) Reply
 
 - `Text`/`Markdown`/`Image`/`At`/`Card` 分别追加 `SegText`+`KeyText`、`SegMarkdown`+`KeyText`、`SegImage`+`KeyURL`、`SegAt`+`KeyUserID`、`SegCard`+`KeyCard` 段。参数为空串或 `nil` 时**不追加任何段**（调用仍可继续链式）。
 - 会话类型在 `New` 时确定：优先取 `ev.Message.Kind`，其次 `ev.Channel.Kind`，都取不到时用 `bot.MessagePrivate`。
-- `Send` 把累积的段组装成 `bot.Message` 后交给 `BotAPI.Reply` 一次；`ev.Message` 非空时把入参消息 ID 写入 `msg.ID`，用于平台侧引用回复。没有消息段时不发送，返回 `reply: empty message`；`BotAPI` 为 `nil` 时返回 `reply: no bot api configured`。
+- `Send` 把累积的段组装成 `bot.Message` 后交给 `BotAPI.Reply` 一次；事件消息带 ID 时在段列表首位自动追加 `SegReply`（`KeyMessageID` 为该 ID）引用原消息，平台 `Capabilities.Reply` 为 false 时该段在降级时被丢弃、其余内容照常发送；引用段不写入已累积的段列表，重复 `Send` 不会累积。没有消息段时不发送，返回 `reply: empty message`；`BotAPI` 为 `nil` 时返回 `reply: no bot api configured`。
 - `Send` 不清空已累积的段，再次 `Send` 会用同样的段再发一次。
 - `(*Builder).Segments()` 返回消息段的快照副本。
 

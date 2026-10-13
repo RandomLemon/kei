@@ -17,7 +17,8 @@ const (
 
 // Message 是平台无关的消息，由若干消息段组成。
 type Message struct {
-	// ID 是消息 ID，发送前可为空。
+	// ID 是消息 ID。入站消息由适配器填充；构造待发消息时留空，
+	// 平台分配的消息 ID 见 SendResult.MessageID。
 	ID string
 	// Kind 是消息所在会话类型。
 	Kind MessageKind
