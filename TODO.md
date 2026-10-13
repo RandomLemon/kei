@@ -191,7 +191,7 @@
   - 修复：镜像适配器规则（名字 `[a-z0-9_-]`、`Options` 未知键告警、拒绝或显式豁免 `PermAll`）。
   - 验收：单测三条规则各自生效；`docs/plugin.md`、`docs/adapter.md` 6.3 同步。
 
-- [ ] **35. `bot.Config` 直接别名调用方的活 map** `[读码]`
+- [x] **35. `bot.Config` 直接别名调用方的活 map** `[读码]` — 完成 0cde095：采用「双向隔离」——`NewConfig` 深拷贝入参、`Raw()` 返回每次新建的深层副本（两个方案都做，因为只做其一仍会留下一个方向的别名：`NewConfig` 别名源 map 时引擎持有的 `config.Config` 仍可被插件经 `Get`/嵌套容器改写）。新增 `cloneConfigMap`/`cloneConfigValue`，覆盖配置取值域内会共享引用的容器类型：`map[string]any`（递归）、`[]any`（递归）、`[]string`、`[]byte`、`map[string]string`，nil 容器保持 nil（不改变各取值方法对 nil 的判定），其它类型按值返回。隔离效果覆盖三个调用点：`internal/adaptermgr` 传 `bots[].Settings`、`internal/engine` 传 `plugins.<name>.Settings`、`pluginmgr.Deps.Configs` —— 现在每个 `Config` 独占自己的 map，插件/适配器改写不会回到 `config.Config`，配置之间也不共享可变值。`Get` 对嵌套路径仍返回配置内部的值（同一 `Config` 独占，只有它自己的视图会变），已在文档写明。回归测试 `pkg/bot/api_test.go` 的 `TestConfigIsolatedFromCaller`：对每种容器双向验证（改源 map 不影响配置、改 `Raw()` 副本不影响配置、二次 `Raw()` 仍是干净副本、同一来源构造的两个配置互不影响）。取证：`HEAD` worktree 探针必失败——`Raw() 是活引用，源 map 被改成 hacked`；另用两 goroutine（一个经 `Raw()` 写、一个经 `String` 读）在 `HEAD` 上跑 `-race` 得到 `WARNING: DATA RACE`，修复后同一探针 `-race` 干净。冒烟（临时用例）：`adaptermgr.Build` 后适配器经 `Raw()` 改写配置不回写 `config.Config`，调用方之后改源 map（含嵌套）也不影响适配器持有的配置。`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/plugin.md` 11.3（Config API 块 + 上下文表行 + 深拷贝边界段）、`docs/configuration.md` 12.3、`docs/adapter.md` 6.5、`README.md` 插件上下文表、`docs/testing.md`（pkg/bot 17→18）同步。
   - 位置：`pkg/bot/api.go:83-95`；调用方 `internal/adaptermgr/adaptermgr.go:192-196`、`internal/engine/engine.go:200-203`
   - 问题：`Raw()` 返回活引用，插件改它即改 `config.Config` 的共享对象，跨插件无锁并发可致竞态。
   - 修复：`NewConfig` 深拷贝（或 `Raw()` 返回快照）并文档化。
