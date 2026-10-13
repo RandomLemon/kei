@@ -103,14 +103,14 @@ func TestDeniedStorage(t *testing.T) {
 	ctx := context.Background()
 	st := Denied()
 
-	if _, err := st.Get(ctx, "k"); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("Get = %v, want ErrPermissionDenied", err)
+	if _, err := st.Get(ctx, "k"); !errors.Is(err, bot.ErrPermissionDenied) {
+		t.Fatalf("Get = %v, want bot.ErrPermissionDenied", err)
 	}
-	if err := st.Set(ctx, "k", []byte("v"), 0); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("Set = %v, want ErrPermissionDenied", err)
+	if err := st.Set(ctx, "k", []byte("v"), 0); !errors.Is(err, bot.ErrPermissionDenied) {
+		t.Fatalf("Set = %v, want bot.ErrPermissionDenied", err)
 	}
-	if err := st.Delete(ctx, "k"); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("Delete = %v, want ErrPermissionDenied", err)
+	if err := st.Delete(ctx, "k"); !errors.Is(err, bot.ErrPermissionDenied) {
+		t.Fatalf("Delete = %v, want bot.ErrPermissionDenied", err)
 	}
 }
 

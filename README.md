@@ -401,7 +401,7 @@ kei.Run(ctx, kei.Options{ConfigFile: "configs/mybot.yaml", Plugins: []bot.Plugin
   | --- | --- |
   | `Config` | 该插件在 `plugins.<name>` 下的配置（`Get/String/Bool/Int/Duration/Strings/Unmarshal`；`NewConfig` 深拷贝、`Raw()` 返回副本） |
   | `Logger` | 已绑定 `plugin` 字段的 `*slog.Logger` |
-  | `Storage` | 键值存储（未声明 `PermStorage` 时返回拒绝访问的实现；可用时按插件名隔离，键最长 191 字节） |
+  | `Storage` | 键值存储（未声明 `PermStorage` 时返回拒绝访问的实现，调用返回 `bot.ErrPermissionDenied`；可用时按插件名隔离，键最长 191 字节） |
   | `HTTPClient` | 带超时的 HTTP 客户端（未声明 `PermNetwork` 时为 nil） |
   | `Bot` | 唯一的平台出口（`Send` 需要 `PermSendMessage`，`Reply` 始终可用） |
   | `Catalog` | 已加载插件元信息（`/manage plugins` 这类管理命令用） |
@@ -536,7 +536,7 @@ bots:
 | 权限 | 拿到什么 | 未声明时 |
 | --- | --- | --- |
 | `network` | `AdapterContext.HTTPClient` | 为 `nil`，工厂应报错而不是回落到自带客户端 |
-| `storage` | `AdapterContext.Storage`（按 `adapter:<botID>:` 命名空间隔离） | 注入拒绝式存储（`ErrPermissionDenied`） |
+| `storage` | `AdapterContext.Storage`（按 `adapter:<botID>:` 命名空间隔离） | 注入拒绝式存储（`bot.ErrPermissionDenied`，`errors.Is` 可判定） |
 | `net_listen` | 允许监听入站端口 | 配置里出现保留键 `listen_addr` 时启动失败 |
 
 `/manage adapters` 会列出已注册适配器与每个 bot 的绑定关系（每个绑定一行 `- <botID> → <adapterName>`；两段列表可以不一致，原因见 [`docs/plugins/manage.md`](docs/plugins/manage.md) 3.4 节）。

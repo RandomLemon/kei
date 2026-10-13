@@ -313,7 +313,7 @@ func TestPermissionScopedContext(t *testing.T) {
 				if _, err := store.Get(context.Background(), "k"); !errors.Is(err, bot.ErrNotFound) {
 					t.Fatalf("插件的键不应落在裸键空间: %v", err)
 				}
-			} else if !errors.Is(err, storage.ErrPermissionDenied) {
+			} else if !errors.Is(err, bot.ErrPermissionDenied) {
 				t.Fatalf("无存储权限时 Set = %v, want ErrPermissionDenied", err)
 			}
 			if p.lastCtx.Name != "p" || p.lastCtx.Logger == nil || p.lastCtx.Bot == nil || p.lastCtx.Catalog == nil {

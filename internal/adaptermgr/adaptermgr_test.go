@@ -152,7 +152,7 @@ func TestBuildTrimsDependencies(t *testing.T) {
 	if bareAd.ac.HTTPClient != nil {
 		t.Fatal("未声明 network 时 HTTPClient 应为 nil")
 	}
-	if _, err := bareAd.ac.Storage.Get(context.Background(), "k"); !errors.Is(err, storage.ErrPermissionDenied) {
+	if _, err := bareAd.ac.Storage.Get(context.Background(), "k"); !errors.Is(err, bot.ErrPermissionDenied) {
 		t.Fatalf("未声明 storage 时应注入拒绝式存储, err = %v", err)
 	}
 	if bareAd.ac.BotID != "bare-bot" || bareAd.ac.Logger == nil || bareAd.ac.Config == nil {

@@ -343,7 +343,7 @@ type BotAPI interface {
 - `Send`：未声明 `PermSendMessage` 时返回 `fmt.Errorf("engine: plugin %s lacks permission %s", ...)`，不发送；声明后转调 `Engine.Send`（发送前按适配器能力降级、按 bot 限流、失败按退避重试）。
 - `Reply`：所有插件都可使用，无需额外权限。
 - `Logger`：返回 `engine.log.With("plugin", <插件名>)` 派生的日志器。
-- `Storage`：声明了 `PermStorage` 时返回引擎存储，否则返回拒绝式实现。
+- `Storage`：声明了 `PermStorage` 时返回引擎存储，否则返回拒绝式实现（`Get`/`Set`/`Delete` 返回 `bot.ErrPermissionDenied`）。
 
 `Target` 与 `TargetFromEvent` 可以把当前事件转成发送目标，用于插件的主动发送：
 
@@ -360,6 +360,11 @@ func TargetFromEvent(ev *Event) Target
 //
 // 实现必须保证「键不存在」返回可被 errors.Is(err, ErrNotFound) 识别的错误。
 var ErrNotFound = errors.New("bot: storage: key not found")
+
+// ErrPermissionDenied 表示访问因缺少所需权限而被拒绝。
+//
+// 实现必须保证「拒绝访问」返回可被 errors.Is(err, ErrPermissionDenied) 识别的错误。
+var ErrPermissionDenied = errors.New("bot: permission denied")
 
 // Storage 是插件可用的键值存储。
 //
@@ -379,7 +384,7 @@ type Storage interface {
 
 - `storage.NewMemory() *Memory` / `storage.NewMemoryWithCleanup(interval)`：构造并发安全的存储并启动过期清理 goroutine（默认 `defaultCleanupInterval = time.Minute` 扫一次，`interval <= 0` 时不启动）。经注册表 `storage.Open("memory", cfg)` 使用时读取 `cleanup_interval`（默认 1 分钟，`0` 关闭后台清理，与 SQL 后端同义）。使用完必须 `Close()` 释放后台 goroutine，`Close` 可重复调用。
 - `Get` 返回值的副本，键不存在或已过期返回 `bot.ErrNotFound`；`Set` 拷贝入参切片，`ttl <= 0` 表示永不过期；`Delete` 对不存在的键返回 nil；`Len()` 返回当前条目数（含尚未清理的过期条目）。入参 ctx 已取消时立即返回 `ctx.Err()`。
-- `storage.Denied() bot.Storage`：拒绝一切访问的实现，`Get`/`Set`/`Delete` 都返回 `storage.ErrPermissionDenied`。未声明 `PermStorage` 的插件（`internal/engine.pluginAPI`）与适配器（`internal/adaptermgr`）拿到的就是它。`ErrPermissionDenied` 定义在 `internal/storage`，插件只依赖 `pkg/bot` 时无法引用该变量，只能按「错误非 nil」或错误文本处理；可比较的公开哨兵只有 `bot.ErrNotFound`。
+- `storage.Denied() bot.Storage`：拒绝一切访问的实现，`Get`/`Set`/`Delete` 都返回 `bot.ErrPermissionDenied`（公开哨兵，插件/适配器可经 `errors.Is(err, bot.ErrPermissionDenied)` 判定）。未声明 `PermStorage` 的插件（`internal/engine.pluginAPI`）与适配器（`internal/adaptermgr`）拿到的就是它。
 
 替换方式：配置 `storage.type`/`storage.dsn` 选择内置后端（`memory` 默认、`sqlite`、`mysql`，见 [configuration.md](configuration.md) 12.5），或 `kei.Options.Storage` 注入自定义 `bot.Storage`（非 nil 优先，由调用方拥有，`Run` 不关闭）。`pkg/kei.buildStorage` 为 nil 时按配置构造，并在 `Run` 返回前关闭自有实例。`internal/pluginmgr.Deps.Storage` 则接收最终解析出的实例，按插件权限分发。
 
@@ -466,7 +471,7 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 | --- | --- |
 | `send_message` | `BotAPI.Send` 返回错误 `engine: plugin <name> lacks permission send_message`；`Reply` 不受影响 |
 | `network` | `PluginContext.HTTPClient` 为 nil，插件应自行降级或报错 |
-| `storage` | `PluginContext.Storage` 与 `BotAPI.Storage()` 都是 `storage.Denied()`，任意调用返回 `storage.ErrPermissionDenied` |
+| `storage` | `PluginContext.Storage` 与 `BotAPI.Storage()` 都是 `storage.Denied()`，任意调用返回 `bot.ErrPermissionDenied`（`errors.Is` 可判定） |
 | `admin` | 仅作声明与审计；管理员校验实际由 `Rule.AdminOnly` + Auth 中间件按 `auth.admin_users` 完成，与插件元信息无关 |
 | `read_user` | 仅作声明与审计，核心当前不据此裁剪任何依赖（用户信息本就在 `Event.Sender` 中） |
 | `net_listen` / `receive_event` | 属于适配器语义，插件不涉及 |

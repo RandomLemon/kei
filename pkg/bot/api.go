@@ -18,6 +18,11 @@ import (
 // 实现必须保证「键不存在」返回可被 errors.Is(err, ErrNotFound) 识别的错误。
 var ErrNotFound = errors.New("bot: storage: key not found")
 
+// ErrPermissionDenied 表示访问因缺少所需权限而被拒绝。
+//
+// 实现必须保证「拒绝访问」返回可被 errors.Is(err, ErrPermissionDenied) 识别的错误。
+var ErrPermissionDenied = errors.New("bot: permission denied")
+
 // Storage 是插件可用的键值存储。
 //
 // 默认内存实现；可经配置 storage.type 切换为 sqlite/mysql，或注入自定义实现。
@@ -65,7 +70,8 @@ type PluginContext struct {
 	// Logger 是已绑定 plugin 字段的日志器。
 	Logger *slog.Logger
 	// Storage 是插件可用的键值存储，插件需声明 PermStorage 才能使用；
-	// 可用时按插件名隔离（底层键带 plugin:<name>: 前缀），不同插件互不可见。
+	// 可用时按插件名隔离（底层键带 plugin:<name>: 前缀），不同插件互不可见；
+	// 未声明时得到始终拒绝的实现（调用返回 ErrPermissionDenied）。
 	Storage Storage
 	// HTTPClient 是带超时的 HTTP 客户端，插件需声明 PermNetwork 才能使用。
 	HTTPClient *http.Client

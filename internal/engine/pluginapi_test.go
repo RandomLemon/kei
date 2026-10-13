@@ -10,7 +10,6 @@ import (
 	"github.com/RandomLemon/kei/adapters/mock"
 	"github.com/RandomLemon/kei/internal/config"
 	"github.com/RandomLemon/kei/internal/middleware"
-	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
@@ -68,7 +67,7 @@ func TestPluginAPIPermissionGates(t *testing.T) {
 
 	t.Run("存储权限按声明裁剪", func(t *testing.T) {
 		denied := eng.pluginAPI("nostore", bot.Metadata{Name: "nostore"}).Storage()
-		if err := denied.Set(ctx, "k", []byte("v"), time.Minute); !errors.Is(err, storage.ErrPermissionDenied) {
+		if err := denied.Set(ctx, "k", []byte("v"), time.Minute); !errors.Is(err, bot.ErrPermissionDenied) {
 			t.Fatalf("未声明 storage 权限时 Set = %v", err)
 		}
 

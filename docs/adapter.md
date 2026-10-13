@@ -279,7 +279,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 | --- | --- | --- |
 | `send_message` | 出站发送（适配器自己的 `Send`） | 仅审计；权限模型与插件共用。进程内适配器路径上没有任何 `PermSendMessage` 检查，`Send` 始终可用 |
 | `network` | 出站网络请求 | `AdapterContext.HTTPClient` 为 nil |
-| `storage` | 读写去重/状态缓存 | 注入拒绝式 `Storage`（`internal/storage.Denied()`，全部方法返回 `ErrPermissionDenied`）；授予时注入的是带 `adapter:<botID>:` 前缀的隔离视图 |
+| `storage` | 读写去重/状态缓存 | 注入拒绝式 `Storage`（`internal/storage.Denied()`，全部方法返回 `bot.ErrPermissionDenied`，`errors.Is` 可判定）；授予时注入的是带 `adapter:<botID>:` 前缀的隔离视图 |
 | `net_listen` | 启动入站监听（webhook / 长连接） | 配置里出现保留键 `listen_addr` 时启动失败 |
 | `receive_event` | 保留权限，仅作声明与审计 | 核心当前不据此裁剪任何依赖 |
 | `*` | 不适用于适配器（声明即启动失败） | — |
