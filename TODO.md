@@ -149,7 +149,7 @@
   - 修复：加 `maxKeys` + LRU/SWR 或定期 janitor；`RateLimit` 对空 key 选择“放行”或回退 `SessionKey()`，并写入文档。
   - 验收：单测大量不同 key 后桶数有界；空 key 行为确定。
 
-- [ ] **28. ratelimit：`retryAfter` 用过时 token 估算，系统性多睡** `[读码]`
+- [x] **28. ratelimit：`retryAfter` 用过时 token 估算，系统性多睡** `[读码]` — 完成 269a85c：`retryAfter` 改为**只读且自洽**的估算——先按当前时间把令牌补到 `now`（`min(burst, tokens+elapsed*rate)`，不修改桶状态、不刷新 LRU），再算 `max(0, (1-tokens)/rate)`，并补 `nil`/`rate <= 0` 守卫；`Wait` 的时序不变（仍先 `Allow` 再估算）。回归测试 `internal/ratelimit` 的 `TestRetryAfterUsesFreshTokens`（假时钟：速率 1/s 的桶耗尽 500ms 后应剩约 500ms、补满后为 0、未知 key 为 0）与 `TestWaitDoesNotOversleep`（验收项：rate=20/s、burst=1 连续 3 次 `Wait` 的实际耗时须 < 1.5×速率推导值 150ms）。**实测修正原判断**：同一组用例在 `HEAD` worktree 上——陈旧实现报 `retryAfter = 1s, 期望约 500ms`（缺陷坐实：该函数只在「调用方刚刚调用过 `Allow`」时才准），而 `TestWaitDoesNotOversleep` 在旧实现上同样通过；另对 `Wait` 实测（顺序 20 次、并发 8 次，rate=200/100）耗时为理论下限的 1.06–1.10×（定时器与调度开销），即 `Wait` 自身并未系统性多睡，原条目「发送路径多睡」的用户可见结论不成立，真实缺陷是 `retryAfter` 的隐式调用顺序依赖。取证：`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/engine.md` 7.7 的 `Wait`/`retryAfter` 语义、`docs/testing.md` 的 ratelimit 行（9→11）同步。
   - 位置：`internal/ratelimit/wait.go:38-47`
   - 问题：`b.tokens` 仅在 `AllowN` 内补充，`Wait` 循环里读到的值已陈旧 → 等待被高估；发送路径（单 key）受影响最明显。
   - 修复：读取前先按现在时间补充，再计算 `max(0,(1-tokens)/rate)`。
