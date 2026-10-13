@@ -166,3 +166,50 @@ func TestEvictionKeepsMostRecentlyUsed(t *testing.T) {
 		t.Fatalf("Buckets = %d, 期望 2", got)
 	}
 }
+
+// TestRetryAfterUsesFreshTokens 验证 retryAfter 按当前时间补充令牌后再估算：速率
+// 1/s 的桶耗尽 500ms 后应只剩约 500ms，而不是按陈旧快照算成整整 1s。
+func TestRetryAfterUsesFreshTokens(t *testing.T) {
+	now := time.Unix(1000, 0)
+	l := New(1, 1, time.Minute, 0)
+	l.now = func() time.Time { return now }
+
+	if !l.Allow("k") {
+		t.Fatal("初始令牌应放行")
+	}
+	now = now.Add(500 * time.Millisecond)
+	if d := l.retryAfter("k"); d <= 0 || d > 600*time.Millisecond {
+		t.Fatalf("retryAfter = %v, 期望约 500ms（陈旧快照会算成 1s）", d)
+	}
+	if d := l.retryAfter("missing"); d != 0 {
+		t.Fatalf("未知 key 的 retryAfter = %v, 期望 0", d)
+	}
+	// 补充后令牌已够：等待归零。
+	now = now.Add(time.Second)
+	if d := l.retryAfter("k"); d != 0 {
+		t.Fatalf("令牌补满后的 retryAfter = %v, 期望 0", d)
+	}
+}
+
+// TestWaitDoesNotOversleep 验证 Wait 的实际等待不显著超过速率推导值：rate=20/s
+// （50ms 一个令牌）、burst=1 时连续 3 次 Wait 约需 150ms，而不是每轮多睡一份
+// （那会到 300ms）。
+func TestWaitDoesNotOversleep(t *testing.T) {
+	const rate = 20.0
+	const n = 3
+	l := New(rate, 1, time.Minute, 0)
+	if !l.Allow("k") {
+		t.Fatal("初始令牌应放行")
+	}
+
+	want := time.Duration(float64(n) / rate * float64(time.Second))
+	start := time.Now()
+	for range n {
+		if err := l.Wait(context.Background(), "k"); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > want*3/2 {
+		t.Fatalf("Wait 总耗时 %v 显著超过速率推导值 %v", elapsed, want)
+	}
+}

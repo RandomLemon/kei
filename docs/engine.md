@@ -225,7 +225,7 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 3. 发送前限流：配置了 `limits.send_rate > 0` 时为每个 bot 建一个令牌桶 `ratelimit.New(SendRate, SendBurst, 0, 0)`，发送前 `lim.Wait(ctx, botID)` 阻塞到拿到令牌或 ctx 结束（发送链路不允许丢消息）。
 4. 重试：`attempts = SendRetries + 1`（默认 3 次尝试）；第 n 次重试（n ≥ 1）前先等待 `SendBackoff << (attempt-1)`（默认 100ms、200ms），等待期间响应 ctx 取消。每次尝试都记 `MessageSent(platform, 耗时, err)` 指标。ctx 已取消或某次尝试返回错误且 `ctx.Err() != nil` 时停止重试；错误以 `engine: send via %s: %w` 包装返回。重试是 at-least-once 语义：对端已收到但响应失败时会重复投递。
 
-令牌桶实现（`internal/ratelimit`）：`rate` 为每秒补充令牌数，`burst` 为桶容量（`<= 0` 时取 `max(1, rate)`），`rate <= 0` 表示不限流（`Allow` 恒为 true）。`Allow(key)`/`AllowN(key, n)` 放行时才扣令牌；`Buckets()`/`GC()` 暴露活跃桶数与空闲回收，空闲阈值默认 10 分钟。桶表容量有上限 `maxKeys`（`New` 的第 4 个参数，`<= 0` 时默认 10000）：活跃桶数达到上限后，插入新 key 时按「最久未使用」淘汰一个桶（`order` 为 `container/list` 维护的 LRU，淘汰 O(1)；任何访问——包括被拒绝的调用——都会刷新位置），被淘汰的 key 下次出现时重建为满桶。因此 key 空间不可枚举（例如伪造的用户 ID）时内存仍有界。`Wait` 在无法放行时按 `retryAfter` 计算需要等待的时长后重试，`retryAfter` 为 0 时睡 1ms 避免忙等。
+令牌桶实现（`internal/ratelimit`）：`rate` 为每秒补充令牌数，`burst` 为桶容量（`<= 0` 时取 `max(1, rate)`），`rate <= 0` 表示不限流（`Allow` 恒为 true）。`Allow(key)`/`AllowN(key, n)` 放行时才扣令牌；`Buckets()`/`GC()` 暴露活跃桶数与空闲回收，空闲阈值默认 10 分钟。桶表容量有上限 `maxKeys`（`New` 的第 4 个参数，`<= 0` 时默认 10000）：活跃桶数达到上限后，插入新 key 时按「最久未使用」淘汰一个桶（`order` 为 `container/list` 维护的 LRU，淘汰 O(1)；任何访问——包括被拒绝的调用——都会刷新位置），被淘汰的 key 下次出现时重建为满桶。因此 key 空间不可枚举（例如伪造的用户 ID）时内存仍有界。`Wait` 在无法放行时按 `retryAfter` 计算需要等待的时长后重试，`retryAfter` 为 0 时睡 1ms 避免忙等；`retryAfter` 是只读估算——先按当前时间把令牌补到 `now` 再算 `max(0, (1-tokens)/rate)`，不修改桶状态，也不依赖调用方刚刚调用过 `Allow`（陈旧快照会把等待算长，例如桶已空了半个周期仍按整整一个令牌计）。
 
 ### 7.8 Handler 超时与 panic 隔离
 

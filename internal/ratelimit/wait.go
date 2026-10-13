@@ -34,8 +34,17 @@ func (l *Limiter) Wait(ctx context.Context, key string) error {
 	}
 }
 
-// retryAfter 返回 key 需要等待多久才可能拿到一个令牌。
+// retryAfter 返回 key 从现在起需要等待多久才可能拿到一个令牌。
+//
+// 估算前把令牌按当前时间补到 now（只读，不修改桶状态），因此不依赖调用方刚刚
+// 调用过 Allow：陈旧快照会把等待算长（例如桶已空了半个周期时仍按整整一个令牌
+// 计）。0 表示无需等待（桶不存在、令牌已够或限流未启用）。
 func (l *Limiter) retryAfter(key string) time.Duration {
+	if l == nil || l.rate <= 0 {
+		return 0
+	}
+	now := l.now()
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -43,7 +52,11 @@ func (l *Limiter) retryAfter(key string) time.Duration {
 	if !ok {
 		return 0
 	}
-	missing := 1 - b.tokens
+	tokens := b.tokens
+	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
+		tokens = min(l.burst, tokens+elapsed*l.rate)
+	}
+	missing := 1 - tokens
 	if missing <= 0 {
 		return 0
 	}

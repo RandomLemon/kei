@@ -68,7 +68,7 @@
 | `internal/metrics` | `metrics_test.go` | 8 | Content-Type、计数器、直方图、空注册表、标签转义、nil 接收者、接口满足、并发记录 |
 | `internal/middleware` | `middleware_test.go` | 23 | 洋葱顺序、空链直通、Recover（panic/保留错误/日志堆栈）、Logger 字段与级别、Timeout（阻塞/快速/禁用/超时未返回的计数、告警与堆栈归因）、Dedup（冷热/无路由/回退键/禁用）、RateLimit（耗尽/作用域/禁用/无发送者回退 `SessionKey`/空键透传）、Auth、Metrics（进入链时上报 `RuleMatched`，`TestMetricsMiddleware`/`TestCombinedChain` 断言命中次数；禁用时不上报）、组合链 |
 | `internal/pluginmgr` | `manager_test.go` | 6 | 生命周期顺序与逆序停止、重复与非法插件、Setup/Start 失败阻断启动（含 panic 隔离）、权限作用域上下文、插件目录、缺 Registrar 工厂报错 |
-| `internal/ratelimit` | `ratelimit_test.go` | 9 | 禁用放行、突发与补充、`AllowN`、`Wait` 阻塞与 ctx、桶回收、并发 `Allow`；桶表上限（显式与默认 `maxKeys`，`TestBucketTableBounded`）与 LRU 淘汰（最近使用的 key 保留令牌状态、被淘汰的重建为满桶，`TestEvictionKeepsMostRecentlyUsed`） |
+| `internal/ratelimit` | `ratelimit_test.go` | 11 | 禁用放行、突发与补充、`AllowN`、`Wait` 阻塞与 ctx、桶回收、并发 `Allow`；桶表上限（显式与默认 `maxKeys`，`TestBucketTableBounded`）与 LRU 淘汰（最近使用的 key 保留令牌状态、被淘汰的重建为满桶，`TestEvictionKeepsMostRecentlyUsed`）；`retryAfter` 按当前时间补充令牌后估算（`TestRetryAfterUsesFreshTokens`）、`Wait` 实际耗时不超过速率推导值（`TestWaitDoesNotOversleep`） |
 | `internal/reply` | `reply_test.go` | 3 | 累积段发送、错误累积、默认私聊 |
 | `internal/router` | `router_test.go` | 29 | 命令解析与自定义前缀、优先级顺序、多规则命中、无匹配、注册校验与错误、正则/关键词（大小写不敏感）、事件类型与平台过滤、`OnAll` 兜底、中间件顺序与作用域、中间件读取路由、触发描述、正则捕获、per-rule Reply、Reply 工厂回退、错误聚合、自动 ID、规则副本隔离、匹配 panic 按规则隔离（`TestMatchPanicIsIsolated`：只跳过该条规则、其余规则照常命中、计入 `RuleMatchPanic` 并记带堆栈的 Error）、`UpdateRules` 重排与 nil 拒绝、`UpdateRules` 中途失败不留下半更新（`TestUpdateRulesFailureLeavesPublishedRulesUntouched`）、并发派发与注册 |
 | `internal/storage` | `memory_test.go`、`registry_test.go` | 9 | 内存往返、TTL、ctx 取消、`Close` 幂等、拒绝式存储、并发访问；注册表 `Kinds()` 升序为 memory/mysql/sqlite、`Open("memory")` 返回可用实现、未知类型报错并列出已注册名 |
