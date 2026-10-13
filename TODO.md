@@ -202,7 +202,7 @@
   - 问题：`AGENTS.md` 2.4“注释与实现不符视为缺陷”，且这些是公开 SDK 契约。
   - 修复：按现实改写注释；`OnRegex` 若要真报错需改 `Setup` 行为并同步 `docs/plugin.md` 9.2。
 
-- [ ] **37. `Reply.Send` 写入的 `msg.ID` 是死字段** `[读码]`
+- [x] **37. `Reply.Send` 写入的 `msg.ID` 是死字段** `[读码]` — 完成 e918d3c：采用「追加 `SegReply`」实现引用意图。`internal/reply.Builder.Send` 在事件消息带 ID 时于段列表首位插入 `SegReply{KeyMessageID: ev.Message.ID}`（按次构建、不写入已累积段列表，重复 `Send` 不累积）；`Message.ID` 的死赋值删除，`pkg/bot` 的 `Message.ID` 注释改为「入站消息由适配器填充；构造待发消息时留空，平台分配的消息 ID 见 `SendResult.MessageID`」。选择段方案而非 `SendRequest.ReplyTo`：`ReplyTo` 目前只有示例适配器消费，内置 onebot 只序列化 `SegReply`，且 `Builder` 只持有 `bot.BotAPI`（无 ReplyTo 入口）；降级路径天然生效——`Capabilities.Reply` 为 false 时 `bot.Degrade` 丢弃引用段、其余段照常发送。回归测试：`internal/reply` 的 `TestBuilderAutoQuote`（无消息 ID 不追加、重复 Send 不累积、引用段不进入 `Segments()`）与更新后的 `TestBuilderSendsAccumulatedSegments`/`TestBuilderErrors`（带 ID 的空消息仍不发送）；`internal/engine` 的 `TestReplyQuotesTriggeringMessage`（端到端段首位引用 `m-77`）与 `TestReplyQuoteDroppedByCapability`（仅文本能力的适配器丢弃引用段仍发文本）。取证：新测试在 `HEAD` worktree 内必失败（`Message.ID = "in-1"`、段数 1≠2），修复后全绿；`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿（23 包）。文档：`docs/plugin.md` 9.3、`docs/engine.md` 10.3、`docs/domain-model.md` 5.3、`pkg/bot/reply.go` 契约注释、`docs/testing.md`（reply 3→4、engine 29→31）。
   - 位置：`internal/reply/reply.go:89-91`、`docs/plugin.md:220`；消费方 `adapters/onebot/message.go`
   - 问题：注释称“用于平台侧引用回复”，但无任何适配器读待发 `Message.ID`（onebot 只序列化 `SegReply`）→ 引用回复静默失效。
   - 修复：实现意图（`Builder.Send` 设 `SendRequest.ReplyTo` 或追加 `SegReply`），或删除赋值并改文档。
