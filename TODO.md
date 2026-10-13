@@ -223,6 +223,18 @@
   - 问题：`Reply` 比 `pkg/message` 与其自身接口都弱；`SegFile` 契约允许 `KeyFile` 或 `KeyURL`，但公开构造器只能表达后者。
   - 修复：以不破坏外部实现的方式扩展（新增能力放可选接口或具体构建器）；补 `FileID`/`ImageID`。
 
+- [ ] **49. `RecordingRegistrar.Use` 与路由器语义相反、注释不实** `[已复现]`
+  - 位置：`pkg/bot/registrar_recorder.go:84-91`（`Use` 遍历已记录规则追加中间件）、`:131`（`add` 不附加任何待用中间件）；对照 `internal/router/registrar.go:112-119`（写入 `Router.pluginMW`）与 `internal/router/router.go:310`（注册时把当前列表复制进 `Rule.Middlewares`）
+  - 问题：路由器语义是「`Use` 只影响调用之后注册的规则」，`TestUseScope`（`internal/router/router_test.go:443`）断言执行序列 `before, mw, after`——先注册的规则不被中间件包裹、后注册的被包裹；`RecordingRegistrar` 恰好相反：把中间件追加到**已记录**的规则上，`Use` 之后注册的规则反而拿不到中间件。本次临时用例实测（`OnCommand("before")` → `Use(mw)` → `OnCommand("after")`）：`before.Middlewares=1, after.Middlewares=0`。注释「不改变已记录的规则」与实现相反，类型注释的「语义与路由器保持一致」因此在 `Use` 上失实。仓库内暂无生产调用方（`grep -rn "\.Use("` 只命中 `internal/router` 的测试），属潜伏陷阱：插件单测一旦用 `Use` 就得到与生产相反的行为。
+  - 修复：为 `RecordingRegistrar` 增加待用中间件切片：`Use` 只追加到该切片，`add` 在记录规则时先复制它再写入 `Rule.Middlewares`；注释与 `docs/plugin.md` 9.2 的 `Use` 语义对齐。
+  - 验收：新增单测断言 `Use` 之前注册的规则不含中间件、之后注册的含（与 `TestUseScope` 同构）。
+
+- [ ] **50. `SendRequest.ReplyTo` 无公开可达的调用方，内置适配器不消费** `[读码]`
+  - 位置：`pkg/bot/adapter.go:44-46`（字段注释）；`internal/engine/send.go:23-27`、`:51-56`（透传，注释与 `docs/engine.md:215` 均称「支持引用回复（ReplyTo）」）；读取方只有 `internal/engine/logging.go:57-59`（日志）与 `examples/kei-adapter-myim/myim.go:428`；`adapters/onebot` 全程不读 `req.ReplyTo`
+  - 问题：`Engine` 位于 `internal/engine`、`pkg/kei.Run`（`pkg/kei/kei.go:59`）只返回 `error`、`bot.BotAPI` 的 `Send`/`Reply` 都不带 `ReplyTo` → 公开 API 没有任何路径能产生非空 `ReplyTo`（仓库内只有 `internal/engine/logging_test.go:116` 构造过）；`docs/adapter.md:53` 却把它写进适配器契约（「非空时表示引用回复该消息 ID」），第三方适配器实现它是死代码，内置 onebot 直接忽略。P1-37 已把回复引用统一为 `SegReply` 段，`ReplyTo` 成为无生产调用方的平行通道（与 P1-37 同类「死字段」，但这次是公开结构字段 + 文档承诺）。
+  - 修复：二选一——(a) 删除 `SendRequest.ReplyTo` 及对应日志/文档（公开 SDK 破坏性变更，按 `AGENTS.md` 2.4 评估兼容性，替代路径为 `SegReply`）；(b) 接线：让 onebot 消费 `ReplyTo`，并在公开面提供可达入口（`bot.BotAPI` 或 `kei.Options`），文档写明可达性。倾向 (a)。
+  - 验收：任一方案后不存在「文档承诺、公开 API 无法产生且内置适配器不实现」的字段；`docs/adapter.md`/`docs/engine.md` 与实现一致。
+
 ---
 
 ## P2 — 结构 / 一致性 / 文档
@@ -270,6 +282,12 @@
   - 问题：合并冲突/复制粘贴的配置静默取最后值，无诊断。
   - 修复：统一的 pair 遍历助手，重复键报错并给字段路径。
 
+- [ ] **51. 注册错误审计路径 `Engine.RegistrationErrors()` 对外不可达，文档却指向它** `[读码]`
+  - 位置：`internal/engine/engine.go:492-496`（方法挂在 `internal/engine.Engine` 上）；`pkg/kei/kei.go:59`（`Run` 只返回 `error`，`pkg/kei` 中 `engine.` 只出现在构造点，无导出访问器）；`docs/plugin.md:138`（面向插件作者承诺「需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取」）
+  - 问题：`engine.Engine` 是 `internal` 类型，仓库外的调用方（嵌入 `pkg/kei` 的集成方与插件作者）没有任何方式取得它；`cmd/bot`、插件与 `pkg/kei` 也都不消费该列表（`recordErr` 只写不读，除内部测试）→ 文档所述通道对其受众不存在，`RegistrationErrors` 实例上「有值无出口」。
+  - 修复：二选一——(a) 给嵌入方一个真实出口（如 `kei.Options` 增加 `OnRegistrationErrors func([]error)`，或在启动时把非空列表汇总进日志）；(b) 文档改为「仓库内可读（引擎不对外开放）」，删去对插件作者的承诺。倾向 (b)，除非嵌入方有真实审计需求。
+  - 验收：文档所述通道可从其受众实际调用，或文档不再声称对外可达。
+
 ---
 
 ## 附：处理顺序建议
@@ -277,9 +295,11 @@
 1. P0 全部（1-9）：静默丢事件/丢错误/后端不可用，优先。
 2. P1 契约类（10-15、34、38）：中间件顺序、Publish 契约、注册器语义。
 3. P1 适配器类（16-18、25-26）：按 onebot → mock。
-4. P1 基础设施（27-33、35-37、39-40）。
-5. P2 结构与文档（41-48）。
+4. P1 基础设施（27-33、35-37、39-40、49-50）。
+5. P2 结构与文档（41-48、51）。
 
 > 注：编号 4、19-24 原为飞书适配器缺陷；飞书适配器已从仓库移除，这些条目随之删除，编号保留空位以维持其余条目的稳定性。
 
 > 注：第 1、2 条已在本地用临时用例复现（结论：`Seen(X)==false`；`order` 由 4 涨到 20001），已落地为 `internal/dedup` 的回归测试 `TestStaleOrderSlotDoesNotEvictReAddedID`、`TestOrderStaysBoundedUnderReAdd`（修复前均失败，修复后通过）。
+
+> 注：第 49-51 条由 P1-36～P1-38 的处理过程发现：49 已用临时用例实测（`OnCommand(before)`→`Use`→`OnCommand(after)` 后 `before.Middlewares=1, after.Middlewares=0`，与路由器 `TestUseScope` 的语义相反），50/51 为逐行读码 + 全仓 grep 确认（`ReplyTo` 无生产构造点、`RegistrationErrors` 无仓库外可达路径），落地前请再复核一次。
