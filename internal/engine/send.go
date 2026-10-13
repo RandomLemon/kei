@@ -20,9 +20,9 @@ func (e *Engine) Send(ctx context.Context, target bot.Target, msg *bot.Message) 
 	return e.SendRequest(ctx, &bot.SendRequest{Target: target, Message: msg})
 }
 
-// SendRequest 发送一条完整的发送请求，支持引用回复（ReplyTo）。
+// SendRequest 发送一条完整的发送请求。
 //
-// 这是 Send 的底层入口，供需要 reply_to 的调用方使用；
+// 这是 Send 的底层入口；引用回复等段级能力由 req.Message 内的 SegReply 段表达。
 // req.BotID 与 req.Target.BotID 都可指定机器人。
 func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.SendResult, error) {
 	if req == nil {
@@ -52,7 +52,6 @@ func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.Se
 		BotID:   botID,
 		Target:  target,
 		Message: degraded,
-		ReplyTo: req.ReplyTo,
 	}
 
 	if lim, ok := e.sendLimits[botID]; ok && lim != nil {

@@ -43,6 +43,8 @@ type EventSink interface {
 }
 
 // SendRequest 是一次发送请求。
+//
+// 引用回复由 Message 内的 SegReply 段表达（见 SegReply 与 Degrade）。
 type SendRequest struct {
 	// BotID 指定使用哪个机器人实例发送。
 	BotID string
@@ -50,8 +52,6 @@ type SendRequest struct {
 	Target Target
 	// Message 是待发送的统一消息。
 	Message *Message
-	// ReplyTo 非空时表示引用回复该消息 ID。
-	ReplyTo string
 }
 
 // Target 描述消息接收方。

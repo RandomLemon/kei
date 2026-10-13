@@ -44,7 +44,7 @@ func (e *Engine) logIncomingMessage(ctx context.Context, ev *bot.Event) {
 // logOutgoingMessage 以 INFO 记录一条实际发出的消息。
 //
 // 只在适配器 Send 成功后调用，字段：platform/bot/kind/channel/user/content，
-// 另有 reply_to、message_id（平台返回时）。req.Message 是降级后实际发送的消息。
+// 另有 message_id（平台返回时）。req.Message 是降级后实际发送的消息。
 func (e *Engine) logOutgoingMessage(ctx context.Context, platform, botID string, req *bot.SendRequest, res *bot.SendResult) {
 	args := []any{
 		"platform", platform,
@@ -53,9 +53,6 @@ func (e *Engine) logOutgoingMessage(ctx context.Context, platform, botID string,
 		"channel", req.Target.ChannelID,
 		"user", req.Target.UserID,
 		"content", describeMessage(req.Message),
-	}
-	if req.ReplyTo != "" {
-		args = append(args, "reply_to", req.ReplyTo)
 	}
 	if res != nil && res.MessageID != "" {
 		args = append(args, "message_id", res.MessageID)

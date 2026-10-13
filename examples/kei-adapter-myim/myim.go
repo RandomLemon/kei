@@ -390,7 +390,6 @@ type platformMessage struct {
 type sendPayload struct {
 	Target  platformTarget  `json:"target"`
 	Message platformMessage `json:"message"`
-	ReplyTo string          `json:"reply_to,omitempty"`
 }
 
 // sendResponse 是平台发送接口的响应体。
@@ -425,7 +424,6 @@ func (a *Adapter) Send(ctx context.Context, req *bot.SendRequest) (*bot.SendResu
 			ChannelID: req.Target.ChannelID,
 		},
 		Message: platformMessageFrom(msg),
-		ReplyTo: req.ReplyTo,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

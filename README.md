@@ -626,8 +626,6 @@ OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 
 
 - 个人微信逆向协议不支持；平台内置适配器只有 `mock` 与 `onebot`，企业微信、飞书等平台需按
   「写一个适配器」自行接入（独立包或独立 module，核心零改动）。
-- `BotAPI` 没有 `reply_to` 参数：插件回复当前会话无法携带引用；需要引用时用
-  `Engine.SendRequest`。
 - 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称；
   不指定则只有该平台仅有一个 bot 时才能自动选择。
 - `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。后端参数（`cleanup_interval`、`max_open_conns` 等）在配置加载阶段校验，类型不符或负数直接报错；存储键按插件名/适配器实例名自动隔离（`plugin:<name>:` / `adapter:<botID>:` 前缀），单键最长 191 字节，超长键在任何后端都返回同一个错误。

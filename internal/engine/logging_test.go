@@ -109,11 +109,11 @@ func TestSendRequestLogsOutgoingMessageAtInfo(t *testing.T) {
 	msg := &bot.Message{Kind: bot.MessageGroup, Segments: []bot.Segment{
 		{Type: bot.SegText, Data: map[string]any{bot.KeyText: "reply"}},
 		{Type: bot.SegAt, Data: map[string]any{bot.KeyUserID: "u1"}},
+		{Type: bot.SegReply, Data: map[string]any{bot.KeyMessageID: "m0"}},
 	}}
 	res, err := eng.SendRequest(context.Background(), &bot.SendRequest{
 		Target:  bot.Target{Platform: "mock", BotID: "mock-main", ChannelID: "g1", UserID: "u1", Kind: bot.MessageGroup},
 		Message: msg,
-		ReplyTo: "m0",
 	})
 	if err != nil {
 		t.Fatalf("SendRequest: %v", err)
@@ -126,7 +126,7 @@ func TestSendRequestLogsOutgoingMessageAtInfo(t *testing.T) {
 	for _, want := range []string{
 		"level=INFO", "msg=发送消息",
 		"bot=mock-main", "channel=g1", "user=u1",
-		"content=\"text:reply at:u1\"", "reply_to=m0", "message_id=" + res.MessageID,
+		"content=\"text:reply at:u1 reply:m0\"", "message_id=" + res.MessageID,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("发送消息日志缺少 %q:\n%s", want, out)
