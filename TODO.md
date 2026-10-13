@@ -213,7 +213,7 @@
   - 修复：注册期拒绝空触发参数并记入 `RegistrationErrors`；统一空参语义并文档化；`slices.Clone(words)`。
   - 验收：单测空参数报错/语义一致；`pkg/bot/registrar.go` 与 `docs/plugin.md` 9.2 同步。
 
-- [ ] **39. `ErrPermissionDenied` 未在 `pkg/bot` 导出** `[静态]`
+- [x] **39. `ErrPermissionDenied` 未在 `pkg/bot` 导出** `[静态]` — 完成 cc2a43b：`pkg/bot/api.go` 新增 `ErrPermissionDenied = errors.New("bot: permission denied")`，注释与 `ErrNotFound` 同构（承诺 `errors.Is(err, ErrPermissionDenied)` 可判定）；`internal/storage.Denied()` 的 `Get`/`Set`/`Delete` 直接返回该哨兵，内部符号 `storage.ErrPermissionDenied` 删除、不留兼容垫片（`AGENTS.md` 7），4 个调用点全部迁移到 `bot.ErrPermissionDenied`（`internal/storage`、`internal/adaptermgr`、`internal/engine`、`internal/pluginmgr` 的测试）。`PluginContext.Storage` 与 `AdapterContext.Storage` 注释补充「未声明权限时得到拒绝式实现（调用返回 `ErrPermissionDenied`）」。验收取证：同一批断言在 `HEAD` worktree 内编译失败——`undefined: bot.ErrPermissionDenied`（修复前该期望根本无法表达，返回的是无关的内部哨兵），修复后全绿；`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿（23 包）。文档：`docs/plugin.md` 11.1/11.2/11.4（Storage 代码块新增哨兵镜像，删去「插件无法引用」自认段）、`docs/adapter.md` 6.3、`README.md` 两处权限表、`docs/testing.md`（storage 行补 `TestDeniedStorage` 的 `errors.Is` 断言）。
   - 位置：`internal/storage/denied.go:12-14`；`pkg/bot/api.go:17-18` 只导出 `ErrNotFound`；`docs/plugin.md` 11.2 自认该洞
   - 修复：在 `pkg/bot` 定义并让 `internal/storage` 包装它，文档给出 `errors.Is` 用法。
   - 验收：仅依赖 `pkg/bot` 的插件可 `errors.Is(err, bot.ErrPermissionDenied)`。
