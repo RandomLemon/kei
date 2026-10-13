@@ -846,6 +846,80 @@ func TestSendGroupWithDegrade(t *testing.T) {
 	}
 }
 
+// TestSendFileSegments 覆盖文件段的发送行为：OneBot 的 file 字段要求本地路径、
+// file:// 或 base64，只有 KeyURL 的文件段（message.File 的产物）降级为文本链接，
+// 带 KeyFile 的文件段照常发送，两个键都为空时跳过。
+func TestSendFileSegments(t *testing.T) {
+	api, call := newFakeAPI(t, `{"status":"ok","retcode":0,"data":{"message_id":"7"}}`, http.StatusOK)
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL})
+
+	send := func(t *testing.T, segs ...bot.Segment) []onebotSegment {
+		t.Helper()
+		_, err := h.adapter.Send(context.Background(), &bot.SendRequest{
+			Target:  bot.Target{Kind: bot.MessageGroup, ChannelID: "30001"},
+			Message: &bot.Message{Kind: bot.MessageGroup, Segments: segs},
+		})
+		if err != nil {
+			t.Fatalf("Send 失败: %v", err)
+		}
+		return messageParams(t, call)
+	}
+	check := func(t *testing.T, got, want []onebotSegment) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("段数 = %d, 期望 %d: %+v", len(got), len(want), got)
+		}
+		for i := range want {
+			if got[i].Type != want[i].Type {
+				t.Errorf("第 %d 段类型 = %q, 期望 %q", i, got[i].Type, want[i].Type)
+				continue
+			}
+			for k, v := range want[i].Data {
+				if got[i].Data[k] != v {
+					t.Errorf("第 %d 段 %s = %v, 期望 %v", i, k, got[i].Data[k], v)
+				}
+			}
+		}
+	}
+
+	t.Run("URL-only 文件段降级为文本链接", func(t *testing.T) {
+		got := send(t, message.File("http://example.com/f.zip", "f.zip"), message.Text(" 见链接"))
+		check(t, got, []onebotSegment{
+			{Type: "text", Data: map[string]any{"text": "[file] f.zip http://example.com/f.zip"}},
+			{Type: "text", Data: map[string]any{"text": " 见链接"}},
+		})
+	})
+
+	t.Run("无文件名的 URL-only 文件段只留链接", func(t *testing.T) {
+		got := send(t, message.File("http://example.com/f.zip", ""))
+		check(t, got, []onebotSegment{
+			{Type: "text", Data: map[string]any{"text": "[file] http://example.com/f.zip"}},
+		})
+	})
+
+	t.Run("带 KeyFile 的文件段仍按文件段发送", func(t *testing.T) {
+		got := send(t, bot.Segment{Type: bot.SegFile, Data: map[string]any{
+			bot.KeyFile:     "file:///tmp/a.txt",
+			bot.KeyURL:      "http://example.com/a.txt",
+			bot.KeyFileName: "a.txt",
+		}})
+		check(t, got, []onebotSegment{
+			{Type: "file", Data: map[string]any{
+				"file": "file:///tmp/a.txt",
+				"url":  "http://example.com/a.txt",
+				"name": "a.txt",
+			}},
+		})
+	})
+
+	t.Run("两个键都为空的文件段被跳过", func(t *testing.T) {
+		got := send(t,
+			bot.Segment{Type: bot.SegFile, Data: map[string]any{bot.KeyFileName: "x.zip"}},
+			message.Text("hi"))
+		check(t, got, []onebotSegment{{Type: "text", Data: map[string]any{"text": "hi"}}})
+	})
+}
+
 func TestSendPrivateAndTargetInference(t *testing.T) {
 	t.Run("空 Kind 由 UserID 推断私聊", func(t *testing.T) {
 		api, call := newFakeAPI(t, `{"status":"ok","retcode":0,"data":{"message_id":"abc"}}`, http.StatusOK)

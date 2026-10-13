@@ -442,7 +442,7 @@ type Adapter interface {
 | 适配器 | 接入方式 | 能力 |
 | --- | --- | --- |
 | `mock` | HTTP 控制面注入/观察 | 全能力，用于本地联调与测试 |
-| `onebot` | 按 `mode` 选择 HTTP 双向（HTTP 上报 + HTTP API）/ 反向 WebSocket / 正向 WebSocket；发送优先走 WebSocket 连接，否则回落 HTTP API | 文本/图片/At/表情/引用/文件；不支持 Markdown、卡片 |
+| `onebot` | 按 `mode` 选择 HTTP 双向（HTTP 上报 + HTTP API）/ 反向 WebSocket / 正向 WebSocket；发送优先走 WebSocket 连接，否则回落 HTTP API | 文本/图片/At/表情/引用/文件（需带本地路径或平台文件标识，否则降级为文本链接）；不支持 Markdown、卡片 |
 
 ### OneBot v11 的接入方式
 

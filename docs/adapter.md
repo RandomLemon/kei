@@ -299,7 +299,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 
 ### 6.4 能力与降级
 
-1. 引擎在调用 `Adapter.Send` 之前统一执行 `bot.Degrade(msg, caps)`，适配器只需如实声明 `Capabilities`。执行点是 `internal/engine.SendRequest`：解析出适配器后调用 `bot.Degrade(req.Message, ad.Capabilities())`，再组装 `bot.SendRequest`。内置 onebot 适配器在自己的 `Send` 里也调用 `bot.Degrade`（对已降级的消息是幂等操作），其 `buildArray` 另对 Markdown 段做了兜底映射。
+1. 引擎在调用 `Adapter.Send` 之前统一执行 `bot.Degrade(msg, caps)`，适配器只需如实声明 `Capabilities`。执行点是 `internal/engine.SendRequest`：解析出适配器后调用 `bot.Degrade(req.Message, ad.Capabilities())`，再组装 `bot.SendRequest`。内置 onebot 适配器在自己的 `Send` 里也调用 `bot.Degrade`（对已降级的消息是幂等操作），其 `buildArray` 另对 Markdown 段与只有 `KeyURL` 的文件段做了兜底映射（见 6.7）。
 2. 降级规则（`pkg/bot/degrade.go` 逐条对应）：
 
 ```go
@@ -433,7 +433,7 @@ bots:
   - `forward_ws`：本适配器主动连接 `ws_url`（`ws://` 或 `wss://`，必填）并完成 RFC 6455 客户端握手（`Sec-WebSocket-Accept` 校验、出站帧带掩码），事件与发送共用这条连接，不监听任何端口，断线后按 1s→30s 指数退避自动重连，`AccessToken` 非空时以 `Authorization: Bearer <access_token>` 随握手请求发出。
   - 各 mode 只注册实际启用的入口，其它路径返回 404。与所选 mode 无关的键不报错，而是忽略并记一条 warn（`onebot: 配置键在当前 mode 下不生效，已忽略`），因此同一份配置可以保留全部方式的键、只切换 `mode`：`forward_http` 忽略 `ws_url`/`ws_path`/`ping_interval`；`reverse_ws` 忽略 `path`/`ws_url`；`forward_ws` 忽略 `listen_addr`/`path`/`ws_path`/`secret`。心跳间隔（`ping_interval`）对正向与反向 WebSocket 都生效，默认 30s，负值表示不发心跳。
 - 发送：优先经可承载 API 的 WebSocket 连接（正向或反向）下发（按 `echo` 匹配响应），没有可用连接时回落到 `api_url` 的 HTTP API；回落规则与 `mode` 无关，只要 `api_url` 非空它就是可用通道，`api_url` 为空且无连接时返回错误。目标类型为空时按 `ChannelID`/`UserID` 推断群聊或私聊，群聊用 `send_group_msg`、私聊用 `send_private_msg`。
-- 能力：`Text`/`Image`/`At`/`File`/`Reply`/`Private`/`Group` 为 true；`Markdown`、`Card` 为 false；表情段由 `Text` 支撑，因此 Markdown/卡片会在发送前被 `bot.Degrade` 转成文本。
+- 能力：`Text`/`Image`/`At`/`File`/`Reply`/`Private`/`Group` 为 true；`Markdown`、`Card` 为 false；表情段由 `Text` 支撑，因此 Markdown/卡片会在发送前被 `bot.Degrade` 转成文本。`File` 为 true 指能发送带 `KeyFile`（本地路径、`file://` 或 base64）的文件段——OneBot 的 `file` 字段不接受下载 URL，只有 `KeyURL` 的文件段（`pkg/message.File` 的产物）在 `buildArray` 里降级为文本链接 `[file] 名称 URL`（名称为空时省略），两个键都为空的文件段跳过并记 warn。
 - 工厂：`newFromContext` 在 `ac.HTTPClient == nil`（即未授予 `network`）时直接失败，不回落到默认客户端。
 
 ---

@@ -117,8 +117,10 @@ func convertSegment(in onebotSegment, log *slog.Logger) (bot.Segment, bool) {
 
 // buildArray 把统一消息转换为 OneBot array 格式的段列表。
 //
-// 入参消息应已按平台能力降级（见 bot.Degrade），此处仍对 Markdown 段做兜底，
-// 避免未降级的调用方产生不可发送的载荷。无法映射的段会被跳过并记录 warn。
+// 入参消息应已按平台能力降级（见 bot.Degrade），此处仍对 Markdown 段与没有平台
+// 文件引用的文件段做兜底，避免未降级的调用方产生不可发送的载荷：OneBot 的 file
+// 字段要求本地路径、file:// 或 base64，只有 KeyURL 的文件段降级为文本链接。
+// 无法映射的段会被跳过并记录 warn。
 func buildArray(msg *bot.Message, log *slog.Logger) []onebotSegment {
 	out := make([]onebotSegment, 0, len(msg.Segments))
 	for i := range msg.Segments {
@@ -145,10 +147,26 @@ func buildArray(msg *bot.Message, log *slog.Logger) []onebotSegment {
 			d["id"] = dataString(seg, bot.KeyMessageID)
 
 		case bot.SegFile:
+			file := dataString(seg, bot.KeyFile)
+			name := dataString(seg, bot.KeyFileName)
 			url := dataString(seg, bot.KeyURL)
-			d["file"] = firstNonEmpty(dataString(seg, bot.KeyFile), url)
+			if file == "" {
+				// 没有可上传的文件引用：只有 URL 时降级为文本链接，两个键都为空时
+				// 视为不可发送（见 docs/domain-model.md 5.6 约定 3）。
+				if url == "" {
+					if log != nil {
+						log.Warn("onebot: 跳过无法发送的文件段", "name", name)
+					}
+					continue
+				}
+				out = append(out, onebotSegment{Type: "text", Data: map[string]any{
+					"text": fileFallbackText(name, url),
+				}})
+				continue
+			}
+			d["file"] = file
 			setIfNotEmpty(d, "url", url)
-			setIfNotEmpty(d, "name", dataString(seg, bot.KeyFileName))
+			setIfNotEmpty(d, "name", name)
 
 		default:
 			if log != nil {
@@ -159,6 +177,16 @@ func buildArray(msg *bot.Message, log *slog.Logger) []onebotSegment {
 		out = append(out, onebotSegment{Type: segTypeName(seg.Type), Data: d})
 	}
 	return out
+}
+
+// fileFallbackText 把没有平台文件引用的文件段渲染为文本链接。
+//
+// 格式与 bot.Degrade 的 SegFile 降级规则一致：[file] 名称 URL，名称为空时省略。
+func fileFallbackText(name, url string) string {
+	if name == "" {
+		return "[file] " + url
+	}
+	return "[file] " + name + " " + url
 }
 
 // segTypeName 返回统一段类型在 OneBot 协议中的名称。
