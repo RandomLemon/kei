@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"strconv"
@@ -47,6 +48,10 @@ type onebotEvent struct {
 	RequestType string `json:"request_type"`
 	// MetaEventType 是元事件类型。
 	MetaEventType string `json:"meta_event_type"`
+	// TargetID 是通知的目标 ID，例如 notify(poke) 的戳一戳对象。
+	TargetID flexID `json:"target_id"`
+	// Flag 是请求标识（request 事件），同一请求重复上报时保持不变。
+	Flag flexID `json:"flag"`
 
 	// UserID 是事件发起者 ID。
 	UserID flexID `json:"user_id"`
@@ -71,6 +76,9 @@ type flexID string
 func (f flexID) String() string { return string(f) }
 
 // UnmarshalJSON 接受数字、字符串与 null 三种 JSON 形式。
+//
+// 其它 token（对象、数组、布尔）返回错误而不是原样存成 ID，避免把 "{}" 之类的
+// 垃圾值带进 Event.ID；错误沿 decodeJSON → convertEvent 上抛，HTTP 层回 400。
 func (f *flexID) UnmarshalJSON(data []byte) error {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -85,7 +93,11 @@ func (f *flexID) UnmarshalJSON(data []byte) error {
 		*f = flexID(s)
 		return nil
 	}
-	*f = flexID(trimmed)
+	var num json.Number
+	if err := json.Unmarshal(trimmed, &num); err != nil {
+		return fmt.Errorf("ID 必须是数字或字符串，收到 %s", truncate(string(trimmed), errorBodyLimit))
+	}
+	*f = flexID(num.String())
 	return nil
 }
 
@@ -174,8 +186,10 @@ func buildSender(p *onebotEvent) *bot.User {
 // eventID 生成事件 ID。
 //
 // 消息事件优先使用平台 message_id；其它类型（以及缺失 message_id 的消息）用
-// self_id、post_type、时间与子类型/会话 ID 确定性拼接，保证同一事件重复上报时
-// 生成相同 ID，便于上游去重。
+// self_id、post_type、时间与子类型/会话 ID 等字段确定性拼接，保证同一事件重复
+// 上报时生成相同 ID，便于上游去重。同一秒内可能有多条同类型事件，因此拼接包含
+// 各自可区分的信息：通知事件带 message_id/target_id，请求事件带 flag；消息事件
+// 缺少 message_id 时追加 message 内容哈希，区分同秒同会话的不同消息。
 func eventID(p *onebotEvent, selfID string, eventType bot.EventType) string {
 	if eventType == bot.EventMessage {
 		if id := p.MessageID.String(); id != "" {
@@ -196,10 +210,21 @@ func eventID(p *onebotEvent, selfID string, eventType bot.EventType) string {
 		p.SubType,
 		p.GroupID.String(),
 		p.UserID.String(),
+		p.TargetID.String(),
+		p.MessageID.String(),
+		p.Flag.String(),
 	} {
 		if part != "" {
 			b.WriteByte('-')
 			b.WriteString(part)
+		}
+	}
+	if eventType == bot.EventMessage {
+		if raw := bytes.TrimSpace(p.Message); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+			h := fnv.New64a()
+			_, _ = h.Write(raw)
+			b.WriteString("-msg-")
+			b.WriteString(strconv.FormatUint(h.Sum64(), 16))
 		}
 	}
 	return b.String()

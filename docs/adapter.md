@@ -406,7 +406,7 @@ bots:
 7. `Start` 返回前必须完成监听/连接；`Stop` 必须幂等并等待已接收事件投递完毕；适配器内部 goroutine 必须有退出机制，不得泄漏。**已实现**：OneBot `Start` 只在当前 `mode` 需要监听时（`forward_http`/`reverse_http`/`reverse_ws`）先 `net.Listen` 再进入 `Serve`，`forward_ws` 不监听端口而是主动拨号；退出时显式收尾 hijacked 的反向 WebSocket 连接并取消正向重连循环。
 8. 平台回调必须快速 ACK：先 ACK 平台，再异步投递到核心；`EventSink.Emit` 返回只表示已入队。入队失败必须记录日志与指标，不得静默丢弃。**已实现（日志层面）**：OneBot 上报先回 `204` 再 `Emit`，失败记 warn `onebot: 投递事件失败`。**指标缺口**：投递失败没有对应指标，只有日志。
 9. 配置与密钥只能经 `AdapterContext.Config` 读取，不得直接读环境变量或文件。**已实现**：`adapters/` 下没有 `os.Getenv`/`os.ReadFile`/`os.Open` 调用；环境变量覆盖由配置加载层统一完成。
-10. 重复投递同一事件必须安全（核心按 `Event.ID` 去重），但适配器不得依赖去重来掩盖自身的重复投递。**已实现**：事件总线在 `Publish` 时用 TTL + 容量上限的去重集合丢弃重复 ID；内置适配器生成稳定 ID（OneBot 消息事件优先 `message_id`，其余类型用 `self_id`/`post_type`/时间/子类型确定性拼接）。
+10. 重复投递同一事件必须安全（核心按 `Event.ID` 去重），但适配器不得依赖去重来掩盖自身的重复投递。**已实现**：事件总线在 `Publish` 时用 TTL + 容量上限的去重集合丢弃重复 ID；内置适配器生成稳定 ID——OneBot 消息事件优先 `message_id`，缺失时与其它类型一律用 `self_id`/`post_type`/时间/子类型/会话/`message_id`/`target_id`/`flag` 确定性拼接，消息事件另附 `message` 内容哈希，保证同一秒内同会话的不同事件不撞 ID；ID 字段只接受数字、字符串与 `null`，对象/数组/布尔按结构错误拒绝（HTTP 上报回 `400`，WebSocket 上报丢弃并记 warn）。
 11. Mock Adapter 必须实现，用于本地测试和事件回放。**已实现**：`adapters/mock`（见 6.7）。
 
 ### 6.7 内置适配器现状

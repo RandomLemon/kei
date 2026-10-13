@@ -415,10 +415,11 @@ func TestEventTypesAndDeterministicIDs(t *testing.T) {
 			wantI: "10000-meta_event-1700000004-heartbeat-heartbeat",
 		},
 		{
-			name:  "消息缺少 message_id 时回退到拼接 ID",
+			name: "消息缺少 message_id 时回退到拼接 ID 并附加内容哈希",
+			// 末尾的 msg-<hex> 是 message 字段原文（含引号）的 FNV-1a 64 哈希。
 			body:  `{"time":1700000005,"self_id":10000,"post_type":"message","message_type":"private","user_id":20001,"message":"hi","sender":{"user_id":20001,"nickname":"x"}}`,
 			wantT: bot.EventMessage,
-			wantI: "10000-message-1700000005-20001",
+			wantI: "10000-message-1700000005-20001-msg-94e12d83d4ec08a8",
 		},
 		{
 			name:  "缺少 self_id 时使用 Options.SelfID",
@@ -464,6 +465,90 @@ func TestEventTypesAndDeterministicIDs(t *testing.T) {
 	e2 := h.sink.next(t)
 	if e1.ID != e2.ID {
 		t.Errorf("重复上报的 ID 不一致: %q vs %q", e1.ID, e2.ID)
+	}
+}
+
+// TestNonScalarIDsRejected 覆盖 flexID 的 token 校验：ID 字段只接受数字、字符串与
+// null，对象/数组/布尔必须整体拒绝（HTTP 400），不得把 "{}" 之类的垃圾值当成 ID。
+func TestNonScalarIDsRejected(t *testing.T) {
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:1", SelfID: "10000"})
+
+	cases := map[string]string{
+		"message_id 为对象": `{"time":1700000010,"self_id":10000,"post_type":"message","message_type":"private","message_id":{},"user_id":20001,"message":"hi"}`,
+		"message_id 为数组": `{"time":1700000011,"self_id":10000,"post_type":"notice","notice_type":"group_recall","message_id":[1,2],"group_id":30001,"user_id":20001}`,
+		"message_id 为布尔": `{"time":1700000012,"self_id":10000,"post_type":"notice","notice_type":"group_recall","message_id":true,"group_id":30001,"user_id":20001}`,
+		"self_id 为对象":    `{"time":1700000013,"self_id":{},"post_type":"meta_event","meta_event_type":"heartbeat"}`,
+		"user_id 为对象":    `{"time":1700000014,"self_id":10000,"post_type":"notice","notice_type":"friend_add","user_id":{}}`,
+		"target_id 为数组":  `{"time":1700000015,"self_id":10000,"post_type":"notice","notice_type":"notify","sub_type":"poke","group_id":30001,"user_id":20001,"target_id":[]}`,
+	}
+
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if resp := postJSON(t, h.base+defaultPath, body, nil); resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("状态码 = %d, 期望 400", resp.StatusCode)
+			}
+		})
+	}
+
+	// 被拒绝的事件不得进入 sink：随后上报一条合法事件，收到的必须是它。
+	valid := `{"time":1700000016,"self_id":10000,"post_type":"meta_event","meta_event_type":"heartbeat"}`
+	if resp := postJSON(t, h.base+defaultPath, valid, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("状态码 = %d, 期望 204", resp.StatusCode)
+	}
+	if ev := h.sink.next(t); ev.ID != "10000-meta_event-1700000016-heartbeat" {
+		t.Errorf("ID = %q, 期望回退 ID %q", ev.ID, "10000-meta_event-1700000016-heartbeat")
+	}
+}
+
+// TestFallbackIDsDistinguishSameSecondEvents 覆盖无 message_id 的回退 ID：同一秒内
+// 的不同事件必须带各自独有的信息，否则会被上游去重误杀；同一事件重复上报仍须稳定。
+func TestFallbackIDsDistinguishSameSecondEvents(t *testing.T) {
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: "http://127.0.0.1:1", SelfID: "10000"})
+
+	post := func(t *testing.T, body string) string {
+		t.Helper()
+		if resp := postJSON(t, h.base+defaultPath, body, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("状态码 = %d, 期望 204", resp.StatusCode)
+		}
+		return h.sink.next(t).ID
+	}
+
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{
+			name: "同秒同会话不同内容的消息",
+			a:    `{"time":1700000100,"self_id":10000,"post_type":"message","message_type":"group","user_id":20001,"group_id":30001,"message":"你好"}`,
+			b:    `{"time":1700000100,"self_id":10000,"post_type":"message","message_type":"group","user_id":20001,"group_id":30001,"message":"再见"}`,
+		},
+		{
+			name: "同秒不同 message_id 的撤回通知",
+			a:    `{"time":1700000101,"self_id":10000,"post_type":"notice","notice_type":"group_recall","group_id":30001,"user_id":20001,"message_id":9001}`,
+			b:    `{"time":1700000101,"self_id":10000,"post_type":"notice","notice_type":"group_recall","group_id":30001,"user_id":20001,"message_id":9002}`,
+		},
+		{
+			name: "同秒不同目标的戳一戳",
+			a:    `{"time":1700000102,"self_id":10000,"post_type":"notice","notice_type":"notify","sub_type":"poke","group_id":30001,"user_id":20001,"target_id":20002}`,
+			b:    `{"time":1700000102,"self_id":10000,"post_type":"notice","notice_type":"notify","sub_type":"poke","group_id":30001,"user_id":20001,"target_id":20003}`,
+		},
+		{
+			name: "同秒不同 flag 的好友请求",
+			a:    `{"time":1700000103,"self_id":10000,"post_type":"request","request_type":"friend","user_id":20001,"flag":"a-1"}`,
+			b:    `{"time":1700000103,"self_id":10000,"post_type":"request","request_type":"friend","user_id":20001,"flag":"a-2"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idA := post(t, tc.a)
+			if idB := post(t, tc.b); idA == idB {
+				t.Fatalf("同秒不同事件的 ID 撞车: %q", idA)
+			}
+			if again := post(t, tc.a); again != idA {
+				t.Errorf("重复上报的 ID 不一致: %q vs %q", idA, again)
+			}
+		})
 	}
 }
 
