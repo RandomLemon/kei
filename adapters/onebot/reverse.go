@@ -231,7 +231,7 @@ func (h *wsHub) shutdown(ctx context.Context) error {
 		select {
 		case <-done:
 			return nil
-		case <-time.After(time.Second):
+		case <-time.After(wsCloseGrace):
 			return fmt.Errorf("onebot: 等待 %d 条反向 WebSocket 连接退出超时", len(sessions))
 		}
 	}

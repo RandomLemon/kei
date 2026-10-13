@@ -113,8 +113,14 @@ const (
 	defaultWSPath = "/onebot/ws"
 	// defaultTimeout 是默认 HTTP 客户端的超时时间。
 	defaultTimeout = 10 * time.Second
-	// shutdownTimeout 是 Start 退出时等待在途请求与反向 WebSocket 读循环退出的时限。
+	// shutdownTimeout 是一次收尾（Stop 或 Start 退栈）的优雅阶段总预算：调用方
+	// ctx 可能没有截止时间，且各阶段共享这一个 deadline，避免收尾无界等待。
 	shutdownTimeout = 5 * time.Second
+	// httpShutdownTimeout 是上述总预算中留给 http.Server 关闭在途请求的子预算，
+	// 剩余时间留给反向 WebSocket 收尾（hijacked 连接 http.Server 不等待）。
+	httpShutdownTimeout = 2 * time.Second
+	// wsCloseGrace 是反向 WebSocket 收尾超时后，硬关底层连接、等待读循环退出的宽限。
+	wsCloseGrace = time.Second
 	// maxBodyBytes 限制单个请求/响应体大小，避免异常实现打爆内存。
 	maxBodyBytes = 1 << 20
 	// errorBodyLimit 是错误信息中回显响应体的字节上限。
@@ -204,6 +210,11 @@ type Adapter struct {
 	addr      string
 	closed    bool
 	fwdCancel context.CancelFunc
+
+	// wsOnce/wsErr 让 Start 退栈与 Stop 共享同一次 WebSocket 收尾：收尾可能一直
+	// 等到超时（不响应关闭的读循环），重复执行会把两份等待预算叠在一次启停上。
+	wsOnce sync.Once
+	wsErr  error
 }
 
 // 编译期断言：Adapter 必须实现 bot.Adapter。
@@ -392,11 +403,15 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 	fwdCtx, fwdCancel := context.WithCancel(ctx)
 	defer func() {
 		fwdCancel()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
 		// WebSocket 是 hijacked 连接（反向）或主动拨号（正向）：http.Server.Shutdown
 		// 既不关闭也不等待它们，必须在这里显式收尾，否则连接与读循环会泄漏。
-		if herr := a.hub.shutdown(shutdownCtx); herr != nil {
+		// Stop 已经（或正在）收尾时由 Stop 上报结果，这里不重复等一份预算。
+		if a.stopped() {
+			return
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if herr := a.shutdownWS(shutdownCtx); herr != nil {
 			a.log.Warn("onebot: WebSocket 收尾未完成", "name", a.name, "err", herr)
 		}
 	}()
@@ -489,6 +504,11 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 }
 
 // Stop 关闭事件服务与全部 WebSocket 连接；可重复调用，重复调用返回 nil。
+//
+// 收尾分两个阶段并共享一个总预算（shutdownTimeout）：先关 http.Server（监听与
+// 在途请求），再收尾反向 WebSocket（hijacked 连接不在 http.Server 的管理范围内）。
+// 顺序与子预算都是显式的：http.Server 先拿到自己的子预算，不会继承被 WebSocket
+// 阶段耗尽的 ctx；调用方 ctx 没有截止时间时收尾同样有界。
 func (a *Adapter) Stop(ctx context.Context) error {
 	a.mu.Lock()
 	if a.closed {
@@ -505,21 +525,39 @@ func (a *Adapter) Stop(ctx context.Context) error {
 		cancel()
 	}
 
-	// WebSocket 连接不受 http.Server 管理，必须单独关闭并等待读循环退出。
-	wsErr := a.hub.shutdown(ctx)
+	shutdownCtx, cancelShutdown := context.WithTimeout(ctx, shutdownTimeout)
+	defer cancelShutdown()
 
-	if srv == nil {
-		return wsErr
+	var httpErr error
+	if srv != nil {
+		httpCtx, cancelHTTP := context.WithTimeout(shutdownCtx, httpShutdownTimeout)
+		httpErr = srv.Shutdown(httpCtx)
+		cancelHTTP()
+		if errors.Is(httpErr, http.ErrServerClosed) {
+			httpErr = nil
+		} else if httpErr != nil {
+			httpErr = fmt.Errorf("onebot: 关闭事件服务失败: %w", httpErr)
+		}
 	}
 
-	err := srv.Shutdown(ctx)
-	if err != nil && errors.Is(err, http.ErrServerClosed) {
-		err = nil
-	}
-	if err != nil {
-		return fmt.Errorf("onebot: 关闭事件服务失败: %w", err)
-	}
-	return wsErr
+	// WebSocket 收尾的失败也返回给调用方（引擎会记 warn），不与 http 错误互相掩盖。
+	return errors.Join(httpErr, a.shutdownWS(shutdownCtx))
+}
+
+// stopped 报告 Stop 是否已被调用。
+func (a *Adapter) stopped() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
+}
+
+// shutdownWS 幂等地收尾反向 WebSocket 连接。
+//
+// Start 退栈与 Stop 都会调用：并发或重复调用共享同一次收尾与同一个结果，避免
+// 卡住的连接让一次启停叠加上两份等待预算。
+func (a *Adapter) shutdownWS(ctx context.Context) error {
+	a.wsOnce.Do(func() { a.wsErr = a.hub.shutdown(ctx) })
+	return a.wsErr
 }
 
 // routes 构造事件入口的路由。

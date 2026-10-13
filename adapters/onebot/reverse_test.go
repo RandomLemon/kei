@@ -840,6 +840,103 @@ func TestReverseWSStopClosesConnections(t *testing.T) {
 	}
 }
 
+// TestStopBoundedWithStuckSession 覆盖收尾预算：读循环卡在 Emit 上（既不响应关闭帧
+// 也不响应硬关连接）时，Stop 必须在自身预算内返回并如实报告 WebSocket 收尾失败；
+// http.Server 有独立子预算，不该被 WebSocket 阶段拖成失败。
+func TestStopBoundedWithStuckSession(t *testing.T) {
+	opts := Options{Name: "bot1", Mode: modeReverseWS, APIURL: "http://127.0.0.1:1", ListenAddr: "127.0.0.1:0", Logger: quietLogger()}
+	a, err := New(opts)
+	if err != nil {
+		t.Fatalf("New 失败: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sink := newBlockedSink()
+	done := make(chan error, 1)
+	go func() { done <- a.Start(ctx, sink) }()
+	base := waitForAddr(t, a)
+
+	client := connectWS(t, base, nil)
+	waitForSessions(t, a, 1)
+	client.writeText(groupArrayEvent)
+	select {
+	case <-sink.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("读循环未开始投递事件")
+	}
+
+	// 放开卡住的 Emit 并结束 ctx：即使 Stop 超时返回，读循环也能在测试结束时回收。
+	defer func() {
+		close(sink.release)
+		cancel()
+	}()
+
+	// 调用方不给任何截止时间：收尾预算必须由 Stop 自己兜住。
+	stopCh := make(chan error, 1)
+	go func() { stopCh <- a.Stop(context.Background()) }()
+
+	var stopErr error
+	select {
+	case stopErr = <-stopCh:
+	case <-time.After(shutdownTimeout + wsCloseGrace + time.Second):
+		t.Fatal("卡住的 WebSocket 会话让 Stop 超出预算未返回")
+	}
+	if stopErr == nil {
+		t.Fatal("卡住的 WebSocket 会话应让 Stop 返回错误")
+	}
+	if !strings.Contains(stopErr.Error(), "反向 WebSocket 连接退出超时") {
+		t.Errorf("错误应指出 WebSocket 收尾超时: %v", stopErr)
+	}
+	if strings.Contains(stopErr.Error(), "关闭事件服务失败") {
+		t.Errorf("http.Server 有独立子预算，不应被 WebSocket 阶段拖成失败: %v", stopErr)
+	}
+	// 收尾后监听必须已释放。
+	if resp, err := testClient.Get(base + defaultWSPath); err == nil {
+		_ = resp.Body.Close()
+		t.Error("Stop 返回后监听端口仍接受连接")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Start 返回错误: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Start 未在超时内退出")
+	}
+}
+
+// TestStartCleanupWithoutStop 覆盖 Stop 未被调用时的收尾路径：ctx 结束即由 Start
+// 退栈收尾 WebSocket，连接计数归零且 Start 返回 nil。
+func TestStartCleanupWithoutStop(t *testing.T) {
+	opts := Options{Name: "bot1", Mode: modeReverseWS, APIURL: "http://127.0.0.1:1", ListenAddr: "127.0.0.1:0", Logger: quietLogger()}
+	a, err := New(opts)
+	if err != nil {
+		t.Fatalf("New 失败: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Start(ctx, newSinkRecorder()) }()
+	base := waitForAddr(t, a)
+
+	connectWS(t, base, nil)
+	waitForSessions(t, a, 1)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Start 返回错误: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start 未在超时内退出")
+	}
+	if got := sessionCount(a); got != 0 {
+		t.Errorf("Start 退出后连接数 = %d, 期望 0", got)
+	}
+}
+
 func TestReverseWSClientDisconnectUnblocksSend(t *testing.T) {
 	h := startHarness(t, Options{})
 	client := connectWS(t, h.base, nil)
