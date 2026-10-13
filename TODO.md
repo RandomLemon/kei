@@ -197,7 +197,7 @@
   - 修复：`NewConfig` 深拷贝（或 `Raw()` 返回快照）并文档化。
   - 验收：单测改 `Raw()` 不影响原 map。
 
-- [ ] **36. `pkg/bot` 注释与实现不符** `[读码]`
+- [x] **36. `pkg/bot` 注释与实现不符** `[读码]` — 完成 16ec7c6：四处注释按实现改写，无行为变更。`OnRegex` 改为「编译失败不会 panic、不注册该规则，错误由实现记录（内置实现记入注册错误列表并记 Warn 日志），插件 Setup 不受影响」（实现：`internal/router/registrar.go` 的 `recordErr` → `Router.RegistrationErrors()`，`router.go:340` 记 Warn）；`Use` 改为「只影响调用之后注册的规则，已注册的规则不受影响」（实现：`registrar.add` 注册时复制当前中间件列表）；`Reply.Image` 改为「参数为图片 URL，写入 `Segment.Data[KeyURL]`，不支持平台文件标识」；`Adapter` 头部删除「并把平台调用统一为 Send/SendRequest」，改为「上行事件经 Start 注入的 EventSink 投递，下行发送统一为 Send(*SendRequest)」。未改 `Setup` 行为：`RegistrationErrors` 是既有且已文档化的非致命通道，改 `Setup` 报错会变更装配语义，超出注释一致性范围（`AGENTS.md` 7：文档与代码冲突以代码为准）。`docs/plugin.md` 同步：9.2 / 9.3 的镜像注释，原「与注释不一致处」段改为陈述实际失败通道。取证：`gofmt -l .`（无输出）、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿（23 包）。
   - 位置：`pkg/bot/registrar.go:101`（`OnRegex` 说 Setup 返回错误，实际只进 `RegistrationErrors`）、`:109`（`Use` 说影响所有规则，实际只影响之后注册的）、`pkg/bot/reply.go:15`（`Image` 说可用平台文件标识，实际只写 `KeyURL`）、`pkg/bot/adapter.go:9`（说 Adapter 有 `SendRequest`，实为 Engine）
   - 问题：`AGENTS.md` 2.4“注释与实现不符视为缺陷”，且这些是公开 SDK 契约。
   - 修复：按现实改写注释；`OnRegex` 若要真报错需改 `Setup` 行为并同步 `docs/plugin.md` 9.2。
