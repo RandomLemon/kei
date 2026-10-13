@@ -139,7 +139,7 @@ type Option func(*Rule)
 
 空触发参数与正则编译失败走同一通道：不注册规则、错误记入 `RegistrationErrors`（`recordErr` 记 Warn 日志），不会退化成匹配全部事件的兜底。`OnKeyword` 在注册时复制 `Keywords` 切片，注册后修改入参不影响路由；`RecordingRegistrar`（插件单测用，`pkg/bot/registrar_recorder.go`）行为一致：空参数不落规则、错误进 `Errors()`。
 
-`Use` 只影响调用 `Use` 之后为该插件注册的规则：每条规则在注册时把当前的插件中间件列表复制进 `Rule.Middlewares`，此前已注册的规则保持不变。折叠顺序由内到外为 handler → 插件 `Use` 中间件 → 全局中间件；同一组内按注册顺序由外到内包裹，即「先注册的先执行」。
+`Use` 只影响调用 `Use` 之后为该插件注册的规则：每条规则在注册时把当前的插件中间件列表复制进 `Rule.Middlewares`，此前已注册的规则保持不变。`RecordingRegistrar`（插件单测用）行为一致：`Use` 只影响其后注册的规则，注册时复制当时的列表。折叠顺序由内到外为 handler → 插件 `Use` 中间件 → 全局中间件；同一组内按注册顺序由外到内包裹，即「先注册的先执行」。
 
 全局中间件中的 `middleware.Metrics(rec)`（`internal/middleware`）是规则命中与处理结果的唯一指标上报点；`RuleMatched`/`EventHandled` 的先后语义、被拒绝调用的计数差异与完整指标族见 [engine.md](engine.md) 10.5。
 
@@ -526,9 +526,9 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 
 插件可以只用 `pkg/bot` 做单元测试，无需启动引擎：
 
-- `bot.NewRecordingRegistrar() *RecordingRegistrar`：记录式 `Registrar`。只记录规则而不做匹配，测试代码取出规则后可直接调用其 `Handler`。语义与路由器一致：消息类触发的默认 `EventType` 为 `EventMessage`，非法正则记入 `Errors()` 而不是 panic。
+- `bot.NewRecordingRegistrar() *RecordingRegistrar`：记录式 `Registrar`。只记录规则而不做匹配，测试代码取出规则后可直接调用其 `Handler`。语义与路由器一致：消息类触发的默认 `EventType` 为 `EventMessage`，非法正则记入 `Errors()` 而不是 panic，`Use` 只影响其后注册的规则。
   - 读取接口：`Rules() []*Rule`、`Errors() []error`、`Command(name string) (*Rule, bool)`、`Find(fn func(*Rule) bool) (*Rule, bool)`。
-  - `Use` 会为**已记录**的规则追加中间件（与路由器「只影响其后注册的规则」不同）。
+  - `Use` 只影响调用之后注册的规则（与路由器一致），每条规则在注册时复制当时的中间件列表；`Use(nil)` 被忽略。
   - 未显式指定 ID 的规则自动得到 `rec:<kind>:<index>` 形式的 ID。
 - `bot.NewNoopReply() *NoopReply`：记录段而不发送，用 `PlainText()` 断言文本、`Segments()`/`Message()` 断言段结构。
 - `bot.WithPluginContext(ctx, pc)`：测试中手动构造 `PluginContext`（`Config`、`Logger`、`Catalog`、`Adapters` 可直接赋值）后注入 ctx，用于驱动依赖上下文的 `Setup`。

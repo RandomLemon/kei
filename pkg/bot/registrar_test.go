@@ -188,3 +188,42 @@ func TestRecordingRegistrarCopiesKeywords(t *testing.T) {
 		t.Fatalf("关键词应被复制: %+v", rules)
 	}
 }
+
+// TestRecordingRegistrarUseScope 验证 RecordingRegistrar 与路由器一致：
+// Use 只影响调用之后注册的规则（先注册的不含中间件、后注册的含），
+// 后续 Use 不回溯到已注册规则，nil 中间件被忽略。
+func TestRecordingRegistrarUseScope(t *testing.T) {
+	reg := NewRecordingRegistrar()
+	h := func(context.Context, *Event, Reply) error { return nil }
+	mw := func(next Handler) Handler { return next }
+
+	reg.OnAll(h)
+	reg.Use(mw)
+	reg.OnAll(h)
+
+	rules := reg.Rules()
+	if len(rules) != 2 {
+		t.Fatalf("规则数 = %d, want 2", len(rules))
+	}
+	if got := len(rules[0].Middlewares); got != 0 {
+		t.Fatalf("Use 之前注册的规则中间件数 = %d, want 0", got)
+	}
+	if got := len(rules[1].Middlewares); got != 1 {
+		t.Fatalf("Use 之后注册的规则中间件数 = %d, want 1", got)
+	}
+
+	// 第二次 Use 只影响更晚注册的规则；nil 与路由器一致被忽略。
+	reg.Use(mw)
+	reg.Use(nil)
+	reg.OnAll(h)
+	rules = reg.Rules()
+	if got := len(rules[0].Middlewares); got != 0 {
+		t.Fatalf("已注册规则被回溯修改: %d", got)
+	}
+	if got := len(rules[1].Middlewares); got != 1 {
+		t.Fatalf("已注册规则被回溯修改: %d", got)
+	}
+	if got := len(rules[2].Middlewares); got != 2 {
+		t.Fatalf("后续 Use 之后注册的规则中间件数 = %d, want 2", got)
+	}
+}

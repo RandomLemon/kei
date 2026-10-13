@@ -13,12 +13,14 @@ import (
 // 它只记录规则而不做匹配，测试代码可以取出规则后直接调用其 Handler。
 // 语义与路由器保持一致：未设置 EventType 的消息类触发默认限定为
 // EventMessage，正则编译失败或触发参数为空（空命令名、空正则、空关键词
-// 列表或含空词、空事件类型）会记录到 Errors 并跳过该规则，不会 panic。
+// 列表或含空词、空事件类型）会记录到 Errors 并跳过该规则，不会 panic；
+// Use 只影响调用之后注册的规则，每条规则在注册时复制当时的中间件列表。
 type RecordingRegistrar struct {
 	mu       sync.Mutex
 	rules    []*Rule
 	errors   []error
 	counters map[string]int
+	pending  []Middleware
 }
 
 // 确保 RecordingRegistrar 满足 Registrar。
@@ -81,13 +83,15 @@ func (r *RecordingRegistrar) OnAll(h Handler, opts ...Option) {
 	r.add("all", &Rule{Handler: h}, opts)
 }
 
-// Use 记录插件级中间件，不改变已记录的规则。
+// Use 记录插件级中间件，只影响调用之后注册的规则（与路由器一致）；
+// mw 为 nil 时忽略。
 func (r *RecordingRegistrar) Use(mw Middleware) {
+	if mw == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, rule := range r.rules {
-		rule.Middlewares = append(rule.Middlewares, mw)
-	}
+	r.pending = append(r.pending, mw)
 }
 
 // Rules 返回已记录规则的快照。
@@ -143,6 +147,7 @@ func (r *RecordingRegistrar) add(kind string, rule *Rule, opts []Option) {
 	if rule.ID == "" {
 		rule.ID = "rec:" + kind + ":" + itoa(index)
 	}
+	rule.Middlewares = slices.Clone(r.pending)
 	r.rules = append(r.rules, rule)
 }
 
