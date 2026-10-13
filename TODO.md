@@ -125,7 +125,7 @@
   - 修复：`File:false`（让引擎降级为文本），或仅在有 `KeyFile` 时发文件、否则回退文本链接。
   - 验收：单测 URL-only 文件段按声明行为处理。
 
-- [ ] **18. onebot：`Stop` 分阶段共用/重建预算，可能超时** `[静态]`
+- [x] **18. onebot：`Stop` 分阶段共用/重建预算，可能超时** `[静态]` — 完成 1d802b5：`Stop` 顶部以 `context.WithTimeout(ctx, shutdownTimeout)`（5s）定一个总 deadline，阶段顺序改为**先 `http.Server.Shutdown`**（独立子预算 `httpShutdownTimeout` = 2s，不再继承被 WebSocket 阶段耗尽的 ctx）**再收尾反向 WebSocket**（用总预算剩余时间）；两阶段错误经 `errors.Join` 并报，不再用 http 错误掩盖 WebSocket 错误。`Start` 退栈与 `Stop` 经新增的 `Adapter.shutdownWS`（`sync.Once`）共享同一次 WebSocket 收尾，`Start` 退栈在 `Stop` 已（或正在）被调用时经 `stopped()` 直接跳过，一次启停不再叠加两份等待预算；`hub.shutdown` 的硬关宽限提为具名常量 `wsCloseGrace`（1s）。回归测试 `adapters/onebot/reverse_test.go` 的 `TestStopBoundedWithStuckSession`（读循环卡在 `Emit`——既不响应关闭帧也不响应硬关连接时，`Stop(context.Background())` 必须在 `shutdownTimeout + wsCloseGrace` + 1s 内返回，错误须指出「反向 WebSocket 连接退出超时」且不含「关闭事件服务失败」，并断言监听端口已释放）与 `TestStartCleanupWithoutStop`（不调用 `Stop`、直接 cancel ctx：`Start` 退栈后连接数归零且返回 nil，守住新的退栈分支）；在 `HEAD` worktree 跑同一测试必失败（旧实现 `Stop` 永不返回，用例 7s 后报「卡住的 WebSocket 会话让 Stop 超出预算未返回」）。取证：`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/adapter.md` 6.6 第 7 条与 `docs/testing.md` onebot 行（43→45）同步。
   - 位置：`adapters/onebot/onebot.go:498-519`、`Start` defer `:395-405`、`reverse.go:207-237`
   - 问题：`hub.shutdown` 先耗尽 ctx 预算（失败再等 1s），之后 `srv.Shutdown` 继承已耗尽 ctx；`Start` defer 又用新的 5s 预算，单次启停可叠加。
   - 修复：`Stop` 顶部定一个 deadline，`srv.Shutdown` 先于 `hub.shutdown`，各阶段显式子预算；`Start` defer 复用有界 ctx。
