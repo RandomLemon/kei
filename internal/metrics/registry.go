@@ -173,7 +173,7 @@ func (r *Registry) Handler() http.Handler {
 // render 渲染全部指标族。
 //
 // 先在读锁内复制各映射的指针快照，随后无锁渲染：计数器是原子的，直方图
-// 自带互斥，因此渲染期间的并发写入不会产生竞态。
+// 自带互斥（每次快照自洽），因此渲染期间的并发写入不会产生竞态。
 func (r *Registry) render(b *strings.Builder) {
 	if r == nil {
 		return

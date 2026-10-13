@@ -110,7 +110,7 @@
 ### 阶段 6：可观测性与限流
 
 - [x] 已完成：实现 Prometheus 指标。
-  - 证据：`internal/metrics/registry.go:153`（Handler）、`internal/metrics/metrics.go:20`（Recorder）、`:75`（counter）、`:84`（histogram）；`go.mod` 未引入 prometheus 客户端库（文本格式为手写实现），`internal/middleware/middleware.go:146`、`:153` 上报 `RuleMatched`。指标族、标签与 `RuleMatched`/`EventHandled` 语义见 [engine.md](engine.md) 10.5 与 [`../README.md`](../README.md)「可观测性」。测试 9 个。
+  - 证据：`internal/metrics/registry.go:163`（Handler）、`internal/metrics/metrics.go:20`（Recorder）、`:79`（counter）、`:91`（histogram）；`go.mod` 未引入 prometheus 客户端库（文本格式为手写实现），`internal/middleware/middleware.go:146`、`:153` 上报 `RuleMatched`。指标族、标签与 `RuleMatched`/`EventHandled` 语义见 [engine.md](engine.md) 10.5 与 [`../README.md`](../README.md)「可观测性」。测试 9 个。
 - [x] 已完成：实现日志规范，使用 `log/slog`。
   - 证据：`internal/middleware/middleware.go:93`（Logger 字段化输出）、`internal/config/config.go:58`（LogConfig 校验级别与格式）；字段集与级别映射见 [engine.md](engine.md) 10.5，配置键见 [configuration.md](configuration.md) 12.1。
 - [x] 已完成：实现令牌桶限流。

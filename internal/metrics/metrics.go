@@ -1,6 +1,6 @@
 // Package metrics 提供极简的 Prometheus 文本格式指标实现。
 //
-// 不引入任何第三方客户端：内部用原子计数与互斥保护的直方图桶实现
+// 不引入任何第三方客户端：内部用原子计数器与互斥保护的直方图实现
 // counter / histogram，Registry 暴露为 /metrics 可用的 http.Handler。
 // 所有 Recorder 方法对 nil 接收者安全，便于在未启用指标的部署中零成本关闭。
 package metrics
@@ -84,10 +84,13 @@ func (c *counter) inc() { c.v.Add(1) }
 // value 返回当前计数值。
 func (c *counter) value() uint64 { return c.v.Load() }
 
-// histogram 是并发安全的固定桶直方图，桶计数与总和/总量分开保护。
+// histogram 是并发安全的固定桶直方图。
+//
+// 桶计数、总和与总量都在同一把互斥锁下更新与读取，因此 snapshot 是自洽的
+// 时间点视图：各 le 桶单调不减，最后一个有限桶不超过 +Inf 桶（total）。
 type histogram struct {
-	counts  []atomic.Uint64 // 与 buckets 一一对应，不含 +Inf
 	buckets []float64
+	counts  []uint64 // 与 buckets 一一对应，不含 +Inf
 
 	mu    sync.Mutex
 	sum   float64
@@ -97,36 +100,41 @@ type histogram struct {
 // newHistogram 按给定桶边界构造直方图。
 func newHistogram(buckets []float64) *histogram {
 	return &histogram{
-		counts:  make([]atomic.Uint64, len(buckets)),
+		counts:  make([]uint64, len(buckets)),
 		buckets: buckets,
 	}
 }
 
-// observe 记录一次观测值，使用互斥保护 sum/total 以支持 -race 校验。
+// observe 记录一次观测值。
+//
+// 桶计数、sum 与 total 在同一次临界区内更新，避免 snapshot 观察到「桶计数
+// 领先于 total」的中间状态。
 func (h *histogram) observe(v float64) {
 	// 二分定位首个 v <= bucket 的桶；超出上界时只累加 +Inf。
 	i := sort.SearchFloat64s(h.buckets, v)
-	if i < len(h.counts) {
-		h.counts[i].Add(1)
-	}
 	h.mu.Lock()
+	if i < len(h.counts) {
+		h.counts[i]++
+	}
 	h.sum += v
 	h.total++
 	h.mu.Unlock()
 }
 
 // snapshot 返回桶上界、各桶累计计数、总和与观测总数。
+//
+// 全部读取在同一临界区完成，返回的快照自洽：cumulative 单调不减，且
+// 最后一个有限桶的累计值不超过 total（+Inf 桶的值）。
 func (h *histogram) snapshot() (buckets []float64, cumulative []uint64, sum float64, total uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	cumulative = make([]uint64, len(h.counts))
 	var running uint64
-	for i := range h.counts {
-		running += h.counts[i].Load()
+	for i, c := range h.counts {
+		running += c
 		cumulative[i] = running
 	}
-	h.mu.Lock()
-	sum, total = h.sum, h.total
-	h.mu.Unlock()
-	return h.buckets, cumulative, sum, total
+	return h.buckets, cumulative, h.sum, h.total
 }
 
 // label 是一个 Prometheus 标签键值对。

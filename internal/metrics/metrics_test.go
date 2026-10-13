@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -114,6 +115,94 @@ func TestHistogram(t *testing.T) {
 		if !strings.Contains(got, w+"\n") {
 			t.Errorf("输出缺少行 %q\n输出:\n%s", w, got)
 		}
+	}
+}
+
+// TestHistogramSnapshotConsistency 在并发观测下反复抓取快照，断言每个快照
+// 自洽：各 le 桶单调不减，且最后一个有限桶不超过 +Inf 桶（观测总数）。
+//
+// 修复前桶计数是独立原子量、total 在另一临界区更新，快照可能导出
+// 「有限桶 > +Inf」的自相矛盾结果（破坏 histogram_quantile）。
+func TestHistogramSnapshotConsistency(t *testing.T) {
+	h := newHistogram(defaultBuckets)
+
+	const (
+		observers   = 8
+		perObserver = 20000
+	)
+	var (
+		wg         sync.WaitGroup
+		mu         sync.Mutex
+		violations []string
+	)
+	bad := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(violations) < 8 {
+			violations = append(violations, fmt.Sprintf(format, args...))
+		}
+	}
+	check := func() {
+		_, cumulative, _, total := h.snapshot()
+		var prev uint64
+		for i, c := range cumulative {
+			if c < prev {
+				bad("le 桶回退（第 %d 桶）: %v", i, cumulative)
+				return
+			}
+			prev = c
+		}
+		if prev > total {
+			bad("有限桶 %d > +Inf(total %d): %v", prev, total, cumulative)
+		}
+	}
+
+	start := make(chan struct{})
+	for n := range observers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := range perObserver {
+				// 覆盖有限桶与超出上界（只进 +Inf）两类观测值。
+				h.observe(float64((n*perObserver+j)%8000) / 1000)
+			}
+		}()
+	}
+
+	// 观测进行期间持续抓取快照，与写入路径竞争。
+	done := make(chan struct{})
+	checked := make(chan struct{})
+	go func() {
+		defer close(checked)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				check()
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(done)
+	<-checked
+	check() // 稳态下再校验一次。
+
+	_, cumulative, _, total := h.snapshot()
+	if total != observers*perObserver {
+		t.Fatalf("total = %d, want %d", total, observers*perObserver)
+	}
+	if last := cumulative[len(cumulative)-1]; last > total {
+		t.Fatalf("有限桶 %d > total %d", last, total)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(violations) != 0 {
+		t.Fatalf("直方图快照不自洽（记录 %d 条）: %s", len(violations), strings.Join(violations, "; "))
 	}
 }
 
