@@ -11,7 +11,7 @@ import (
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
-const janitorInterval = time.Minute
+const defaultCleanupInterval = time.Minute
 
 // Memory 是 bot.Storage 的内存实现，并发安全。
 type Memory struct {
@@ -33,23 +33,35 @@ type item struct {
 var _ bot.Storage = (*Memory)(nil)
 
 // init 把内存实现注册为存储类型 "memory"。
+//
+// cleanup_interval 与 SQL 后端语义一致：时长或秒数，0 关闭后台清理。
 func init() {
-	Register("memory", func(*bot.Config) (bot.Storage, error) {
-		return NewMemory(), nil
+	Register("memory", func(cfg *bot.Config) (bot.Storage, error) {
+		return NewMemoryWithCleanup(cfg.Duration("cleanup_interval", defaultCleanupInterval)), nil
 	})
 }
 
-// NewMemory 构造内存存储并启动过期清理 goroutine。
+// NewMemory 构造内存存储并启动过期清理 goroutine（间隔 1 分钟）。
 //
 // 使用完必须调用 Close 释放后台 goroutine。
 func NewMemory() *Memory {
+	return NewMemoryWithCleanup(defaultCleanupInterval)
+}
+
+// NewMemoryWithCleanup 同 NewMemory，但指定后台清理间隔。
+//
+// cleanup <= 0 时不启动后台清理 goroutine：过期键在读取时仍被判为不存在，但不会
+// 被主动移除（Len 会计入它们）；Close 依旧可用且幂等。
+func NewMemoryWithCleanup(cleanup time.Duration) *Memory {
 	m := &Memory{
 		items: make(map[string]item),
 		now:   time.Now,
 		stop:  make(chan struct{}),
 	}
-	m.wg.Add(1)
-	go m.janitor()
+	if cleanup > 0 {
+		m.wg.Add(1)
+		go m.janitor(cleanup)
+	}
 	return m
 }
 
@@ -116,9 +128,9 @@ func (m *Memory) Close() error {
 	return nil
 }
 
-func (m *Memory) janitor() {
+func (m *Memory) janitor(interval time.Duration) {
 	defer m.wg.Done()
-	ticker := time.NewTicker(janitorInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

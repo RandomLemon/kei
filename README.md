@@ -617,7 +617,7 @@ OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 
   `Engine.SendRequest`。
 - 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称；
   不指定则只有该平台仅有一个 bot 时才能自动选择。
-- `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。存储键按插件名/适配器实例名自动隔离（`plugin:<name>:` / `adapter:<botID>:` 前缀），单键最长 191 字节，超长键在任何后端都返回同一个错误。
+- `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。后端参数（`cleanup_interval`、`max_open_conns` 等）在配置加载阶段校验，类型不符或负数直接报错；存储键按插件名/适配器实例名自动隔离（`plugin:<name>:` / `adapter:<botID>:` 前缀），单键最长 191 字节，超长键在任何后端都返回同一个错误。
 - OneBot 一个 bot 实例同一时刻只启用一种接入方式（`mode`）：HTTP 双向用
   `forward_http`/`reverse_http`，`reverse_ws` 由 OneBot 实现连入，`forward_ws` 由 kei
   主动连出且不监听端口。一个 bot 实例只服务一个账号（`self_id` 非空时按 `X-Self-ID`

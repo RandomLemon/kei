@@ -13,8 +13,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -469,33 +471,6 @@ func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
 	return ac, nil
 }
 
-// decodeDurationNode 解析时长：字符串按 time.ParseDuration，数字按秒。
-func decodeDurationNode(node *yaml.Node) (time.Duration, error) {
-	if isNull(node) {
-		return 0, nil
-	}
-	var raw any
-	if err := node.Decode(&raw); err != nil {
-		return 0, err
-	}
-	switch t := raw.(type) {
-	case string:
-		d, err := time.ParseDuration(strings.TrimSpace(t))
-		if err != nil {
-			return 0, fmt.Errorf("需要时长（如 10s），实际为 %q", t)
-		}
-		return d, nil
-	case int:
-		return time.Duration(t) * time.Second, nil
-	case int64:
-		return time.Duration(t) * time.Second, nil
-	case float64:
-		return time.Duration(t * float64(time.Second)), nil
-	default:
-		return 0, fmt.Errorf("需要时长（如 10s），实际为 %v", raw)
-	}
-}
-
 // decodeStringList 解析字符串序列。
 func decodeStringList(node *yaml.Node) ([]string, error) {
 	if isNull(node) {
@@ -632,9 +607,18 @@ func (c *Config) validate() error {
 	return c.Limits.validate()
 }
 
-// validate 校验存储配置：类型名必须匹配 storageTypePattern。
+// 存储在配置层校验取值的参数键。其余键属于第三方后端的扩展空间，原样透传。
+const (
+	paramCleanupInterval = "cleanup_interval"
+	paramMaxOpenConns    = "max_open_conns"
+	paramMaxIdleConns    = "max_idle_conns"
+	paramConnMaxLifetime = "conn_max_lifetime"
+)
+
+// validate 校验存储配置：类型名必须匹配 storageTypePattern，已知参数取值必须合法。
 //
 // 不校验类型是否存在（由装配期负责），不校验 dsn 是否必填（由各后端负责）。
+// 未知参数不报错：内置后端会忽略它们（各键的适用范围见 docs/configuration.md 12.5）。
 func (s StorageConfig) validate() error {
 	if s.Type == "" {
 		return errors.New("config: storage.type: 不能为空")
@@ -642,7 +626,101 @@ func (s StorageConfig) validate() error {
 	if !storageTypePattern.MatchString(s.Type) {
 		return fmt.Errorf("config: storage.type: %q 只允许 [a-z0-9_-]", s.Type)
 	}
+	for key, val := range s.Params {
+		if err := validateStorageParam(key, val); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// validateStorageParam 校验一个存储参数的取值。
+//
+// 取值必须在配置层拦住：后端读取参数时对缺失键或类型不符的值会静默回落到默认值
+// （如 max_open_conns 写成 "abc" 得到 0 = 不限制），配置层不校验就只会表现为
+// 「配置没生效」。nil 等价于未配置，未知键原样透传。
+func validateStorageParam(key string, val any) error {
+	if val == nil {
+		return nil
+	}
+	path := "config: storage.params." + key + ": "
+	switch key {
+	case paramCleanupInterval:
+		d, err := decodeDurationValue(val)
+		if err != nil {
+			return errors.New(path + err.Error())
+		}
+		if d < 0 {
+			return errors.New(path + "不能为负数（0 表示关闭后台清理）")
+		}
+	case paramConnMaxLifetime:
+		d, err := decodeDurationValue(val)
+		if err != nil {
+			return errors.New(path + err.Error())
+		}
+		if d < 0 {
+			return errors.New(path + "不能为负数（0 表示不按龄关闭连接）")
+		}
+	case paramMaxOpenConns, paramMaxIdleConns:
+		n, err := decodeIntValue(val)
+		if err != nil {
+			return errors.New(path + err.Error())
+		}
+		if n < 0 {
+			return errors.New(path + "不能为负数（0 表示不限制）")
+		}
+	}
+	return nil
+}
+
+// decodeDurationValue 解析时长取值：字符串按 time.ParseDuration，数字按秒。
+//
+// 接受的类型与 pkg/bot.Config.Duration 一致，保证「校验通过」等于「后端能按原值
+// 读到」，不会静默回落默认值。
+func decodeDurationValue(v any) (time.Duration, error) {
+	switch t := v.(type) {
+	case time.Duration:
+		return t, nil
+	case string:
+		d, err := time.ParseDuration(strings.TrimSpace(t))
+		if err != nil {
+			return 0, fmt.Errorf("需要时长（如 10s），实际为 %q", t)
+		}
+		return d, nil
+	case int:
+		return time.Duration(t) * time.Second, nil
+	case int64:
+		return time.Duration(t) * time.Second, nil
+	case float64:
+		return time.Duration(t * float64(time.Second)), nil
+	default:
+		return 0, fmt.Errorf("需要时长（如 10s），实际为 %v", v)
+	}
+}
+
+// decodeIntValue 解析整数取值：字符串按十进制解析，浮点数必须是整数值。
+//
+// 接受的类型与 pkg/bot.Config.Int 一致（浮点额外要求整数值，避免截断）。
+func decodeIntValue(v any) (int, error) {
+	switch t := v.(type) {
+	case int:
+		return t, nil
+	case int64:
+		return int(t), nil
+	case float64:
+		if t != math.Trunc(t) || t < math.MinInt32 || t > math.MaxInt32 {
+			return 0, fmt.Errorf("需要整数，实际为 %v", t)
+		}
+		return int(t), nil
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(t))
+		if err != nil {
+			return 0, fmt.Errorf("需要整数，实际为 %q", t)
+		}
+		return n, nil
+	default:
+		return 0, fmt.Errorf("需要整数，实际为 %v", v)
+	}
 }
 
 // validate 校验日志配置：级别与格式都必须在允许集合内（大小写不敏感）。

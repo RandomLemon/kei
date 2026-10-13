@@ -906,9 +906,80 @@ func TestStorageEnvOverride(t *testing.T) {
 }
 
 func TestStorageValidateErrors(t *testing.T) {
-	_, err := LoadBytes([]byte(storageBaseYAML+"storage:\n  type: \"Bad Type\"\n"), nil)
-	if err == nil || !strings.Contains(err.Error(), "storage.type") {
-		t.Fatalf("错误 = %v", err)
+	cases := []struct {
+		name    string
+		yaml    string
+		env     []string
+		wantErr string // 空表示应通过校验
+	}{
+		{
+			name:    "类型名非法",
+			yaml:    storageBaseYAML + "storage:\n  type: \"Bad Type\"\n",
+			wantErr: "storage.type",
+		},
+		{
+			name:    "cleanup_interval 非时长",
+			yaml:    storageBaseYAML + "storage:\n  cleanup_interval: abc\n",
+			wantErr: "storage.params.cleanup_interval: 需要时长",
+		},
+		{
+			name:    "cleanup_interval 负数",
+			yaml:    storageBaseYAML + "storage:\n  cleanup_interval: -5s\n",
+			wantErr: "storage.params.cleanup_interval: 不能为负数",
+		},
+		{
+			name:    "max_open_conns 非整数",
+			yaml:    storageBaseYAML + "storage:\n  max_open_conns: \"x\"\n",
+			wantErr: "storage.params.max_open_conns: 需要整数",
+		},
+		{
+			name:    "max_open_conns 负数",
+			yaml:    storageBaseYAML + "storage:\n  max_open_conns: -1\n",
+			wantErr: "storage.params.max_open_conns: 不能为负数",
+		},
+		{
+			name:    "max_idle_conns 小数",
+			yaml:    storageBaseYAML + "storage:\n  max_idle_conns: 2.5\n",
+			wantErr: "storage.params.max_idle_conns: 需要整数",
+		},
+		{
+			name:    "conn_max_lifetime 非时长",
+			yaml:    storageBaseYAML + "storage:\n  conn_max_lifetime: [1]\n",
+			wantErr: "storage.params.conn_max_lifetime: 需要时长",
+		},
+		{
+			name:    "环境变量注入的非法参数同样被拦",
+			yaml:    storageBaseYAML,
+			env:     []string{"KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=abc"},
+			wantErr: "storage.params.cleanup_interval: 需要时长",
+		},
+		{
+			name: "合法参数（时长、秒数、边界 0）",
+			yaml: storageBaseYAML + "storage:\n  type: mysql\n  cleanup_interval: 30\n" +
+				"  conn_max_lifetime: 5m\n  max_open_conns: 10\n  max_idle_conns: 0\n",
+		},
+		{
+			name: "cleanup_interval 为 0 合法（关闭后台清理）",
+			yaml: storageBaseYAML + "storage:\n  cleanup_interval: 0\n",
+		},
+		{
+			name: "未知键不校验（第三方后端扩展空间）",
+			yaml: storageBaseYAML + "storage:\n  cleanup_intervall: abc\n  custom_key: 1\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadBytes([]byte(tc.yaml), tc.env)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("不应报错: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("错误 = %v, 应包含 %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

@@ -136,6 +136,78 @@ func TestMemoryConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestMemoryCleanupInterval 验证内存实现尊重 cleanup_interval：自定义间隔生效、
+// 0 关闭后台清理，且经注册表（storage.Open）读取同一配置键。
+func TestMemoryCleanupInterval(t *testing.T) {
+	ctx := context.Background()
+
+	waitLen := func(t *testing.T, m *Memory, want int) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for m.Len() != want && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if got := m.Len(); got != want {
+			t.Fatalf("Len = %d, want %d", got, want)
+		}
+	}
+
+	t.Run("自定义间隔清理过期条目", func(t *testing.T) {
+		m := NewMemoryWithCleanup(20 * time.Millisecond)
+		defer func() { _ = m.Close() }()
+		if err := m.Set(ctx, "k", []byte("v"), 10*time.Millisecond); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		waitLen(t, m, 0)
+	})
+
+	t.Run("间隔为 0 时不启动后台清理", func(t *testing.T) {
+		m := NewMemoryWithCleanup(0)
+		defer func() { _ = m.Close() }()
+		if err := m.Set(ctx, "k", []byte("v"), 10*time.Millisecond); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		time.Sleep(60 * time.Millisecond)
+		if _, err := m.Get(ctx, "k"); !errors.Is(err, bot.ErrNotFound) {
+			t.Fatalf("过期键应返回 ErrNotFound: %v", err)
+		}
+		if got := m.Len(); got != 1 {
+			t.Fatalf("无后台清理时过期条目应留在内存里, Len = %d", got)
+		}
+	})
+
+	t.Run("注册表读取 cleanup_interval", func(t *testing.T) {
+		st, err := Open("memory", bot.NewConfig(map[string]any{"cleanup_interval": "20ms"}))
+		if err != nil {
+			t.Fatalf("Open(memory): %v", err)
+		}
+		m, ok := st.(*Memory)
+		if !ok {
+			t.Fatalf("Open(memory) 返回 %T", st)
+		}
+		defer func() { _ = m.Close() }()
+		if err := m.Set(ctx, "k", []byte("v"), 10*time.Millisecond); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		waitLen(t, m, 0)
+
+		// cleanup_interval: 0（或缺失时）关闭后台清理。
+		st, err = Open("memory", bot.NewConfig(map[string]any{"cleanup_interval": 0}))
+		if err != nil {
+			t.Fatalf("Open(memory): %v", err)
+		}
+		m = st.(*Memory)
+		defer func() { _ = m.Close() }()
+		if err := m.Set(ctx, "k", []byte("v"), 10*time.Millisecond); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		time.Sleep(60 * time.Millisecond)
+		if got := m.Len(); got != 1 {
+			t.Fatalf("cleanup_interval=0 时不应清理, Len = %d", got)
+		}
+	})
+}
+
 // TestKeyLengthLimit 验证内存实现按 MaxKeyBytes 拒绝超长键：上限内的键可读写，
 // 超长键的三个操作都返回可被 errors.Is 识别的 ErrKeyTooLong（SQL 后端同款校验，
 // 见 sqlite/sqlstore 的用例）。

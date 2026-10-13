@@ -367,7 +367,7 @@ type Storage interface {
 
 内存实现位于 `internal/storage`：
 
-- `storage.NewMemory() *Memory`：构造并发安全的存储并启动过期清理 goroutine（每 `janitorInterval = time.Minute` 扫一次）。使用完必须 `Close()` 释放后台 goroutine，`Close` 可重复调用。
+- `storage.NewMemory() *Memory` / `storage.NewMemoryWithCleanup(interval)`：构造并发安全的存储并启动过期清理 goroutine（默认 `defaultCleanupInterval = time.Minute` 扫一次，`interval <= 0` 时不启动）。经注册表 `storage.Open("memory", cfg)` 使用时读取 `cleanup_interval`（默认 1 分钟，`0` 关闭后台清理，与 SQL 后端同义）。使用完必须 `Close()` 释放后台 goroutine，`Close` 可重复调用。
 - `Get` 返回值的副本，键不存在或已过期返回 `bot.ErrNotFound`；`Set` 拷贝入参切片，`ttl <= 0` 表示永不过期；`Delete` 对不存在的键返回 nil；`Len()` 返回当前条目数（含尚未清理的过期条目）。入参 ctx 已取消时立即返回 `ctx.Err()`。
 - `storage.Denied() bot.Storage`：拒绝一切访问的实现，`Get`/`Set`/`Delete` 都返回 `storage.ErrPermissionDenied`。未声明 `PermStorage` 的插件（`internal/engine.pluginAPI`）与适配器（`internal/adaptermgr`）拿到的就是它。`ErrPermissionDenied` 定义在 `internal/storage`，插件只依赖 `pkg/bot` 时无法引用该变量，只能按「错误非 nil」或错误文本处理；可比较的公开哨兵只有 `bot.ErrNotFound`。
 
