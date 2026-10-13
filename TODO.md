@@ -113,7 +113,7 @@
   - 验收：测试一个 Match panic 不影响其它规则命中。
   - 补注：匹配 panic 不进入 `Result`/`EventHandled` 指标（handler 根本没被调用），因此单独用 `kei_rule_match_panics_total` 计数；`Errors` 与 `Rules()` 之类的只读视图不变。
 
-- [ ] **16. onebot：`flexID` 接受任意 JSON token，`Event.ID` 可空/可撞** `[读码]`
+- [x] **16. onebot：`flexID` 接受任意 JSON token，`Event.ID` 可空/可撞** `[读码]` — 完成 4e97f7b：`flexID.UnmarshalJSON` 末分支改为按 `json.Number` 校验（对象/数组/布尔一律报错：HTTP 上报回 400，反向 WS 丢弃并记 warn；错误里回显的 token 用 `truncate` 截到 `errorBodyLimit`），不再把 `{}` 之类原样存成 ID。回退 ID 保持既有字段顺序，在其后追加 `target_id`、`message_id`、`flag`；消息事件缺 `message_id` 时再附加 `message` 原文（含引号）的 FNV-1a 64 哈希，重复上报仍得到相同 ID。回归测试 `adapters/onebot/onebot_test.go` 的 `TestNonScalarIDsRejected`（6 种非标量 token → 400，随后合法事件证明被拒事件未进 sink）与 `TestFallbackIDsDistinguishSameSecondEvents`（同秒不同内容的消息/不同 `message_id` 的撤回/不同 `target_id` 的戳一戳/不同 `flag` 的请求四组 ID 不撞，且重复上报稳定）；在 `HEAD` worktree 跑同一测试必失败（204 而非 400、ID 为 `"{}"`、四组回退 ID 全撞）。取证：`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/adapter.md` 6.6 第 10 条与 `docs/testing.md` 的 onebot 行（40→42）同步。
   - 位置：`adapters/onebot/event.go:74-90`（末分支原样存 token）、`:178-182`（秒级兜底拼接）
   - 问题：`message_id` 非标量时 ID 变成 `{}` 之类；为空时回落 `self_id-post_type-time-…`，同秒同会话的不同消息撞 ID 被去重丢弃，违反 `AGENTS.md` 2.3“Event.ID 稳定且唯一”。
   - 修复：末分支校验为合法数字否则报错（HTTP 400）；兜底 ID 加入 message/子事件唯一信息（如 `NoticeType`+`TargetID`+`MessageID`），并保证稳定。
