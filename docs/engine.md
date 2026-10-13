@@ -222,10 +222,10 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 
 1. 解析目标适配器（`resolve`）：`target.BotID` 非空时必须已注册且其平台名与 `target.Platform` 一致（`engine: bot %q is on platform %q, not %q`）；为空时仅当该平台只有一个 bot 才自动选择，否则报错要求显式指定（`engine: platform %q has %d bots, target.BotID is required`）；平台无 bot 时报 `engine: no adapter for platform %q`。
 2. `bot.Degrade(req.Message, ad.Capabilities())` 按平台能力降级消息段；降级后没有可发送的段则直接报错，绝不静默发送空消息。
-3. 发送前限流：配置了 `limits.send_rate > 0` 时为每个 bot 建一个令牌桶 `ratelimit.New(SendRate, SendBurst, 0)`，发送前 `lim.Wait(ctx, botID)` 阻塞到拿到令牌或 ctx 结束（发送链路不允许丢消息）。
+3. 发送前限流：配置了 `limits.send_rate > 0` 时为每个 bot 建一个令牌桶 `ratelimit.New(SendRate, SendBurst, 0, 0)`，发送前 `lim.Wait(ctx, botID)` 阻塞到拿到令牌或 ctx 结束（发送链路不允许丢消息）。
 4. 重试：`attempts = SendRetries + 1`（默认 3 次尝试）；第 n 次重试（n ≥ 1）前先等待 `SendBackoff << (attempt-1)`（默认 100ms、200ms），等待期间响应 ctx 取消。每次尝试都记 `MessageSent(platform, 耗时, err)` 指标。ctx 已取消或某次尝试返回错误且 `ctx.Err() != nil` 时停止重试；错误以 `engine: send via %s: %w` 包装返回。重试是 at-least-once 语义：对端已收到但响应失败时会重复投递。
 
-令牌桶实现（`internal/ratelimit`）：`rate` 为每秒补充令牌数，`burst` 为桶容量（`<= 0` 时取 `max(1, rate)`），`rate <= 0` 表示不限流（`Allow` 恒为 true）。`Allow(key)`/`AllowN(key, n)` 放行时才扣令牌；`Buckets()`/`GC()` 暴露活跃桶数与空闲回收，空闲阈值默认 10 分钟。`Wait` 在无法放行时按 `retryAfter` 计算需要等待的时长后重试，`retryAfter` 为 0 时睡 1ms 避免忙等。
+令牌桶实现（`internal/ratelimit`）：`rate` 为每秒补充令牌数，`burst` 为桶容量（`<= 0` 时取 `max(1, rate)`），`rate <= 0` 表示不限流（`Allow` 恒为 true）。`Allow(key)`/`AllowN(key, n)` 放行时才扣令牌；`Buckets()`/`GC()` 暴露活跃桶数与空闲回收，空闲阈值默认 10 分钟。桶表容量有上限 `maxKeys`（`New` 的第 4 个参数，`<= 0` 时默认 10000）：活跃桶数达到上限后，插入新 key 时按「最久未使用」淘汰一个桶（`order` 为 `container/list` 维护的 LRU，淘汰 O(1)；任何访问——包括被拒绝的调用——都会刷新位置），被淘汰的 key 下次出现时重建为满桶。因此 key 空间不可枚举（例如伪造的用户 ID）时内存仍有界。`Wait` 在无法放行时按 `retryAfter` 计算需要等待的时长后重试，`retryAfter` 为 0 时睡 1ms 避免忙等。
 
 ### 7.8 Handler 超时与 panic 隔离
 
@@ -422,10 +422,10 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 | `Metrics` | `Metrics(rec metrics.Recorder) bot.Middleware` | 进入链时（规则已命中）调 `rec.RuleMatched(plugin, rule)`，`next` 返回后再调 `rec.EventHandled(plugin, rule, 耗时, err)`；`rec` 为 nil 时透传，错误原样透传 |
 | `Timeout` | `Timeout(d time.Duration, log *slog.Logger, rec metrics.Recorder) bot.Middleware` | 用 `d <= 0` 透传；在独立 goroutine 中执行 next（结果写入容量 1 的 channel），超时或 ctx 取消返回包装 `ErrTimeout` 的错误；超时时刻仍未返回的调用上报 `rec.RuleOverrun` 并记 Warn，超时后经过 `d` 仍未返回时另记一次含全部 goroutine 堆栈的 Error（见 7.8） |
 | `Auth` | `Auth(isAdmin func(*bot.Event) bool) bot.Middleware` | 仅当 `Route.AdminOnly` 为 true 时生效：`isAdmin` 为 nil 或返回 false 时返回 `ErrUnauthorized` 且不调用 next |
-| `RateLimit` | `RateLimit(l *ratelimit.Limiter, scope string) bot.Middleware` | 按作用域取限流键并 `l.Allow(key)`，超配额返回 `ErrRateLimited`；`l` 为 nil 时透传 |
+| `RateLimit` | `RateLimit(l *ratelimit.Limiter, scope string) bot.Middleware` | 按作用域取限流键并 `l.Allow(key)`，超配额返回 `ErrRateLimited`（错误含 `scope` 与 `key`）；`l` 为 nil 时透传 |
 | `Dedup` | `Dedup(set *dedup.Set) bot.Middleware` | 见 10.6；`set` 为 nil 时透传 |
 
-限流作用域常量：`ScopeUser = "user"`（按发送者 ID）、`ScopeChannel = "channel"`（会话 ID，为空回退 `SessionKey`）、`ScopePlugin = "plugin"`（插件名，缺失时为 `DefaultLabel = "unknown"`）；`RateLimit` 的 `default` 分支（含 `ScopeUser`）一律按发送者 ID 限流。
+限流作用域常量：`ScopeUser = "user"`（按发送者 ID）、`ScopeChannel = "channel"`（会话 ID）、`ScopePlugin = "plugin"`（插件名，缺失时为 `DefaultLabel = "unknown"`）；`RateLimit` 的 `default` 分支（含 `ScopeUser`）按发送者 ID 取键。取到的键为空时统一回退 `SessionKey()`（`platform:botID:channelID:userID`）：无 `Sender` 的事件（如 OneBot 的 notice/meta）因此按会话/机器人分桶，而不是全部挤进同一个空键桶；连 `SessionKey()` 也为空（事件为 nil）时透传——没有身份可限流，不把这类事件塞进同一个桶。
 
 引擎装配的全局链（`Engine.globalMiddlewares`，数组顺序即由外到内的执行顺序）：
 
@@ -463,7 +463,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 `kei_rule_match_panics_total{plugin,rule}` 记录**规则匹配阶段 panic** 的次数：每次 panic 只跳过该条规则、不影响同一事件的其余规则（见 10.3），该计数用于发现反复抛 panic 的插件断言（`WithMatch`）。
 
-引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。该中间件位于 `Dedup` 之内，重投的重复事件不消耗配额（见 10.5）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
+引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流，发送者为空的事件回退 `SessionKey`，见上表）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。该中间件位于 `Dedup` 之内，重投的重复事件不消耗配额（见 10.5）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
 
 `isAdmin` 判定：`ev` 或 `ev.Sender` 为 nil 返回 false，否则与 `auth.admin_users` 逐一比对 `ev.Sender.ID`。
 

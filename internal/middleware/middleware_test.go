@@ -288,7 +288,7 @@ func TestLoggerErrorLevels(t *testing.T) {
 			name:      "限流拒绝记 WARN",
 			wantLevel: "WARN", wantDenied: true, wantRule: "hi",
 			run: func(ctx context.Context, log *slog.Logger) error {
-				limiter := ratelimit.New(0.01, 1, time.Minute)
+				limiter := ratelimit.New(0.01, 1, time.Minute, 0)
 				// 先耗尽令牌，使下一次 Allow 必定失败。
 				if !limiter.Allow("user-1") {
 					t.Fatal("预消耗令牌失败")
@@ -620,7 +620,7 @@ func TestDedupDisabled(t *testing.T) {
 
 // TestRateLimitExhausted 验证令牌耗尽后被限流。
 func TestRateLimitExhausted(t *testing.T) {
-	limiter := ratelimit.New(0.01, 1, time.Minute)
+	limiter := ratelimit.New(0.01, 1, time.Minute, 0)
 	h := Apply(okHandler(), RateLimit(limiter, ScopeUser))
 	ctx := context.Background()
 
@@ -642,7 +642,7 @@ func TestRateLimitScope(t *testing.T) {
 	}
 
 	t.Run("channel", func(t *testing.T) {
-		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute), ScopeChannel))
+		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute, 0), ScopeChannel))
 		// 同一会话、不同用户共享一个桶：第二个请求被拦。
 		if err := h(context.Background(), newEvent(), nil); err != nil {
 			t.Fatalf("首个请求应放行: %v", err)
@@ -659,7 +659,7 @@ func TestRateLimitScope(t *testing.T) {
 	})
 
 	t.Run("plugin", func(t *testing.T) {
-		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute), ScopePlugin))
+		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute, 0), ScopePlugin))
 		ctxA := bot.WithRoute(context.Background(), &bot.Route{Plugin: "p-a", RuleID: "r1"})
 		ctxB := bot.WithRoute(context.Background(), &bot.Route{Plugin: "p-b", RuleID: "r2"})
 		if err := h(ctxA, newEvent(), nil); err != nil {
@@ -675,7 +675,7 @@ func TestRateLimitScope(t *testing.T) {
 	})
 
 	t.Run("channel-fallback-session", func(t *testing.T) {
-		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute), ScopeChannel))
+		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute, 0), ScopeChannel))
 		ev := newEvent()
 		ev.Channel = nil // 私聊：回退到 SessionKey
 		if err := h(context.Background(), ev, nil); err != nil {
@@ -683,6 +683,36 @@ func TestRateLimitScope(t *testing.T) {
 		}
 		if err := h(context.Background(), ev, nil); !errors.Is(err, ErrRateLimited) {
 			t.Fatalf("无会话 ID 时未按 SessionKey 限流: %v", err)
+		}
+	})
+
+	t.Run("user-fallback-session", func(t *testing.T) {
+		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute, 0), ScopeUser))
+		// 无发送者的事件（如 OneBot 的 notice/meta）回退到 SessionKey：同一会话
+		// 共享一个桶，而不是所有这类事件共用一个空键桶。
+		ev := newEvent()
+		ev.Sender = nil
+		if err := h(context.Background(), ev, nil); err != nil {
+			t.Fatalf("首个请求应放行: %v", err)
+		}
+		if err := h(context.Background(), ev, nil); !errors.Is(err, ErrRateLimited) {
+			t.Fatalf("无发送者时未按 SessionKey 限流: %v", err)
+		}
+		otherBot := newEvent()
+		otherBot.Sender = nil
+		otherBot.BotID = "bot-2"
+		if err := h(context.Background(), otherBot, nil); err != nil {
+			t.Fatalf("不同 bot 的同类事件不应共享配额: %v", err)
+		}
+	})
+
+	t.Run("empty-key-passthrough", func(t *testing.T) {
+		h := Apply(okHandler(), RateLimit(ratelimit.New(0.01, 1, time.Minute, 0), ScopeUser))
+		// 事件为 nil：SessionKey 也为空，没有身份可限流，透传而不是塞进空键桶。
+		for range 3 {
+			if err := h(context.Background(), nil, nil); err != nil {
+				t.Fatalf("空键应透传: %v", err)
+			}
 		}
 	})
 }
@@ -856,7 +886,7 @@ func TestCombinedChain(t *testing.T) {
 		return nil
 	},
 		Metrics(rec),
-		RateLimit(ratelimit.New(0.01, 1, time.Minute), ScopeUser),
+		RateLimit(ratelimit.New(0.01, 1, time.Minute, 0), ScopeUser),
 		Dedup(dedup.New(16, time.Minute)),
 		Recover(slog.New(slog.DiscardHandler)),
 	)

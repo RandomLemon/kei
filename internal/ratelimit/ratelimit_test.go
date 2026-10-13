@@ -3,12 +3,13 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
 
 func TestDisabledLimiterAllowsEverything(t *testing.T) {
-	l := New(0, 0, time.Minute)
+	l := New(0, 0, time.Minute, 0)
 	for range 100 {
 		if !l.Allow("k") {
 			t.Fatal("rate=0 时应始终放行")
@@ -24,7 +25,7 @@ func TestDisabledLimiterAllowsEverything(t *testing.T) {
 }
 
 func TestBurstThenRefill(t *testing.T) {
-	l := New(100, 2, time.Minute)
+	l := New(100, 2, time.Minute, 0)
 	// 突发容量为 2：前两次放行。
 	for range 2 {
 		if !l.Allow("u1") {
@@ -44,7 +45,7 @@ func TestBurstThenRefill(t *testing.T) {
 }
 
 func TestAllowN(t *testing.T) {
-	l := New(10, 3, time.Minute)
+	l := New(10, 3, time.Minute, 0)
 	if !l.AllowN("u1", 3) {
 		t.Fatal("AllowN(3) 应成功")
 	}
@@ -57,7 +58,7 @@ func TestAllowN(t *testing.T) {
 }
 
 func TestWaitBlocksUntilTokenAvailable(t *testing.T) {
-	l := New(50, 1, time.Minute) // 20ms 一个令牌
+	l := New(50, 1, time.Minute, 0) // 20ms 一个令牌
 	if !l.Allow("bot") {
 		t.Fatal("首次应放行")
 	}
@@ -71,7 +72,7 @@ func TestWaitBlocksUntilTokenAvailable(t *testing.T) {
 }
 
 func TestWaitRespectsContext(t *testing.T) {
-	l := New(0.5, 1, time.Minute) // 2s 一个令牌
+	l := New(0.5, 1, time.Minute, 0) // 2s 一个令牌
 	if !l.Allow("bot") {
 		t.Fatal("首次应放行")
 	}
@@ -83,7 +84,7 @@ func TestWaitRespectsContext(t *testing.T) {
 }
 
 func TestBucketReclaim(t *testing.T) {
-	l := New(10, 1, 20*time.Millisecond)
+	l := New(10, 1, 20*time.Millisecond, 0)
 	l.Allow("a")
 	l.Allow("b")
 	if got := l.Buckets(); got != 2 {
@@ -99,7 +100,7 @@ func TestBucketReclaim(t *testing.T) {
 }
 
 func TestConcurrentAllow(t *testing.T) {
-	l := New(1000, 50, time.Minute)
+	l := New(1000, 50, time.Minute, 0)
 	done := make(chan struct{})
 	for range 8 {
 		go func() {
@@ -114,5 +115,54 @@ func TestConcurrentAllow(t *testing.T) {
 	}
 	if l.Buckets() != 1 {
 		t.Fatalf("同一 key 应只有一个桶, got %d", l.Buckets())
+	}
+}
+
+// TestBucketTableBounded 验证桶表容量有上限：大量不同 key 只保留最近使用的一批，
+// maxKeys <= 0 时使用默认上限。
+func TestBucketTableBounded(t *testing.T) {
+	cases := []struct {
+		name    string
+		maxKeys int // New 的入参，0 表示用默认上限
+		want    int
+	}{
+		{name: "显式上限", maxKeys: 4, want: 4},
+		{name: "默认上限", maxKeys: 0, want: defaultMaxKeys},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := New(100, 1, time.Minute, tc.maxKeys)
+			for i := range tc.want + 1 {
+				l.Allow(fmt.Sprintf("k-%d", i))
+			}
+			if got := l.Buckets(); got != tc.want {
+				t.Fatalf("Buckets = %d, 期望 %d（上限）", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEvictionKeepsMostRecentlyUsed 验证淘汰选最久未使用的桶：最近被访问过的 key
+// 保留原有令牌状态，被淘汰的 key 重建为满桶。
+func TestEvictionKeepsMostRecentlyUsed(t *testing.T) {
+	l := New(0.01, 1, time.Minute, 2) // 100s 一个令牌：测试期间不会补充
+	if !l.Allow("k1") || !l.Allow("k2") {
+		t.Fatal("突发容量内应放行")
+	}
+	if l.Allow("k1") {
+		t.Fatal("k1 令牌已用完，应拒绝")
+	}
+	// k1 刚被访问过，插入新 key 时应淘汰更久未使用的 k2。
+	if !l.Allow("k3") {
+		t.Fatal("新 key 应重建为满桶并放行")
+	}
+	if l.Allow("k1") {
+		t.Fatal("最近被访问过的 k1 不应被淘汰（淘汰后会重建为满桶而放行）")
+	}
+	if !l.Allow("k2") {
+		t.Fatal("被淘汰的 k2 应重建为满桶")
+	}
+	if got := l.Buckets(); got != 2 {
+		t.Fatalf("Buckets = %d, 期望 2", got)
 	}
 }

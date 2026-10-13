@@ -187,14 +187,14 @@ func New(opts Options) (*Engine, error) {
 		})
 
 		if rate := opts.Config.Limits.SendRate; rate > 0 {
-			e.sendLimits[b.BotID] = ratelimit.New(rate, opts.Config.Limits.SendBurst, 0)
+			e.sendLimits[b.BotID] = ratelimit.New(rate, opts.Config.Limits.SendBurst, 0, 0)
 		}
 	}
 	for _, ids := range e.platforms {
 		sort.Strings(ids)
 	}
 	if rate := opts.Config.Limits.HandlerRate; rate > 0 {
-		e.handleLimit = ratelimit.New(rate, opts.Config.Limits.HandlerBurst, 0)
+		e.handleLimit = ratelimit.New(rate, opts.Config.Limits.HandlerBurst, 0, 0)
 	}
 
 	if opts.Storage == nil {

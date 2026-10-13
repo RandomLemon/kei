@@ -301,26 +301,19 @@ func Dedup(set *dedup.Set) bot.Middleware {
 
 // RateLimit 按 scope 指定的粒度限流，超过配额返回 ErrRateLimited。
 //
-// scope 为 ScopeChannel 时用会话 ID（为空则回退 SessionKey），ScopePlugin 时
-// 用插件名（为空则为 DefaultLabel），其余 scope（含 ScopeUser）一律按发送者
-// ID 限流。l 为 nil 时透传表示不限流。
+// scope 为 ScopeChannel 时用会话 ID，ScopePlugin 时用插件名（为空则为
+// DefaultLabel），其余 scope（含 ScopeUser）用发送者 ID；取到的键为空时回退
+// SessionKey，两者都为空（例如事件为 nil）则透传——没有身份可限流时不把这类
+// 事件塞进同一个空键桶，避免互相限流。l 为 nil 时透传表示不限流。
 func RateLimit(l *ratelimit.Limiter, scope string) bot.Middleware {
 	if l == nil {
 		return passthrough
 	}
 	return func(next bot.Handler) bot.Handler {
 		return func(ctx context.Context, e *bot.Event, r bot.Reply) error {
-			var key string
-			switch scope {
-			case ScopeChannel:
-				key = channelIDOf(e)
-				if key == "" {
-					key = sessionKey(e)
-				}
-			case ScopePlugin:
-				key = pluginName(ctx)
-			default:
-				key = userIDOf(e)
+			key := limitKey(ctx, e, scope)
+			if key == "" {
+				return next(ctx, e, r)
 			}
 			if !l.Allow(key) {
 				return fmt.Errorf("%w: scope=%s key=%s", ErrRateLimited, scope, key)
@@ -328,6 +321,23 @@ func RateLimit(l *ratelimit.Limiter, scope string) bot.Middleware {
 			return next(ctx, e, r)
 		}
 	}
+}
+
+// limitKey 计算限流键：按 scope 取身份，身份缺失时回退会话键。
+func limitKey(ctx context.Context, e *bot.Event, scope string) string {
+	var key string
+	switch scope {
+	case ScopeChannel:
+		key = channelIDOf(e)
+	case ScopePlugin:
+		key = pluginName(ctx)
+	default:
+		key = userIDOf(e)
+	}
+	if key == "" {
+		key = sessionKey(e)
+	}
+	return key
 }
 
 // Auth 校验规则的管理员权限。
