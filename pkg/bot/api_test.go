@@ -74,6 +74,74 @@ func TestConfigAccessors(t *testing.T) {
 	}
 }
 
+// TestConfigIsolatedFromCaller 验证配置不与调用方共享可变状态：NewConfig 深拷贝
+// 入参，Raw 返回副本，任一方向的修改都不影响另一方。
+func TestConfigIsolatedFromCaller(t *testing.T) {
+	src := map[string]any{
+		"k":      "v",
+		"nested": map[string]any{"a": 1},
+		"list":   []any{"x"},
+		"names":  []string{"n1"},
+		"m":      map[string]string{"mk": "mv"},
+	}
+	cfg := NewConfig(src)
+
+	// 调用方之后修改源 map（含嵌套容器）不影响配置。
+	src["k"] = "changed"
+	src["nested"].(map[string]any)["a"] = 2
+	src["list"].([]any)[0] = "changed"
+	src["names"].([]string)[0] = "changed"
+	src["m"].(map[string]string)["mk"] = "changed"
+
+	if got := cfg.String("k", ""); got != "v" {
+		t.Fatalf("改源 map 后 String = %q, want v", got)
+	}
+	if got := cfg.Int("nested.a", 0); got != 1 {
+		t.Fatalf("改源 map 后嵌套 Int = %d, want 1", got)
+	}
+	if got := cfg.Strings("names"); len(got) != 1 || got[0] != "n1" {
+		t.Fatalf("改源 map 后 Strings = %v, want [n1]", got)
+	}
+
+	// 修改 Raw() 返回的副本不影响配置，下一次 Raw() 依然是干净副本。
+	raw := cfg.Raw()
+	raw["k"] = "hacked"
+	raw["nested"].(map[string]any)["a"] = 3
+	raw["list"].([]any)[0] = "hacked"
+	raw["names"].([]string)[0] = "hacked"
+	raw["m"].(map[string]string)["mk"] = "hacked"
+
+	if got := cfg.String("k", ""); got != "v" {
+		t.Fatalf("改 Raw() 副本后 String = %q, want v", got)
+	}
+	if got := cfg.Int("nested.a", 0); got != 1 {
+		t.Fatalf("改 Raw() 副本后嵌套 Int = %d, want 1", got)
+	}
+	again := cfg.Raw()
+	if again["k"] != "v" {
+		t.Fatalf("二次 Raw().k = %v, want v", again["k"])
+	}
+	if got := again["nested"].(map[string]any)["a"]; got != 1 {
+		t.Fatalf("二次 Raw() 嵌套 a = %v, want 1", got)
+	}
+	if got := again["list"].([]any)[0]; got != "x" {
+		t.Fatalf("二次 Raw() list = %v, want [x]", got)
+	}
+	if got := again["names"].([]string)[0]; got != "n1" {
+		t.Fatalf("二次 Raw() names = %v, want [n1]", got)
+	}
+	if got := again["m"].(map[string]string)["mk"]; got != "mv" {
+		t.Fatalf("二次 Raw() m.mk = %v, want mv", got)
+	}
+
+	// 同一份来源构造的两个配置互不影响。
+	other := NewConfig(src)
+	raw["k"] = "hacked-again"
+	if got := other.String("k", ""); got != "changed" {
+		t.Fatalf("另一个配置被改动: String = %q", got)
+	}
+}
+
 type fakeStorage struct {
 	set map[string][]byte
 }

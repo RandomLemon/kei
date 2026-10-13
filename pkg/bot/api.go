@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -84,16 +85,64 @@ type Config struct {
 }
 
 // NewConfig 从原始键值构建插件配置，raw 可为 nil。
+//
+// raw 会被深拷贝（映射与切片递归复制）：调用方之后修改 raw 或其嵌套容器不会影响
+// 配置，配置之间也不共享任何可变值（同一份来源可以安全地构造多个 Config）。
 func NewConfig(raw map[string]any) *Config {
-	return &Config{raw: raw}
+	return &Config{raw: cloneConfigMap(raw)}
 }
 
-// Raw 返回原始配置映射，调用方不得修改返回值。
+// Raw 返回配置的深层副本，修改返回值不影响配置本身。
 func (c *Config) Raw() map[string]any {
 	if c == nil {
 		return nil
 	}
-	return c.raw
+	return cloneConfigMap(c.raw)
+}
+
+// cloneConfigMap 深拷贝配置映射；nil 返回 nil。
+func cloneConfigMap(raw map[string]any) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	out := make(map[string]any, len(raw))
+	for k, v := range raw {
+		out[k] = cloneConfigValue(v)
+	}
+	return out
+}
+
+// cloneConfigValue 递归复制配置值中的容器，其余值按值返回。
+//
+// 配置取值域是可被 encoding/json 编解码的值（映射/切片/标量与 nil），这里覆盖
+// 其中会共享引用的容器类型；其它类型按值返回（Config 只读，不为此报错）。
+func cloneConfigValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return cloneConfigMap(t)
+	case []any:
+		if t == nil {
+			return []any(nil)
+		}
+		out := make([]any, len(t))
+		for i := range t {
+			out[i] = cloneConfigValue(t[i])
+		}
+		return out
+	case []string:
+		return append([]string(nil), t...)
+	case []byte:
+		return append([]byte(nil), t...)
+	case map[string]string:
+		if t == nil {
+			return map[string]string(nil)
+		}
+		out := make(map[string]string, len(t))
+		maps.Copy(out, t)
+		return out
+	default:
+		return v
+	}
 }
 
 // Get 按路径读取原始值，路径以 "." 分隔。

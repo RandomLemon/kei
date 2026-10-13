@@ -387,7 +387,7 @@ bots:
 
 约定与校验：
 
-- `AdapterContext` 的字段就是全部可用依赖：`BotID`（实例名，必须写进 `Event.BotID` 与 `SendRequest.BotID`）、`Config`、`Logger`、`Storage`、`HTTPClient`。`Config` 是 `bot.NewConfig(bots[] 条目中除 name/adapter/enabled/plugins 外的键)`，`Get`/`String`/`Bool`/`Int`/`Duration`/`Strings` 都支持 `"a.b.c"` 多级键，键缺失或类型不符时返回默认值。（`pkg/bot` 中 `AdapterContext.Config` 的注释仍写作「除 name/adapter/plugins 外」，`enabled` 是后加的实例级开关。）
+- `AdapterContext` 的字段就是全部可用依赖：`BotID`（实例名，必须写进 `Event.BotID` 与 `SendRequest.BotID`）、`Config`、`Logger`、`Storage`、`HTTPClient`。`Config` 是 `bot.NewConfig(bots[] 条目中除 name/adapter/enabled/plugins 外的键)`（`NewConfig` 深拷贝，`Raw()` 返回副本，适配器改配置不会回到 `config.Config`），`Get`/`String`/`Bool`/`Int`/`Duration`/`Strings` 都支持 `"a.b.c"` 多级键，键缺失或类型不符时返回默认值。（`pkg/bot` 中 `AdapterContext.Config` 的注释仍写作「除 name/adapter/plugins 外」，`enabled` 是后加的实例级开关。）
 - 实例级开关：`bots[]` 条目上的 `enabled: false` 跳过该实例（见 6.7），此时该实例的 `Settings` 不参与任何校验，也不会产生未知键告警。
 - 声明了 `PermNetListen` 的适配器才允许在实例配置里出现保留键 `listen_addr`（见 6.3）；`Options` 非空时应把 `listen_addr` 一并列入，否则会被当作未知键告警。
 - 未知键告警：`internal/adaptermgr.warnUnknownOptions` 对「不在 `AdapterMetadata.Options` 中的私有键」记 warn 日志 `适配器不认识的配置键`，字段为 `bot`/`adapter`/`key`。`Options` 为空表示不校验、静默跳过（此时连 `listen_addr` 也不会告警）；只告警不报错，以支持第三方适配器独立演进。

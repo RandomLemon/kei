@@ -116,7 +116,7 @@ type PluginConfig struct {
 - **未列出即不启用**：`PluginConfig.Enabled` 是普通 `bool`，零值 `false`；`Config.Plugin(name)` 对缺失插件返回零值。想启用必须写 `enabled: true`，或使用布尔标量简写 `echo: true`。
 - `enabled`：布尔标量或带引号的布尔文本（`enabled: "false"` 也得到 `false`，见 `decodeBool`）；非布尔（如 `enabled: 也许`）报 `plugins.<name>.enabled: 需要布尔值`。`enabled` 不会进入 `Settings`。
 - 私有配置：其余键进入 `Settings`，由引擎在构造插件管理器时转换为 `bot.Config`（`engine.New` → `pluginmgr.Deps.Configs`），插件经 `PluginContext.Config` 读取；插件未配置时是空配置（`bot.NewConfig(nil)`）。
-- 读取方式（`pkg/bot/api.go`，`Config` 对 nil 接收者与缺失键都返回默认值）：`Raw() map[string]any`、`Get(key) (any, bool)`（支持 `"a.b.c"` 多级路径）、`String(key, def)`、`Bool(key, def)`、`Int(key, def)`、`Duration(key, def)`（字符串按 `time.ParseDuration`，数字按秒）、`Strings(key)`（缺失返回 nil）、`Unmarshal(v)`（依赖 `encoding/json` 标签）。
+- 读取方式（`pkg/bot/api.go`，`Config` 对 nil 接收者与缺失键都返回默认值）：`Raw() map[string]any`（每次返回深层副本）、`Get(key) (any, bool)`（支持 `"a.b.c"` 多级路径）、`String(key, def)`、`Bool(key, def)`、`Int(key, def)`、`Duration(key, def)`（字符串按 `time.ParseDuration`，数字按秒）、`Strings(key)`（缺失返回 nil）、`Unmarshal(v)`（依赖 `encoding/json` 标签）。`bot.NewConfig` 深拷贝传入的映射与切片，因此插件/适配器改配置不会回到 `Config` 对象。
 - 「`enabled: true` 但没有任何已注册插件对应」只会得到 warn（`pkg/kei/assemble.go` 的 `selectPlugins`：`enabled plugin is not registered`）。
 - 插件名只允许 `[a-z0-9_-]`（`Config.validate` 与 `pluginmgr.Add` 都校验，越界直接报错）：`KEI_PLUGINS_*` 与白名单按同一字符集规范化，名字越界会让配置键与环境变量对不上。
 - 未知键告警：插件在 `Metadata.Options` 声明自己接受的键后，`Settings` 中未声明的键会记 warn `插件不认识的配置键`（字段 `plugin`/`key`）；未声明 `Options` 时不校验（与适配器同义，见 [adapter.md](adapter.md) 6.5）。

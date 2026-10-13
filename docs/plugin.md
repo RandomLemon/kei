@@ -429,7 +429,7 @@ type AdapterCatalog interface {
 | 字段 | 来源 | 说明 |
 | --- | --- | --- |
 | `Name` | `Metadata().Name` | 用于日志与配置查找 |
-| `Config` | `pluginmgr.Deps.Configs[name]` | 缺失时为 `bot.NewConfig(nil)` 空配置，取值方法安全 |
+| `Config` | `pluginmgr.Deps.Configs[name]` | 缺失时为 `bot.NewConfig(nil)` 空配置，取值方法安全；构造时深拷贝来源 map，插件与引擎不共享可变值（`Raw()` 返回副本） |
 | `Logger` | `pluginmgr.Deps.Logger` | 派生自根日志器并绑定 `plugin` 字段 |
 | `Storage` | `pluginmgr.Deps.Storage` | 未声明 `PermStorage` 或引擎未提供存储时为 `storage.Denied()`；可用时是带 `plugin:<插件名>:` 前缀的隔离视图（见 11.2） |
 | `HTTPClient` | `pluginmgr.Deps.HTTPClient` | 仅声明 `PermNetwork` 时非 nil |
@@ -440,8 +440,9 @@ type AdapterCatalog interface {
 `Config` 是插件的独立配置，来自配置中该插件名下的键值，支持 `"a.b.c"` 形式的多级键；所有取值方法对 nil 接收者与缺失键都返回默认值：
 
 ```go
+// NewConfig 深拷贝 raw（映射与切片递归复制），配置之间不共享可变值。
 func NewConfig(raw map[string]any) *Config
-func (c *Config) Raw() map[string]any              // 原始映射，调用方不得修改
+func (c *Config) Raw() map[string]any              // 深层副本，修改返回值不影响配置
 func (c *Config) Get(key string) (any, bool)       // 路径以 "." 分隔
 func (c *Config) String(key, def string) string    // string/fmt.Stringer/fmt.Sprint
 func (c *Config) Bool(key string, def bool) bool   // bool，或可被 strconv.ParseBool 解析的字符串
@@ -450,6 +451,8 @@ func (c *Config) Duration(key string, def time.Duration) time.Duration // 字符
 func (c *Config) Strings(key string) []string      // []string 拷贝 / []any 中的字符串 / 逗号分隔字符串
 func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json.Unmarshal 到 v
 ```
+
+深拷贝的边界：`NewConfig` 复制入参中的映射与切片（`map[string]any`/`[]any`/`[]string`/`[]byte`/`map[string]string`，递归），`Raw()` 每次返回新的深层副本，因此插件、引擎与 `config.Config` 之间没有共享的可变配置值——插件改 `Raw()` 的返回值不会回到引擎持有的 `config.Config`（此前 `Raw()` 返回活引用，插件改写会与引擎的并发读取构成数据竞争）。`Get` 对嵌套路径返回的是配置内部的值，同一 `Config` 内修改它只影响该配置自身。
 
 ### 11.4 权限与降级
 

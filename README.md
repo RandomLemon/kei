@@ -399,7 +399,7 @@ kei.Run(ctx, kei.Options{ConfigFile: "configs/mybot.yaml", Plugins: []bot.Plugin
 
   | 字段 | 说明 |
   | --- | --- |
-  | `Config` | 该插件在 `plugins.<name>` 下的配置（`Get/String/Bool/Int/Duration/Strings/Unmarshal`） |
+  | `Config` | 该插件在 `plugins.<name>` 下的配置（`Get/String/Bool/Int/Duration/Strings/Unmarshal`；`NewConfig` 深拷贝、`Raw()` 返回副本） |
   | `Logger` | 已绑定 `plugin` 字段的 `*slog.Logger` |
   | `Storage` | 键值存储（未声明 `PermStorage` 时返回拒绝访问的实现；可用时按插件名隔离，键最长 191 字节） |
   | `HTTPClient` | 带超时的 HTTP 客户端（未声明 `PermNetwork` 时为 nil） |
