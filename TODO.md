@@ -119,7 +119,7 @@
   - 修复：末分支校验为合法数字否则报错（HTTP 400）；兜底 ID 加入 message/子事件唯一信息（如 `NoticeType`+`TargetID`+`MessageID`），并保证稳定。
   - 验收：单测覆盖非标量 `message_id` 报错与同秒不同消息 ID 不同。
 
-- [ ] **17. onebot：`Capabilities.File=true` 但 URL-only 文件段发不出去** `[读码]`
+- [x] **17. onebot：`Capabilities.File=true` 但 URL-only 文件段发不出去** `[读码]` — 完成 760403e：采用第二条修复方案（保留 `File: true`，在 `buildArray` 按段数据兜底）。`SegFile` 分支改为：`KeyFile` 非空 → 按 `file` 段发送（`file`/`url`/`name` 沿用原行为）；只有 `KeyURL` → 经新增的 `fileFallbackText` 渲染成与 `bot.Degrade` 同格式的文本链接 `[file] 名称 URL`（名称为空时省略）；两个键都为空 → 跳过并记 warn（对齐 `docs/domain-model.md` 5.6 约定 3「与 `KeyURL` 至少一个非空」、两者皆空即不可发送）。回归测试 `adapters/onebot/onebot_test.go` 的 `TestSendFileSegments`（经 `newFakeAPI` 断言实际 HTTP API 载荷）四条：`message.File` 的 URL-only 产物 → 文本链接、无文件名 → `[file] URL`、带 `KeyFile`（同时带 `KeyURL`/`KeyFileName`）→ 仍发 `file` 段、两键皆空 → 段被跳过；在 `HEAD` worktree 跑同一测试必失败（URL-only 两条发出 `{"type":"file","data":{"file":"http://…"}}`，空数据条目发出 `{"file":""}` 且不跳过）。取证：`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/adapter.md` 6.4 第 1 条与 6.7 onebot 能力条目、`README.md` 适配器能力表、`docs/testing.md` onebot 行（42→43）同步。
   - 位置：`adapters/onebot/onebot.go:311`、`adapters/onebot/message.go:147-151`；构造器 `pkg/message/message.go:55-57`
   - 问题：`message.File(url,name)` 只给 `KeyURL`，OneBot `file` 字段要求 `file://`/本地路径 → 发送失败，且能力位为 true 使 `bot.Degrade` 不做文本兜底。
   - 修复：`File:false`（让引擎降级为文本），或仅在有 `KeyFile` 时发文件、否则回退文本链接。
