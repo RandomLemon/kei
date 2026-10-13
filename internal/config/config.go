@@ -29,11 +29,8 @@ const (
 	defaultLogFormat = "text"
 )
 
-// adapterNamePattern 限制 adapter 名称的字符集。
-var adapterNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
-
-// storageTypePattern 限制存储类型名的字符集。
-var storageTypePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+// namePattern 限制名字类配置的字符集：适配器名、插件名与存储类型名共用。
+var namePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // validLogLevels 与 validLogFormats 是 log 段允许的取值（比较前统一转小写）。
 var (
@@ -581,7 +578,7 @@ func (c *Config) validate() error {
 		if b.Adapter == "" {
 			return fmt.Errorf("config: bots[%d].adapter: 不能为空", i)
 		}
-		if !adapterNamePattern.MatchString(b.Adapter) {
+		if !namePattern.MatchString(b.Adapter) {
 			return fmt.Errorf("config: bots[%d].adapter: %q 只允许 [a-z0-9_-]", i, b.Adapter)
 		}
 	}
@@ -589,12 +586,15 @@ func (c *Config) validate() error {
 		if name == "" {
 			return errors.New("config: plugins: 插件名不能为空")
 		}
+		if !namePattern.MatchString(name) {
+			return fmt.Errorf("config: plugins.%s: 插件名只允许 [a-z0-9_-]", name)
+		}
 	}
 	for name := range c.Adapters {
 		if name == "" {
 			return errors.New("config: adapters: 适配器名不能为空")
 		}
-		if !adapterNamePattern.MatchString(name) {
+		if !namePattern.MatchString(name) {
 			return fmt.Errorf("config: adapters.%s: 适配器名只允许 [a-z0-9_-]", name)
 		}
 	}
@@ -615,7 +615,7 @@ const (
 	paramConnMaxLifetime = "conn_max_lifetime"
 )
 
-// validate 校验存储配置：类型名必须匹配 storageTypePattern，已知参数取值必须合法。
+// validate 校验存储配置：类型名必须匹配 namePattern，已知参数取值必须合法。
 //
 // 不校验类型是否存在（由装配期负责），不校验 dsn 是否必填（由各后端负责）。
 // 未知参数不报错：内置后端会忽略它们（各键的适用范围见 docs/configuration.md 12.5）。
@@ -623,7 +623,7 @@ func (s StorageConfig) validate() error {
 	if s.Type == "" {
 		return errors.New("config: storage.type: 不能为空")
 	}
-	if !storageTypePattern.MatchString(s.Type) {
+	if !namePattern.MatchString(s.Type) {
 		return fmt.Errorf("config: storage.type: %q 只允许 [a-z0-9_-]", s.Type)
 	}
 	for key, val := range s.Params {

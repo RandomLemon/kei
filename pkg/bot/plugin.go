@@ -23,7 +23,8 @@ type Plugin interface {
 
 // Metadata 是插件元信息。
 type Metadata struct {
-	// Name 是插件唯一名称。
+	// Name 是插件唯一名称，只允许 [a-z0-9_-]（装配期由 pluginmgr 校验）；配置中的
+	// plugins.<name> 与 bots[].plugins 引用它。
 	Name string
 	// Version 是插件版本。
 	Version string
@@ -31,8 +32,11 @@ type Metadata struct {
 	Author string
 	// Description 是插件说明。
 	Description string
-	// Permissions 是插件申请的权限。
+	// Permissions 是插件申请的权限；PermAll 与适配器一样不允许声明。
 	Permissions []Permission
+	// Options 是插件接受的配置键（plugins.<name> 下的私有键），用于核心对未知
+	// 配置键告警；为空表示不校验。
+	Options []string
 }
 
 // HasPermission 判断插件是否申请了指定权限。
@@ -64,7 +68,9 @@ const (
 	PermReceiveEvent Permission = "receive_event"
 	// PermAdmin 允许执行管理员命令（配合 Auth 中间件）。
 	PermAdmin Permission = "admin"
-	// PermAll 表示全部权限，仅内置插件可用；适配器不得声明。
+	// PermAll 表示全部权限。插件与适配器都不得在元信息中声明（装配期报错，
+	// 见 internal/pluginmgr 与 internal/adaptermgr）；Metadata.HasPermission
+	// 仍把 "*" 视为包含一切权限。
 	PermAll Permission = "*"
 )
 

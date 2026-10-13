@@ -25,7 +25,8 @@ type Plugin interface {
 }
 
 type Metadata struct {
-	// Name 是插件唯一名称。
+	// Name 是插件唯一名称，只允许 [a-z0-9_-]（装配期由 pluginmgr 校验）；
+	// 配置中的 plugins.<name> 与 bots[].plugins 引用它。
 	Name string
 	// Version 是插件版本。
 	Version string
@@ -33,8 +34,11 @@ type Metadata struct {
 	Author string
 	// Description 是插件说明。
 	Description string
-	// Permissions 是插件申请的权限。
+	// Permissions 是插件申请的权限；PermAll 与适配器一样不允许声明。
 	Permissions []Permission
+	// Options 是插件接受的配置键（plugins.<name> 下的私有键），用于核心对未知
+	// 配置键告警；为空表示不校验。
+	Options []string
 }
 
 // HasPermission 判断插件是否申请了指定权限。
@@ -42,6 +46,8 @@ func (m Metadata) HasPermission(p Permission) bool
 ```
 
 `HasPermission` 在 `m.Permissions` 中查找 `p`，同时把 `PermAll` 视为包含一切权限。
+
+元信息校验在装配期完成（`internal/pluginmgr.Manager.Add`，与适配器侧的注册表校验对应）：插件名必须匹配 `[a-z0-9_-]`（配置层对 `plugins.<name>` 用同一字符集校验；越界名字会让 `KEI_PLUGINS_*` 的规范化与白名单对不上），空名与重名报错，声明 `PermAll` 报错（见 11.4）。`Metadata.Options` 声明插件接受的私有配置键：核心对 `plugins.<name>` 下未声明的键记 warn `插件不认识的配置键`（字段 `plugin`/`key`），未声明 `Options` 时静默跳过——与适配器 `Options` 完全同义（见 [adapter.md](adapter.md) 6.5）。
 
 `Permission` 是插件与适配器共用的类型，常量全集（`plugin.go`）：
 
@@ -66,7 +72,7 @@ const (
 )
 ```
 
-插件侧 `PermAll` 的语义：`Metadata.HasPermission` 对 `*` 恒返回 true，因此声明 `*` 的插件自动获得全部权限（`internal/pluginmgr` 据此裁剪依赖，见 11.4）。适配器侧完全不同：`AdapterMetadata.HasPermission` 只做精确匹配，`*` 不展开；`internal/adaptermgr.ValidateRegistry` 在适配器声明 `*` 时直接报错。适配器视角的裁剪规则见 [adapter.md](adapter.md)。
+插件侧 `PermAll` 的语义：元信息里**不得声明** `*`——`pluginmgr.Add` 在装配期直接报错（`pluginmgr: 插件 <name> 不得声明 * 权限（需逐项声明）`），权限必须逐项列出，与适配器侧一致（`adaptermgr.ValidateRegistry` 对适配器同样报错）。`Metadata.HasPermission` 仍把 `*` 视为包含一切权限，该展开语义只对不经管理器的 SDK 用法（直接构造 `Metadata` 并调用）有意义。适配器视角的裁剪规则见 [adapter.md](adapter.md)。
 
 注册表 API：
 
@@ -303,7 +309,7 @@ type FuncPlugin struct {
 }
 ```
 
-`Metadata`/`Setup`/`Start`/`Stop` 对 nil 接收者安全：nil 或对应函数为 nil 时是空实现（`Metadata` 返回零值，空名最终由 `pluginmgr.Add` 拒绝），与 `pkg/bot.Config` 的取值方法风格一致。它不调用 `RegisterPlugin`，因此不在注册表快照里；只能经 `pkg/kei.Options.Plugins` 注入，注入实例一律启用，与同名配置冲突（`enabled: false`）时启动失败。装配门面见 [architecture.md](architecture.md) 3.1。
+`Metadata`/`Setup`/`Start`/`Stop` 对 nil 接收者安全：nil 或对应函数为 nil 时是空实现（`Metadata` 返回零值，空名或含非法字符的名字最终由 `pluginmgr.Add` 拒绝），与 `pkg/bot.Config` 的取值方法风格一致。它不调用 `RegisterPlugin`，因此不在注册表快照里；只能经 `pkg/kei.Options.Plugins` 注入，注入实例一律启用，与同名配置冲突（`enabled: false`）时启动失败。装配门面见 [architecture.md](architecture.md) 3.1。
 
 需要 `PluginContext`（配置、日志、存储、插件目录）的插件在 `Setup` 阶段用 `bot.PluginContextFrom(ctx)` 取出后保存到实例上——Handler 执行期的 ctx 不含 `PluginContext`（见 11.3）。`plugins/manage` 就是这么做的：保存 `pc.Config` 供命令读取，把 `pc.Catalog`/`pc.Adapters` 交给 Handler 闭包，取不到上下文时让 `Setup` 返回 `manage: missing plugin context`。其实现与七条子命令的契约（规则 ID、优先级、管理员门槛、输出格式、配置键）见 [`plugins/manage.md`](plugins/manage.md)，本节不再重复其代码。
 
@@ -457,7 +463,7 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 | `admin` | 仅作声明与审计；管理员校验实际由 `Rule.AdminOnly` + Auth 中间件按 `auth.admin_users` 完成，与插件元信息无关 |
 | `read_user` | 仅作声明与审计，核心当前不据此裁剪任何依赖（用户信息本就在 `Event.Sender` 中） |
 | `net_listen` / `receive_event` | 属于适配器语义，插件不涉及 |
-| `*` | `Metadata.HasPermission` 视为包含一切权限，等价于声明全部权限；仅内置插件可用 |
+| `*` | 元信息里**不得声明**：`pluginmgr.Add` 装配期报错（适配器侧同样禁止）。`Metadata.HasPermission` 的 `*` 展开语义只对不经管理器的 SDK 用法有效 |
 
 要点：
 

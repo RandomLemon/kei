@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -85,7 +87,16 @@ func New(deps Deps) *Manager {
 	}
 }
 
-// Add 登记一个插件；名称为空或重名时返回错误。
+// pluginNamePattern 限制插件名的字符集，与适配器名、存储类型名共用同一约定
+// （见 internal/config 与 docs/plugin.md 9.1）：配置键与环境变量覆盖都按该字符集
+// 规范化，名字越界会让 plugins.<name>、KEI_PLUGINS_* 与白名单对不上。
+var pluginNamePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+// Add 登记一个插件；名称为空、字符合法但不符合 [a-z0-9_-]、重名或声明 PermAll
+// 时返回错误。
+//
+// 元信息校验只在这里做（适配器侧对应 adaptermgr 的注册表校验）：不合格的插件在
+// 装配期即失败，而不是表现为「配置没生效」或悄悄拿到全部依赖。
 func (m *Manager) Add(p bot.Plugin) error {
 	if p == nil {
 		return errors.New("pluginmgr: nil plugin")
@@ -94,17 +105,40 @@ func (m *Manager) Add(p bot.Plugin) error {
 	if meta.Name == "" {
 		return errors.New("pluginmgr: plugin metadata name is empty")
 	}
+	if !pluginNamePattern.MatchString(meta.Name) {
+		return fmt.Errorf("pluginmgr: 插件名 %q 只允许 [a-z0-9_-]", meta.Name)
+	}
+	if meta.HasPermission(bot.PermAll) {
+		return fmt.Errorf("pluginmgr: 插件 %s 不得声明 %s 权限（需逐项声明，见 docs/plugin.md 11.4）", meta.Name, bot.PermAll)
+	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if _, ok := m.byName[meta.Name]; ok {
+		m.mu.Unlock()
 		return fmt.Errorf("pluginmgr: duplicate plugin %q", meta.Name)
 	}
 	e := &entry{plugin: p, meta: meta}
 	m.order = append(m.order, e)
 	m.byName[meta.Name] = e
+	m.mu.Unlock()
+
+	m.warnUnknownOptions(meta)
 	return nil
+}
+
+// warnUnknownOptions 对插件不认识的私有配置键告警（不报错）。
+//
+// 与适配器侧的 adaptermgr.warnUnknownOptions 同义：Options 为空表示不校验，
+// 静默跳过；只告警不报错，以支持插件独立演进。
+func (m *Manager) warnUnknownOptions(meta bot.Metadata) {
+	if len(meta.Options) == 0 {
+		return
+	}
+	for key := range m.configFor(meta.Name).Raw() {
+		if !slices.Contains(meta.Options, key) {
+			m.log.Warn("插件不认识的配置键", "plugin", meta.Name, "key", key)
+		}
+	}
 }
 
 // Setup 依次调用每个插件的 Setup，并为其注入 PluginContext。

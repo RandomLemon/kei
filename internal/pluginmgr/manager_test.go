@@ -1,6 +1,7 @@
 package pluginmgr
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 type fakePlugin struct {
 	name     string
 	perms    []bot.Permission
+	opts     []string
 	calls    *[]string
 	failOn   string
 	panicOn  string
@@ -24,7 +26,7 @@ type fakePlugin struct {
 }
 
 func (p *fakePlugin) Metadata() bot.Metadata {
-	return bot.Metadata{Name: p.name, Version: "v1", Permissions: p.perms}
+	return bot.Metadata{Name: p.name, Version: "v1", Permissions: p.perms, Options: p.opts}
 }
 
 func (p *fakePlugin) record(phase string) {
@@ -183,6 +185,98 @@ func TestSetupAndStartFailureHandling(t *testing.T) {
 	})
 }
 
+// TestAddValidatesMetadata 覆盖 pluginmgr.Add 的元信息校验：名字字符集与 PermAll。
+func TestAddValidatesMetadata(t *testing.T) {
+	cases := []struct {
+		name    string
+		meta    bot.Metadata
+		wantErr string // 空表示应通过
+	}{
+		{
+			name: "合法名字与逐项权限",
+			meta: bot.Metadata{Name: "good-name_1", Permissions: []bot.Permission{bot.PermStorage, bot.PermNetwork}},
+		},
+		{
+			name:    "名字带大写",
+			meta:    bot.Metadata{Name: "Manage"},
+			wantErr: "只允许 [a-z0-9_-]",
+		},
+		{
+			name:    "名字带点",
+			meta:    bot.Metadata{Name: "my.plugin"},
+			wantErr: "只允许 [a-z0-9_-]",
+		},
+		{
+			name:    "名字带空格",
+			meta:    bot.Metadata{Name: "my plugin"},
+			wantErr: "只允许 [a-z0-9_-]",
+		},
+		{
+			name:    "声明 PermAll",
+			meta:    bot.Metadata{Name: "greedy", Permissions: []bot.Permission{bot.PermAll}},
+			wantErr: "不得声明 * 权限",
+		},
+		{
+			name:    "PermAll 混在逐项权限里也拒绝",
+			meta:    bot.Metadata{Name: "greedy2", Permissions: []bot.Permission{bot.PermNetwork, bot.PermAll}},
+			wantErr: "不得声明 * 权限",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := New(Deps{Logger: slog.New(slog.DiscardHandler)})
+			err := mgr.Add(&fakePlugin{name: tc.meta.Name, perms: tc.meta.Permissions})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("不应报错: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("错误 = %v, 应包含 %q", err, tc.wantErr)
+			}
+			if len(mgr.Plugins()) != 0 {
+				t.Fatalf("被拒绝的插件不应进入管理器: %+v", mgr.Plugins())
+			}
+		})
+	}
+}
+
+// TestAddWarnsUnknownOptions 覆盖插件私有配置键的未知键告警（与适配器侧同义）：
+// 声明 Options 后未列出的键记 warn，未声明 Options 时不校验。
+func TestAddWarnsUnknownOptions(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mgr := New(Deps{
+		Logger:  logger,
+		Configs: map[string]*bot.Config{"warny": bot.NewConfig(map[string]any{"known": 1, "typo_key": 2})},
+	})
+	if err := mgr.Add(&fakePlugin{name: "warny", opts: []string{"known"}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "typo_key") {
+		t.Fatalf("未知配置键未告警: %s", got)
+	}
+	if strings.Contains(got, "key=known") {
+		t.Fatalf("已知配置键不应告警: %s", got)
+	}
+
+	// 未声明 Options 时不校验，保持静默。
+	buf.Reset()
+	quiet := New(Deps{
+		Logger:  logger,
+		Configs: map[string]*bot.Config{"quiet": bot.NewConfig(map[string]any{"whatever": 1})},
+	})
+	if err := quiet.Add(&fakePlugin{name: "quiet"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("未声明 Options 时不应告警: %s", buf.String())
+	}
+}
+
 func TestPermissionScopedContext(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -194,7 +288,7 @@ func TestPermissionScopedContext(t *testing.T) {
 		{name: "无权限", perms: nil, wantHTTP: false, wantStorage: false},
 		{name: "仅有网络权限", perms: []bot.Permission{bot.PermNetwork}, wantHTTP: true, wantStorage: false},
 		{name: "仅有存储权限", perms: []bot.Permission{bot.PermStorage}, wantHTTP: false, wantStorage: true},
-		{name: "全部权限", perms: []bot.Permission{bot.PermAll}, wantHTTP: true, wantStorage: true},
+		{name: "多项权限", perms: []bot.Permission{bot.PermSendMessage, bot.PermNetwork, bot.PermStorage}, wantHTTP: true, wantStorage: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

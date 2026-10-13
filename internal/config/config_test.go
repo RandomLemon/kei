@@ -541,6 +541,11 @@ func TestValidateErrors(t *testing.T) {
 			substr: "插件名",
 		},
 		{
+			name:   "插件名非法字符",
+			yaml:   "bots:\n  - name: a\n    adapter: mock\nplugins:\n  \"my.plugin\": true\n",
+			substr: "plugins.my.plugin",
+		},
+		{
 			name:   "limits 负速率",
 			yaml:   "bots:\n  - name: a\n    adapter: mock\nlimits:\n  handler_rate: -1\n",
 			substr: "limits.handler_rate",
