@@ -143,7 +143,7 @@
   - 修复：`New` 拒绝非 loopback 地址（除非显式 opt-in），或复用 onebot 的 token 机制。
   - 验收：单测非 loopback 地址被拒绝。
 
-- [ ] **27. ratelimit：桶表无上限 + 空 key 共享一个桶** `[读码]`
+- [x] **27. ratelimit：桶表无上限 + 空 key 共享一个桶** `[读码]` — 完成 d7de6f3：桶表加容量上限 `maxKeys`（`New` 第 4 个参数，`<= 0` 取 `defaultMaxKeys` = 10000），用 `container/list` 维护 O(1) 的 LRU（`order` 头部最久未使用）：插入新 key 且已达上限时 `evictLocked` 淘汰头部桶，任何访问（含被拒绝的调用）都刷新位置，空闲回收同步摘除链表元素；被淘汰的 key 下次出现重建为满桶。`RateLimit` 改为经新增的 `limitKey` 取键：各 scope 的身份为空时统一回退 `SessionKey()`（无 `Sender` 的 notice/meta 因此按会话/机器人分桶，不再共用一个空键桶），`SessionKey()` 也为空（事件为 nil）时透传而不是挤在 `key=""` 桶上。回归测试：`internal/ratelimit` 的 `TestBucketTableBounded`（100 个不同 key、`maxKeys=4` 时桶数恰为 4；默认上限同覆盖）与 `TestEvictionKeepsMostRecentlyUsed`（刚访问过的 key 保留已耗尽的令牌、被淘汰的 key 重建为满桶）、`internal/middleware` 的 `TestRateLimitScope` 新增 `user-fallback-session`（同会话共享配额、不同 bot 互不影响）与 `empty-key-passthrough` 子测试。取证：`HEAD` worktree 探针必失败——100 个不同 key 时 `Buckets = 100, 期望 4（上限）`，无 `Sender` 事件跨 bot 撞车报 `rate limited: scope=user key=`。`gofmt -l .`、`go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./...` 全绿。文档：`docs/engine.md` 7.7 的令牌桶说明（maxKeys/LRU）与 10.5 的 `RateLimit` 行、作用域常量段、7.x 处理侧限流段、`docs/testing.md` 的 ratelimit 行（7→9）与 middleware 行同步。
   - 位置：`internal/ratelimit/ratelimit.go:59-89`、`:116-124`；`internal/middleware/middleware.go:221-236`、`:319-325`
   - 问题：GC 只按 10min 空闲且仅在 `AllowN` 内触发，无容量上限；无 Sender 的事件（OneBot notice/meta）全部落在 `key=""` 同一桶。
   - 修复：加 `maxKeys` + LRU/SWR 或定期 janitor；`RateLimit` 对空 key 选择“放行”或回退 `SessionKey()`，并写入文档。
