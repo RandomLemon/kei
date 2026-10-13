@@ -28,7 +28,10 @@ type Rule struct {
 	ID string
 	// Priority 是优先级，数值越大越先执行。
 	Priority int
-	// Platforms 限定生效平台，空表示全部平台。
+	// Platforms 限定生效平台。
+	//
+	// nil 表示不做平台过滤；非 nil（含空切片）表示白名单，此时只有对应
+	// Platform 的事件才能命中，空切片即任何平台都命中不了。
 	Platforms []string
 	// BotIDs 限定生效的机器人（bot 名称）。
 	//
@@ -45,6 +48,7 @@ type Rule struct {
 	// Regex 限定正则，对消息纯文本做匹配，取值时使用 FindStringSubmatch。
 	Regex *regexp.Regexp
 	// Keywords 限定关键词，命中任意一个（忽略大小写的子串匹配）即触发。
+	// 注册器在注册时复制该切片，注册后修改入参不影响已注册规则。
 	Keywords []string
 	// Match 是自定义断言，可用于权限等复杂判断。
 	Match func(*Event) bool
@@ -68,7 +72,7 @@ func (r *Rule) Matches(e *Event) bool {
 			return false
 		}
 	}
-	if len(r.Platforms) > 0 && !containsString(r.Platforms, e.Platform) {
+	if r.Platforms != nil && !containsString(r.Platforms, e.Platform) {
 		return false
 	}
 	if r.BotIDs != nil && !containsString(r.BotIDs, e.BotID) {
@@ -96,16 +100,19 @@ func (r *Rule) Matches(e *Event) bool {
 // Registrar 是插件注册触发规则的入口。
 //
 // 实现必须并发安全，且同一插件注册的规则相互隔离。
+//
+// 空触发参数（空命令名、空正则、空关键词列表或含空词、空事件类型）一律拒绝
+// 注册：规则不会生效，错误由实现记录（内置实现记入注册错误列表并记 Warn 日志，
+// 插件 Setup 不受影响），以免静默退化成匹配全部事件的兜底；正则编译失败同样
+// 处理。需要兜底请显式使用 OnAll。
 type Registrar interface {
-	// OnCommand 注册命令触发，name 不含前缀（例如 "echo"）。
+	// OnCommand 注册命令触发，name 不含前缀（例如 "echo"）；name 为空时拒绝注册。
 	OnCommand(name string, h Handler, opts ...Option)
-	// OnRegex 注册正则触发，expr 为 RE2 表达式。编译失败不会 panic，也不会
-	// 注册该规则：错误由实现记录（内置实现记入注册错误列表并记 Warn 日志），
-	// 插件 Setup 不受影响。
+	// OnRegex 注册正则触发，expr 为 RE2 表达式；expr 为空或编译失败时拒绝注册。
 	OnRegex(expr string, h Handler, opts ...Option)
-	// OnKeyword 注册关键词触发，命中任意词即触发。
+	// OnKeyword 注册关键词触发，命中任意词即触发；words 为空列表或含空词时拒绝注册。
 	OnKeyword(words []string, h Handler, opts ...Option)
-	// OnEvent 注册事件类型触发。
+	// OnEvent 注册事件类型触发；t 为空时拒绝注册。
 	OnEvent(t EventType, h Handler, opts ...Option)
 	// OnAll 注册兜底处理，匹配所有未被其它条件排除的事件。
 	OnAll(h Handler, opts ...Option)
@@ -124,9 +131,9 @@ func WithID(id string) Option {
 	return func(r *Rule) { r.ID = id }
 }
 
-// WithPlatforms 限定规则只在指定平台生效。
+// WithPlatforms 限定规则只在指定平台生效，传空列表表示任何平台都命中不了。
 func WithPlatforms(platforms ...string) Option {
-	return func(r *Rule) { r.Platforms = append([]string(nil), platforms...) }
+	return func(r *Rule) { r.Platforms = append([]string{}, platforms...) }
 }
 
 // WithKind 限定规则只对指定会话类型生效。

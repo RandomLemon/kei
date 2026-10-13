@@ -346,7 +346,10 @@ type Rule struct {
 	ID string
 	// Priority 是优先级，数值越大越先执行。
 	Priority int
-	// Platforms 限定生效平台，空表示全部平台。
+	// Platforms 限定生效平台。
+	//
+	// nil 表示不做平台过滤；非 nil（含空切片）表示白名单，此时只有对应
+	// Platform 的事件才能命中，空切片即任何平台都命中不了。
 	Platforms []string
 	// BotIDs 限定生效的机器人（bot 名称）。
 	//
@@ -377,7 +380,7 @@ type Rule struct {
 }
 ```
 
-`Rule.Matches(e)` 的过滤条件是「与」关系，未设置的过滤条件不参与判断，判定顺序：`EventType` → `Kind`（要求 `e.Message` 非 nil 且 `Message.Kind` 相等）→ `Platforms`（非空时白名单）→ `BotIDs`（**非 nil** 时白名单，`nil` 表示不过滤）→ `Command`（要求 `e.Command` 非 nil 且命令名忽略大小写相等）→ `Regex`（对 `e.Text()` 做匹配）→ `Keywords`（任意关键词忽略大小写子串命中）→ `Match`（自定义断言）。`AdminOnly` 不参与匹配，由 Auth 中间件在链上校验。
+`Rule.Matches(e)` 的过滤条件是「与」关系，未设置的过滤条件不参与判断，判定顺序：`EventType` → `Kind`（要求 `e.Message` 非 nil 且 `Message.Kind` 相等）→ `Platforms`（**非 nil** 时白名单，`nil` 表示不过滤）→ `BotIDs`（**非 nil** 时白名单，`nil` 表示不过滤）→ `Command`（要求 `e.Command` 非 nil 且命令名忽略大小写相等）→ `Regex`（对 `e.Text()` 做匹配）→ `Keywords`（任意关键词忽略大小写子串命中）→ `Match`（自定义断言）。`AdminOnly` 不参与匹配，由 Auth 中间件在链上校验。
 
 ### 10.2 Option 全集
 

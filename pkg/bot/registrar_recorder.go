@@ -1,7 +1,10 @@
 package bot
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
+	"slices"
 	"sync"
 )
 
@@ -9,7 +12,8 @@ import (
 //
 // 它只记录规则而不做匹配，测试代码可以取出规则后直接调用其 Handler。
 // 语义与路由器保持一致：未设置 EventType 的消息类触发默认限定为
-// EventMessage，正则编译失败会记录到 Errors 而不会 panic。
+// EventMessage，正则编译失败或触发参数为空（空命令名、空正则、空关键词
+// 列表或含空词、空事件类型）会记录到 Errors 并跳过该规则，不会 panic。
 type RecordingRegistrar struct {
 	mu       sync.Mutex
 	rules    []*Rule
@@ -25,30 +29,50 @@ func NewRecordingRegistrar() *RecordingRegistrar {
 	return &RecordingRegistrar{counters: make(map[string]int)}
 }
 
-// OnCommand 记录一个命令规则。
+// OnCommand 记录一个命令规则；命令名为空时记录错误并跳过。
 func (r *RecordingRegistrar) OnCommand(name string, h Handler, opts ...Option) {
+	if name == "" {
+		r.recordErr(errors.New("bot: OnCommand: 命令名不能为空"))
+		return
+	}
 	r.add("command", &Rule{Command: name, EventType: EventMessage, Handler: h}, opts)
 }
 
-// OnRegex 记录一个正则规则；表达式非法时记录错误并跳过该规则。
+// OnRegex 记录一个正则规则；表达式为空或非法时记录错误并跳过该规则。
 func (r *RecordingRegistrar) OnRegex(expr string, h Handler, opts ...Option) {
+	if expr == "" {
+		r.recordErr(errors.New("bot: OnRegex: 正则表达式不能为空"))
+		return
+	}
 	re, err := regexp.Compile(expr)
 	if err != nil {
-		r.mu.Lock()
-		r.errors = append(r.errors, err)
-		r.mu.Unlock()
+		r.recordErr(err)
 		return
 	}
 	r.add("regex", &Rule{Regex: re, EventType: EventMessage, Handler: h}, opts)
 }
 
-// OnKeyword 记录一个关键词规则。
+// OnKeyword 记录一个关键词规则；列表为空或含空词时记录错误并跳过。
 func (r *RecordingRegistrar) OnKeyword(words []string, h Handler, opts ...Option) {
-	r.add("keyword", &Rule{Keywords: append([]string(nil), words...), EventType: EventMessage, Handler: h}, opts)
+	if len(words) == 0 {
+		r.recordErr(errors.New("bot: OnKeyword: 关键词列表不能为空"))
+		return
+	}
+	for i, w := range words {
+		if w == "" {
+			r.recordErr(fmt.Errorf("bot: OnKeyword: 第 %d 个关键词为空", i+1))
+			return
+		}
+	}
+	r.add("keyword", &Rule{Keywords: slices.Clone(words), EventType: EventMessage, Handler: h}, opts)
 }
 
-// OnEvent 记录一个事件类型规则。
+// OnEvent 记录一个事件类型规则；事件类型为空时记录错误并跳过。
 func (r *RecordingRegistrar) OnEvent(t EventType, h Handler, opts ...Option) {
+	if t == "" {
+		r.recordErr(errors.New("bot: OnEvent: 事件类型不能为空"))
+		return
+	}
 	r.add("event", &Rule{EventType: t, Handler: h}, opts)
 }
 
@@ -95,6 +119,13 @@ func (r *RecordingRegistrar) Find(fn func(*Rule) bool) (*Rule, bool) {
 		}
 	}
 	return nil, false
+}
+
+// recordErr 记录一个注册错误（例如非法正则或空触发参数）。
+func (r *RecordingRegistrar) recordErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errors = append(r.errors, err)
 }
 
 func (r *RecordingRegistrar) add(kind string, rule *Rule, opts []Option) {

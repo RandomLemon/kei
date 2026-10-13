@@ -1,7 +1,9 @@
 package bot
 
 import (
+	"context"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +93,8 @@ func TestRuleMatches(t *testing.T) {
 		{name: "事件类型不匹配", rule: Rule{EventType: EventNotice}, want: false},
 		{name: "会话类型不匹配", rule: Rule{Kind: MessagePrivate}, want: false},
 		{name: "平台不匹配", rule: Rule{Platforms: []string{"telegram"}}, want: false},
+		{name: "平台白名单为空表示匹配不到", rule: Rule{Platforms: []string{}}, want: false},
+		{name: "nil 平台白名单不过滤", rule: Rule{Platforms: nil}, want: true},
 		{name: "命令大小写不敏感", rule: Rule{Command: "echo"}, want: true},
 		{name: "命令不匹配", rule: Rule{Command: "say"}, want: false},
 		{name: "正则命中", rule: Rule{Regex: regexp.MustCompile(`^hello`)}, want: true},
@@ -129,5 +133,58 @@ func TestRegisterPlugin(t *testing.T) {
 	RegisterPlugin(nil) // 不得 panic
 	if got := len(RegisteredPlugins()); got != before {
 		t.Fatalf("注册 nil 插件后数量 = %d, want %d", got, before)
+	}
+}
+
+// TestRecordingRegistrarRejectsEmptyTriggers 验证记录式注册器与路由器一致：
+// 空触发参数记录错误、不落规则，也不会退化成兜底。
+func TestRecordingRegistrarRejectsEmptyTriggers(t *testing.T) {
+	h := func(context.Context, *Event, Reply) error { return nil }
+	tests := []struct {
+		name string
+		reg  func(*RecordingRegistrar, Handler)
+		want string
+	}{
+		{name: "空命令名", reg: func(r *RecordingRegistrar, h Handler) { r.OnCommand("", h) }, want: "命令名不能为空"},
+		{name: "空正则", reg: func(r *RecordingRegistrar, h Handler) { r.OnRegex("", h) }, want: "正则表达式不能为空"},
+		{name: "空关键词列表", reg: func(r *RecordingRegistrar, h Handler) { r.OnKeyword(nil, h) }, want: "关键词列表不能为空"},
+		{name: "关键词含空词", reg: func(r *RecordingRegistrar, h Handler) { r.OnKeyword([]string{"ok", ""}, h) }, want: "第 2 个关键词为空"},
+		{name: "空事件类型", reg: func(r *RecordingRegistrar, h Handler) { r.OnEvent("", h) }, want: "事件类型不能为空"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewRecordingRegistrar()
+			tc.reg(reg, h)
+
+			if got := len(reg.Rules()); got != 0 {
+				t.Fatalf("空参数不应记录规则: %+v", reg.Rules())
+			}
+			errs := reg.Errors()
+			if len(errs) != 1 || !strings.Contains(errs[0].Error(), tc.want) {
+				t.Fatalf("Errors = %v, want 含 %q", errs, tc.want)
+			}
+
+			// 同一注册器的合法注册不受影响，也不会被空参数顶替成兜底。
+			reg.OnCommand("ping", h)
+			rules := reg.Rules()
+			if len(rules) != 1 || rules[0].Command != "ping" {
+				t.Fatalf("合法注册应照常生效: %+v", rules)
+			}
+		})
+	}
+}
+
+// TestRecordingRegistrarCopiesKeywords 验证关键词切片在注册时被复制，
+// 注册后修改入参不影响已记录的规则。
+func TestRecordingRegistrarCopiesKeywords(t *testing.T) {
+	reg := NewRecordingRegistrar()
+	words := []string{"hello"}
+	reg.OnKeyword(words, func(context.Context, *Event, Reply) error { return nil })
+
+	words[0] = "changed"
+
+	rules := reg.Rules()
+	if len(rules) != 1 || len(rules[0].Keywords) != 1 || rules[0].Keywords[0] != "hello" {
+		t.Fatalf("关键词应被复制: %+v", rules)
 	}
 }

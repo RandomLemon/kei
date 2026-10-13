@@ -92,19 +92,17 @@ func RegisteredPlugins() []Plugin      // 按注册顺序的快照
 
 ### 9.2 注册器
 
-`Registrar` 是插件注册触发规则的入口，实现必须并发安全，且同一插件注册的规则相互隔离。仓库实现位于 `internal/router/registrar.go`（由 `Router.Registrar(plugin)` 返回，同一插件名多次调用共享同一份规则表与插件中间件列表）。
+`Registrar` 是插件注册触发规则的入口，实现必须并发安全，且同一插件注册的规则相互隔离。空的触发参数（空命令名、空正则、空关键词列表或含空词、空事件类型）一律拒绝注册，错误由实现记录为注册错误（内置实现记入 `RegistrationErrors` 并记 Warn 日志），不会静默退化成兜底；需要兜底请显式使用 `OnAll`。仓库实现位于 `internal/router/registrar.go`（由 `Router.Registrar(plugin)` 返回，同一插件名多次调用共享同一份规则表与插件中间件列表）。
 
 ```go
 type Registrar interface {
-	// OnCommand 注册命令触发，name 不含前缀（例如 "echo"）。
+	// OnCommand 注册命令触发，name 不含前缀（例如 "echo"）；name 为空时拒绝注册。
 	OnCommand(name string, h Handler, opts ...Option)
-	// OnRegex 注册正则触发，expr 为 RE2 表达式。编译失败不会 panic，也不会
-	// 注册该规则：错误由实现记录（内置实现记入注册错误列表并记 Warn 日志），
-	// 插件 Setup 不受影响。
+	// OnRegex 注册正则触发，expr 为 RE2 表达式；expr 为空或编译失败时拒绝注册。
 	OnRegex(expr string, h Handler, opts ...Option)
-	// OnKeyword 注册关键词触发，命中任意词即触发。
+	// OnKeyword 注册关键词触发，命中任意词即触发；words 为空列表或含空词时拒绝注册。
 	OnKeyword(words []string, h Handler, opts ...Option)
-	// OnEvent 注册事件类型触发。
+	// OnEvent 注册事件类型触发；t 为空时拒绝注册。
 	OnEvent(t EventType, h Handler, opts ...Option)
 	// OnAll 注册兜底处理，匹配所有未被其它条件排除的事件。
 	OnAll(h Handler, opts ...Option)
@@ -132,12 +130,14 @@ type Option func(*Rule)
 | 入口 | 预置的规则字段 | 记录失败的通道 |
 | --- | --- | --- |
 | `OnCommand` | `Command`，`EventType = bot.EventMessage` | `RegistrationErrors` |
-| `OnRegex` | `Regex`（编译成功时），`EventType = bot.EventMessage` | 编译失败记入 `RegistrationErrors` 并跳过该规则，不 panic |
+| `OnRegex` | `Regex`（编译成功时），`EventType = bot.EventMessage` | 空表达式或编译失败记入 `RegistrationErrors` 并跳过该规则，不 panic |
 | `OnKeyword` | `Keywords`（切片被复制），`EventType = bot.EventMessage` | `RegistrationErrors` |
 | `OnEvent` | `EventType`（不限定会话类型与平台） | `RegistrationErrors` |
 | `OnAll` | 无过滤条件，所有事件都会命中 | `RegistrationErrors` |
 
 `OnRegex` 的失败通道是 `Router.RegistrationErrors()`（`recordErr` 累计并记 Warn 日志）：非法正则只是不注册该规则、不 panic，`Setup` 本身仍返回 nil；引擎不主动消费该列表，需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取（引擎只暴露只读副本，见 [engine.md](engine.md) 10.3）。
+
+空触发参数与正则编译失败走同一通道：不注册规则、错误记入 `RegistrationErrors`（`recordErr` 记 Warn 日志），不会退化成匹配全部事件的兜底。`OnKeyword` 在注册时复制 `Keywords` 切片，注册后修改入参不影响路由；`RecordingRegistrar`（插件单测用，`pkg/bot/registrar_recorder.go`）行为一致：空参数不落规则、错误进 `Errors()`。
 
 `Use` 只影响调用 `Use` 之后为该插件注册的规则：每条规则在注册时把当前的插件中间件列表复制进 `Rule.Middlewares`，此前已注册的规则保持不变。折叠顺序由内到外为 handler → 插件 `Use` 中间件 → 全局中间件；同一组内按注册顺序由外到内包裹，即「先注册的先执行」。
 
@@ -150,7 +150,7 @@ type Option func(*Rule)
 func WithPriority(p int) Option
 // WithID 设置规则 ID，便于日志与指标定位。
 func WithID(id string) Option
-// WithPlatforms 限定规则只在指定平台生效。
+// WithPlatforms 限定规则只在指定平台生效，传空列表表示任何平台都命中不了。
 func WithPlatforms(platforms ...string) Option
 // WithKind 限定规则只对指定会话类型生效。
 func WithKind(k MessageKind) Option
@@ -164,7 +164,7 @@ func WithEventType(t EventType) Option
 func WithMatch(fn func(*Event) bool) Option
 ```
 
-`Rule.BotIDs` 的 nil/空切片语义、`WithBotIDs` 与每 bot 插件白名单的配合（引擎启动时经 `Router.UpdateRules` 收窄 `BotIDs`）以及 `WithPlatforms`/`WithKind`/`WithMatch` 的取「与」关系见 [engine.md](engine.md) 第 7、10 章。
+`Rule.Platforms`/`Rule.BotIDs` 的 nil/空切片语义（nil 表示不过滤，非 nil 空切片表示任何平台/机器人都命中不了）、`WithBotIDs` 与每 bot 插件白名单的配合（引擎启动时经 `Router.UpdateRules` 收窄 `BotIDs`）以及 `WithPlatforms`/`WithKind`/`WithMatch` 的取「与」关系见 [engine.md](engine.md) 第 7、10 章。
 
 `WithMatch` 的断言在路由匹配阶段调用：它 panic 时只跳过该条规则（其余规则照常命中），框架记 `Error` 日志（带 `plugin`/`rule`/`event_id`/堆栈）并计入 `kei_rule_match_panics_total{plugin,rule}`；`Dispatch` 的聚合错误会包装 `ErrMatchPanic`。因此断言里仍应避免 panic，但一次 panic 不会波及同事件的其它插件。
 

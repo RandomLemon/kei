@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"regexp"
+	"slices"
 
 	"github.com/RandomLemon/kei/pkg/bot"
 )
@@ -31,8 +32,12 @@ var _ bot.Registrar = (*registrar)(nil)
 // OnCommand 注册命令触发。
 //
 // 默认事件类型为 bot.EventMessage，可通过 WithEventType 覆盖；命令名比较
-// 忽略大小写，不含前缀。
+// 忽略大小写，不含前缀。name 为空时拒绝注册并记入 RegistrationErrors。
 func (g *registrar) OnCommand(name string, h bot.Handler, opts ...bot.Option) {
+	if name == "" {
+		g.r.recordErr(fmt.Errorf("router: 插件 %q 的命令名为空", g.plugin))
+		return
+	}
 	g.add(&bot.Rule{
 		Command:   name,
 		EventType: bot.EventMessage,
@@ -42,9 +47,13 @@ func (g *registrar) OnCommand(name string, h bot.Handler, opts ...bot.Option) {
 
 // OnRegex 注册正则触发。
 //
-// 表达式编译失败时不 panic，也不会注册该规则，错误记入 RegistrationErrors，
+// expr 为空或编译失败时不 panic，也不会注册该规则，错误记入 RegistrationErrors，
 // 其它规则不受影响。
 func (g *registrar) OnRegex(expr string, h bot.Handler, opts ...bot.Option) {
+	if expr == "" {
+		g.r.recordErr(fmt.Errorf("router: 插件 %q 的正则表达式为空", g.plugin))
+		return
+	}
 	re, err := regexp.Compile(expr)
 	if err != nil {
 		g.r.recordErr(fmt.Errorf("router: 插件 %q 的正则 %q 编译失败: %w", g.plugin, expr, err))
@@ -58,16 +67,33 @@ func (g *registrar) OnRegex(expr string, h bot.Handler, opts ...bot.Option) {
 }
 
 // OnKeyword 注册关键词触发，命中任意关键词即触发，比较忽略大小写。
+//
+// words 为空列表或含空词时拒绝注册并记入 RegistrationErrors；注册时复制
+// 切片，注册后修改入参不影响已注册规则。
 func (g *registrar) OnKeyword(words []string, h bot.Handler, opts ...bot.Option) {
+	if len(words) == 0 {
+		g.r.recordErr(fmt.Errorf("router: 插件 %q 的关键词列表为空", g.plugin))
+		return
+	}
+	for i, w := range words {
+		if w == "" {
+			g.r.recordErr(fmt.Errorf("router: 插件 %q 的第 %d 个关键词为空", g.plugin, i+1))
+			return
+		}
+	}
 	g.add(&bot.Rule{
-		Keywords:  words,
+		Keywords:  slices.Clone(words),
 		EventType: bot.EventMessage,
 		Handler:   h,
 	}, kindKeyword, opts)
 }
 
-// OnEvent 注册事件类型触发，不限定会话类型与平台。
+// OnEvent 注册事件类型触发，不限定会话类型与平台；t 为空时拒绝注册。
 func (g *registrar) OnEvent(t bot.EventType, h bot.Handler, opts ...bot.Option) {
+	if t == "" {
+		g.r.recordErr(fmt.Errorf("router: 插件 %q 的事件类型为空", g.plugin))
+		return
+	}
 	g.add(&bot.Rule{
 		EventType: t,
 		Handler:   h,

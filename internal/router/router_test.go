@@ -316,6 +316,89 @@ func TestDispatchPlatformFilter(t *testing.T) {
 	}
 }
 
+// TestWithPlatformsEmptyMatchesNothing 验证 WithPlatforms 与 WithBotIDs 的空参
+// 语义一致：空列表是空白名单（任何平台都命中不了），不是「不过滤」。
+func TestWithPlatformsEmptyMatchesNothing(t *testing.T) {
+	rec := &recorder{}
+	r := New(Options{})
+	reg := r.Registrar("p")
+	reg.OnAll(tagHandler(rec, "none"), bot.WithPlatforms())
+	reg.OnAll(tagHandler(rec, "all"))
+
+	if err := r.Dispatch(context.Background(), noticeEvent()); err != nil {
+		t.Fatalf("Dispatch 返回错误: %v", err)
+	}
+	if got := rec.order(); !slices.Equal(got, []string{"all"}) {
+		t.Fatalf("命中 = %v, 期望 [all]（空平台白名单不得退化为不过滤）", got)
+	}
+}
+
+// TestKeywordsCopiedAtRegistration 验证关键词在注册时被复制：注册后修改
+// 调用方切片（改值、追加）不影响路由结果。
+func TestKeywordsCopiedAtRegistration(t *testing.T) {
+	rec := &recorder{}
+	r := New(Options{})
+	words := []string{"hello"}
+	r.Registrar("p").OnKeyword(words, tagHandler(rec, "kw"))
+
+	words[0] = "changed"
+	words = append(words, "extra")
+
+	if err := r.Dispatch(context.Background(), textEvent("say hello")); err != nil {
+		t.Fatalf("Dispatch 返回错误: %v", err)
+	}
+	if got := rec.order(); !slices.Equal(got, []string{"kw"}) {
+		t.Fatalf("命中 = %v, 期望 [kw]（注册时复制应保留旧关键词）", got)
+	}
+	if err := r.Dispatch(context.Background(), textEvent("say changed")); err != nil {
+		t.Fatalf("Dispatch 返回错误: %v", err)
+	}
+	if got := rec.order(); !slices.Equal(got, []string{"kw"}) {
+		t.Fatalf("命中 = %v, 期望 [kw]（修改入参不得改变路由）", got)
+	}
+}
+
+// TestRegistrarRejectsEmptyTriggers 验证空的触发参数被拒绝：不注册规则、
+// 记入 RegistrationErrors，且不会静默退化成兜底。
+func TestRegistrarRejectsEmptyTriggers(t *testing.T) {
+	tests := []struct {
+		name     string
+		register func(g bot.Registrar, h bot.Handler)
+		want     string
+	}{
+		{name: "空命令名", register: func(g bot.Registrar, h bot.Handler) { g.OnCommand("", h) }, want: "命令名为空"},
+		{name: "空正则", register: func(g bot.Registrar, h bot.Handler) { g.OnRegex("", h) }, want: "正则表达式为空"},
+		{name: "空关键词列表", register: func(g bot.Registrar, h bot.Handler) { g.OnKeyword(nil, h) }, want: "关键词列表为空"},
+		{name: "关键词含空词", register: func(g bot.Registrar, h bot.Handler) { g.OnKeyword([]string{"ok", ""}, h) }, want: "第 2 个关键词为空"},
+		{name: "空事件类型", register: func(g bot.Registrar, h bot.Handler) { g.OnEvent("", h) }, want: "事件类型为空"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recorder{}
+			r := New(Options{})
+			reg := r.Registrar("p")
+			tc.register(reg, tagHandler(rec, "empty"))
+
+			if got := len(r.Rules()); got != 0 {
+				t.Fatalf("空参数不应注册规则: %+v", r.Rules())
+			}
+			errs := r.RegistrationErrors()
+			if len(errs) != 1 || !strings.Contains(errs[0].Error(), tc.want) {
+				t.Fatalf("RegistrationErrors = %v, want 含 %q", errs, tc.want)
+			}
+
+			// 后续合法注册照常生效，空参数不得被当成兜底规则。
+			reg.OnCommand("ping", tagHandler(rec, "ok"))
+			if err := r.Dispatch(context.Background(), textEvent("/ping")); err != nil {
+				t.Fatalf("Dispatch 返回错误: %v", err)
+			}
+			if got := rec.order(); !slices.Equal(got, []string{"ok"}) {
+				t.Fatalf("命中 = %v, 期望 [ok]（空参数不得成为兜底）", got)
+			}
+		})
+	}
+}
+
 // TestOnAllFallback 验证 OnAll 不设过滤条件，且 opts 在默认值之后应用。
 func TestOnAllFallback(t *testing.T) {
 	rec := &recorder{}
