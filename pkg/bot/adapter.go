@@ -5,8 +5,8 @@ import "context"
 // Adapter 是平台适配层接口。
 //
 // 一个 Adapter 实例对应配置文件中的一个 bot（例如一个 Telegram bot 或一个
-// OneBot 实现）。实现方负责签名校验、协议解析、事件转换与消息发送，
-// 并把平台调用统一为 Send/SendRequest。
+// OneBot 实现）。实现方负责签名校验、协议解析、事件转换与消息发送：上行事件
+// 经 Start 注入的 EventSink 投递，下行发送统一为 Send(*SendRequest)。
 type Adapter interface {
 	// Name 返回平台名，例如 "telegram"、"onebot"、"mock"。
 	Name() string

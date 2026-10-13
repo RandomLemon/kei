@@ -11,7 +11,8 @@ type Reply interface {
 	Text(string) Reply
 	// Markdown 追加 Markdown 段。
 	Markdown(string) Reply
-	// Image 追加图片段，参数为图片 URL 或平台文件标识。
+	// Image 追加图片段，参数为图片 URL，写入 Segment.Data[KeyURL]；
+	// 平台文件标识不受支持（见 SegImage 的数据键约定）。
 	Image(string) Reply
 	// At 追加 @ 段。
 	At(userID string) Reply

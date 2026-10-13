@@ -98,7 +98,9 @@ func RegisteredPlugins() []Plugin      // 按注册顺序的快照
 type Registrar interface {
 	// OnCommand 注册命令触发，name 不含前缀（例如 "echo"）。
 	OnCommand(name string, h Handler, opts ...Option)
-	// OnRegex 注册正则触发，expr 为 RE2 表达式，编译失败会在插件 Setup 阶段返回错误。
+	// OnRegex 注册正则触发，expr 为 RE2 表达式。编译失败不会 panic，也不会
+	// 注册该规则：错误由实现记录（内置实现记入注册错误列表并记 Warn 日志），
+	// 插件 Setup 不受影响。
 	OnRegex(expr string, h Handler, opts ...Option)
 	// OnKeyword 注册关键词触发，命中任意词即触发。
 	OnKeyword(words []string, h Handler, opts ...Option)
@@ -106,7 +108,8 @@ type Registrar interface {
 	OnEvent(t EventType, h Handler, opts ...Option)
 	// OnAll 注册兜底处理，匹配所有未被其它条件排除的事件。
 	OnAll(h Handler, opts ...Option)
-	// Use 为该插件注册的所有规则追加中间件，按注册顺序由外到内包裹。
+	// Use 为调用之后该插件注册的规则追加中间件，按注册顺序由外到内包裹；
+	// 已注册的规则不受影响。
 	Use(mw Middleware)
 }
 
@@ -134,7 +137,7 @@ type Option func(*Rule)
 | `OnEvent` | `EventType`（不限定会话类型与平台） | `RegistrationErrors` |
 | `OnAll` | 无过滤条件，所有事件都会命中 | `RegistrationErrors` |
 
-与注释不一致处：`OnRegex` 的文档注释称「编译失败会在插件 Setup 阶段返回错误」，实际通道是 `Router.RegistrationErrors()`（`recordErr` 累计并记 Warn 日志），非法正则只是不注册该规则，`Setup` 本身仍返回 nil；引擎当前不读取 `RegistrationErrors`，需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取（引擎只暴露只读副本，见 [engine.md](engine.md) 10.3）。
+`OnRegex` 的失败通道是 `Router.RegistrationErrors()`（`recordErr` 累计并记 Warn 日志）：非法正则只是不注册该规则、不 panic，`Setup` 本身仍返回 nil；引擎不主动消费该列表，需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取（引擎只暴露只读副本，见 [engine.md](engine.md) 10.3）。
 
 `Use` 只影响调用 `Use` 之后为该插件注册的规则：每条规则在注册时把当前的插件中间件列表复制进 `Rule.Middlewares`，此前已注册的规则保持不变。折叠顺序由内到外为 handler → 插件 `Use` 中间件 → 全局中间件；同一组内按注册顺序由外到内包裹，即「先注册的先执行」。
 
@@ -208,7 +211,8 @@ type Reply interface {
 	Text(string) Reply
 	// Markdown 追加 Markdown 段。
 	Markdown(string) Reply
-	// Image 追加图片段，参数为图片 URL 或平台文件标识。
+	// Image 追加图片段，参数为图片 URL，写入 Segment.Data[KeyURL]；
+	// 平台文件标识不受支持（见 SegImage 的数据键约定）。
 	Image(string) Reply
 	// At 追加 @ 段。
 	At(userID string) Reply
