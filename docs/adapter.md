@@ -163,7 +163,8 @@ type AdapterContext struct {
 	Config *Config
 	// Logger 不为 nil；适配器日志必须使用它，并带上 bot/adapter 字段。
 	Logger *slog.Logger
-	// Storage 仅在声明 PermStorage 时是可用实现，否则为始终拒绝的实现。
+	// Storage 仅在声明 PermStorage 时是可用实现，否则为始终拒绝的实现；
+	// 可用时是按 bot 实例隔离的视图（底层键带 adapter:<botID>: 前缀）。
 	Storage Storage
 	// HTTPClient 仅在声明 PermNetwork 时非 nil；适配器依赖出站请求时应先检查。
 	HTTPClient *http.Client
@@ -278,7 +279,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 | --- | --- | --- |
 | `send_message` | 出站发送（适配器自己的 `Send`） | 仅审计；权限模型与插件共用。进程内适配器路径上没有任何 `PermSendMessage` 检查，`Send` 始终可用 |
 | `network` | 出站网络请求 | `AdapterContext.HTTPClient` 为 nil |
-| `storage` | 读写去重/状态缓存 | 注入拒绝式 `Storage`（`internal/storage.Denied()`，全部方法返回 `ErrPermissionDenied`） |
+| `storage` | 读写去重/状态缓存 | 注入拒绝式 `Storage`（`internal/storage.Denied()`，全部方法返回 `ErrPermissionDenied`）；授予时注入的是带 `adapter:<botID>:` 前缀的隔离视图 |
 | `net_listen` | 启动入站监听（webhook / 长连接） | 配置里出现保留键 `listen_addr` 时启动失败 |
 | `receive_event` | 保留权限，仅作声明与审计 | 核心当前不据此裁剪任何依赖 |
 | `*` | 不适用于适配器（声明即启动失败） | — |
@@ -292,7 +293,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 各条的落地位置：
 
 - 注册表校验：`internal/adaptermgr.ValidateRegistry` = `validateRegistryOf` + `validateRegistrationRejects`。报错条件为「存在被拒绝的注册（空注册名或 nil 工厂）」「注册名重复」「元信息缺 `Platforms`」「声明了 `PermAll`」，文案分别是 `适配器注册被拒绝: <名字或<空名>>（<原因>）…`、`适配器注册名重复: …`、`适配器 %s 未声明 Platforms`、`适配器 %s 不得声明 * 权限（仅插件可用）`。
-- 依赖裁剪：`PermStorage` 且 `Deps.Storage != nil` 时注入真实存储，否则一律注入 `storage.Denied()`（未授予、或授予了但核心没有可用存储，结果相同）；只有声明了 `PermNetwork` 才注入 `Deps.HTTPClient`，未声明时该字段保持 nil。`PermSendMessage` 不参与任何裁剪。
+- 依赖裁剪：`PermStorage` 且 `Deps.Storage != nil` 时注入真实存储（`storage.AdapterScoped` 包一层，底层键带 `adapter:<botID>:` 前缀，同平台多实例因此互不可见；键长上限与内存/SQL 后端一致，见 6.7 与 [plugin.md](plugin.md) 11.2），否则一律注入 `storage.Denied()`（未授予、或授予了但核心没有可用存储，结果相同）；只有声明了 `PermNetwork` 才注入 `Deps.HTTPClient`，未声明时该字段保持 nil。`PermSendMessage` 不参与任何裁剪。
 - 保留键校验：`checkReservedOptions(botID, settings, adapter, perms)` 在 `adaptermgr.Validate` 执行；`listen_addr` 值为 nil 或去空白后为空时视为未配置。报错文案：`配置了保留键 listen_addr，但适配器 %s 未声明 net_listen 权限`。
 - `net_listen` 的校验只覆盖保留键 `listen_addr`：适配器是否真的监听、监听在哪个地址，核心不检查也不拦截；换用别的配置键做入站监听则完全不受该权限约束。
 - 适配器元信息的 `Options` 只影响未知键告警（见 6.5），不影响权限。

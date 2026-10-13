@@ -1,7 +1,8 @@
 // Package sqlstore 是 bot.Storage 的通用 SQL 实现，供 SQLite 与 MySQL 方言包共用。
 //
 // 键值存储在一张固定表 kei_storage 中：key 为主键，value 为字节串，
-// expires_at 为空表示永不过期。Get/Set/Delete 语义与内存实现一致。
+// expires_at 为空表示永不过期。Get/Set/Delete 语义与内存实现一致，键长校验
+// 统一经 storage.CheckKey（见 internal/storage/key.go）。
 package sqlstore
 
 import (
@@ -14,12 +15,14 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
 // Entry 是键值存储的表模型。
 type Entry struct {
-	// Key 是主键；size:191 为 MySQL utf8mb4 索引键长上限内的安全值。
+	// Key 是主键；size:191 为 MySQL utf8mb4 索引键长上限内的安全值，读写前由
+	// storage.CheckKey 按同一上限（字节）校验，避免只有 MySQL 会拒绝超长键。
 	Key string `gorm:"column:key;primaryKey;size:191"`
 	// Value 是存储的字节串。
 	Value []byte `gorm:"column:value;not null"`
@@ -86,6 +89,9 @@ func whereKey(key string) clause.Eq {
 
 // Get 读取键值；键不存在或已过期时返回 bot.ErrNotFound。
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := storage.CheckKey(key); err != nil {
+		return nil, err
+	}
 	var e Entry
 	err := s.db.WithContext(ctx).Where(whereKey(key)).First(&e).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -104,6 +110,9 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Set 写入键值，ttl <= 0 表示永不过期；已存在的键被覆盖。
 func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if err := storage.CheckKey(key); err != nil {
+		return err
+	}
 	e := Entry{Key: key, Value: append([]byte(nil), value...)}
 	if ttl > 0 {
 		t := s.now().Add(ttl)
@@ -117,6 +126,9 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 
 // Delete 删除键值，键不存在时不返回错误。
 func (s *Store) Delete(ctx context.Context, key string) error {
+	if err := storage.CheckKey(key); err != nil {
+		return err
+	}
 	return s.db.WithContext(ctx).Where(whereKey(key)).Delete(&Entry{}).Error
 }
 

@@ -175,6 +175,54 @@ func TestBuildTrimsDependencies(t *testing.T) {
 	}
 }
 
+// TestBuildNamespacesStorage 验证声明 PermStorage 的适配器按 bot 实例隔离键空间：
+// 同名键互不覆盖，底层存储里的键带 adapter:<botID>: 前缀。
+func TestBuildNamespacesStorage(t *testing.T) {
+	const name = "test-scoped-storage"
+	contexts := map[string]bot.AdapterContext{}
+	bot.RegisterAdapter(bot.AdapterMetadata{
+		Name: name, Platforms: []string{"recording"},
+		Permissions: []bot.Permission{bot.PermStorage},
+	}, func(ac bot.AdapterContext) (bot.Adapter, error) {
+		contexts[ac.BotID] = ac
+		return &recordingAdapter{name: name}, nil
+	})
+
+	mem := storage.NewMemory()
+	defer func() { _ = mem.Close() }()
+	cfg := &config.Config{Bots: []config.BotConfig{
+		{Name: "scoped-1", Adapter: name},
+		{Name: "scoped-2", Adapter: name},
+	}}
+	if _, err := Build(cfg, testDeps(mem, nil, nil)); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(contexts) != 2 {
+		t.Fatalf("工厂调用次数 = %d, 期望 2", len(contexts))
+	}
+	first, second := contexts["scoped-1"], contexts["scoped-2"]
+
+	ctx := context.Background()
+	if err := first.Storage.Set(ctx, "k", []byte("first"), 0); err != nil {
+		t.Fatalf("scoped-1.Set: %v", err)
+	}
+	if err := second.Storage.Set(ctx, "k", []byte("second"), 0); err != nil {
+		t.Fatalf("scoped-2.Set: %v", err)
+	}
+	if got, err := first.Storage.Get(ctx, "k"); err != nil || string(got) != "first" {
+		t.Fatalf("scoped-1 的键被覆盖: %q, %v", got, err)
+	}
+	if got, err := second.Storage.Get(ctx, "k"); err != nil || string(got) != "second" {
+		t.Fatalf("scoped-2 的键被覆盖: %q, %v", got, err)
+	}
+	for key, want := range map[string]string{"adapter:scoped-1:k": "first", "adapter:scoped-2:k": "second"} {
+		got, err := mem.Get(ctx, key)
+		if err != nil || string(got) != want {
+			t.Fatalf("底层键 %s = %q, %v, want %q", key, got, err, want)
+		}
+	}
+}
+
 func TestBuildWarnsUnknownOptions(t *testing.T) {
 	const name = "test-warn-options"
 	registerTestAdapter(t, bot.AdapterMetadata{

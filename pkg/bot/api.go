@@ -20,7 +20,9 @@ var ErrNotFound = errors.New("bot: storage: key not found")
 // Storage 是插件可用的键值存储。
 //
 // 默认内存实现；可经配置 storage.type 切换为 sqlite/mysql，或注入自定义实现。
-// 实现必须并发安全。
+// 实现必须并发安全。框架传给插件/适配器的键不超过 191 字节，内置后端对超长键
+// 一律返回错误（internal/storage.CheckKey）；自定义实现应保证同样的行为，避免
+// 只有 SQL 后端会失败的键在各后端表现不一致。
 type Storage interface {
 	// Get 读取键值，键不存在时返回 ErrNotFound。
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -61,7 +63,8 @@ type PluginContext struct {
 	Config *Config
 	// Logger 是已绑定 plugin 字段的日志器。
 	Logger *slog.Logger
-	// Storage 是插件可用的键值存储，插件需声明 PermStorage 才能使用。
+	// Storage 是插件可用的键值存储，插件需声明 PermStorage 才能使用；
+	// 可用时按插件名隔离（底层键带 plugin:<name>: 前缀），不同插件互不可见。
 	Storage Storage
 	// HTTPClient 是带超时的 HTTP 客户端，插件需声明 PermNetwork 才能使用。
 	HTTPClient *http.Client

@@ -195,7 +195,8 @@ func buildInProcess(bc config.BotConfig, deps Deps) (Binding, error) {
 		Logger: deps.Logger.With("bot", bc.Name, "adapter", meta.Name),
 	}
 	if meta.HasPermission(bot.PermStorage) && deps.Storage != nil {
-		ac.Storage = deps.Storage
+		// 按键空间隔离：每个 bot 实例一份命名空间，同平台多实例互不可见。
+		ac.Storage = storage.AdapterScoped(bc.Name, deps.Storage)
 	} else {
 		ac.Storage = storage.Denied()
 	}

@@ -216,7 +216,8 @@ func (m *Manager) contextFor(meta bot.Metadata) bot.PluginContext {
 		Logger: m.log.With("plugin", meta.Name),
 		Storage: func() bot.Storage {
 			if meta.HasPermission(bot.PermStorage) && m.deps.Storage != nil {
-				return m.deps.Storage
+				// 与 BotAPI.Storage 同一前缀约定：插件只能看到自己的键空间。
+				return storage.PluginScoped(meta.Name, m.deps.Storage)
 			}
 			return storage.Denied()
 		}(),

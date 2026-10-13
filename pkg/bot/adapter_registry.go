@@ -31,7 +31,8 @@ type AdapterContext struct {
 	Config *Config
 	// Logger 不为 nil；适配器日志必须使用它，并带上 bot/adapter 字段。
 	Logger *slog.Logger
-	// Storage 仅在声明 PermStorage 时是可用实现，否则为始终拒绝的实现。
+	// Storage 仅在声明 PermStorage 时是可用实现，否则为始终拒绝的实现；
+	// 可用时按 bot 实例隔离（底层键带 adapter:<botID>: 前缀），多实例互不可见。
 	Storage Storage
 	// HTTPClient 仅在声明 PermNetwork 时非 nil；适配器依赖出站请求时应先检查。
 	HTTPClient *http.Client

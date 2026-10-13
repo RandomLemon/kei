@@ -212,8 +212,12 @@ func TestPermissionScopedContext(t *testing.T) {
 				if err != nil {
 					t.Fatalf("有存储权限时 Set 失败: %v", err)
 				}
-				if _, err := store.Get(context.Background(), "k"); err != nil {
+				// 插件存储按插件名隔离：底层键带 plugin:<name>: 前缀，裸键空间不可见。
+				if _, err := store.Get(context.Background(), "plugin:p:k"); err != nil {
 					t.Fatalf("存储未生效: %v", err)
+				}
+				if _, err := store.Get(context.Background(), "k"); !errors.Is(err, bot.ErrNotFound) {
+					t.Fatalf("插件的键不应落在裸键空间: %v", err)
 				}
 			} else if !errors.Is(err, storage.ErrPermissionDenied) {
 				t.Fatalf("无存储权限时 Set = %v, want ErrPermissionDenied", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +73,37 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	}
 	if err := st.Delete(ctx, "k"); err != nil {
 		t.Fatalf("重复 Delete 不应报错: %v", err)
+	}
+}
+
+// TestSQLiteKeyLengthLimit 验证 SQL 后端与内存实现同款键长校验：超长键不再落到
+// MySQL 才报错，而是在任何后端都返回 storage.ErrKeyTooLong。
+func TestSQLiteKeyLengthLimit(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "k.db")
+	st, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}))
+	if err != nil {
+		t.Fatalf("Open(sqlite): %v", err)
+	}
+	defer func() { _ = st.(interface{ Close() error }).Close() }()
+	ctx := context.Background()
+
+	max := strings.Repeat("k", storage.MaxKeyBytes)
+	if err := st.Set(ctx, max, []byte("v"), 0); err != nil {
+		t.Fatalf("上限内的键应可写: %v", err)
+	}
+	if got, err := st.Get(ctx, max); err != nil || string(got) != "v" {
+		t.Fatalf("上限内的键应可读: %q, %v", got, err)
+	}
+
+	long := strings.Repeat("k", storage.MaxKeyBytes+1)
+	if err := st.Set(ctx, long, []byte("v"), 0); !errors.Is(err, storage.ErrKeyTooLong) {
+		t.Fatalf("Set 超长键 = %v, want ErrKeyTooLong", err)
+	}
+	if _, err := st.Get(ctx, long); !errors.Is(err, storage.ErrKeyTooLong) {
+		t.Fatalf("Get 超长键 = %v, want ErrKeyTooLong", err)
+	}
+	if err := st.Delete(ctx, long); !errors.Is(err, storage.ErrKeyTooLong) {
+		t.Fatalf("Delete 超长键 = %v, want ErrKeyTooLong", err)
 	}
 }
 

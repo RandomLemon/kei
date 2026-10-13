@@ -85,6 +85,36 @@ func TestPluginAPIPermissionGates(t *testing.T) {
 		}
 	})
 
+	t.Run("同名键按插件隔离", func(t *testing.T) {
+		store := func(name string) bot.Storage {
+			return eng.pluginAPI(name, bot.Metadata{
+				Name:        name,
+				Permissions: []bot.Permission{bot.PermStorage},
+			}).Storage()
+		}
+		a, b := store("plug-a"), store("plug-b")
+
+		if err := a.Set(ctx, "k", []byte("a"), time.Minute); err != nil {
+			t.Fatalf("plug-a.Set: %v", err)
+		}
+		if err := b.Set(ctx, "k", []byte("b"), time.Minute); err != nil {
+			t.Fatalf("plug-b.Set: %v", err)
+		}
+		if got, err := a.Get(ctx, "k"); err != nil || string(got) != "a" {
+			t.Fatalf("plug-a 的键被覆盖: %q, %v", got, err)
+		}
+		if got, err := b.Get(ctx, "k"); err != nil || string(got) != "b" {
+			t.Fatalf("plug-b 的键被覆盖: %q, %v", got, err)
+		}
+		// 底层存储里的键带各自前缀。
+		for key, want := range map[string]string{"plugin:plug-a:k": "a", "plugin:plug-b:k": "b"} {
+			got, err := eng.store.Get(ctx, key)
+			if err != nil || string(got) != want {
+				t.Fatalf("底层键 %s = %q, %v, want %q", key, got, err, want)
+			}
+		}
+	})
+
 	t.Run("日志器绑定插件字段", func(t *testing.T) {
 		api := eng.pluginAPI("logger", bot.Metadata{Name: "logger"})
 		if api.Logger() == nil {

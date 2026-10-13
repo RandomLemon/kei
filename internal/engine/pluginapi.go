@@ -25,7 +25,8 @@ var _ bot.BotAPI = (*pluginAPI)(nil)
 func (e *Engine) pluginAPI(name string, meta bot.Metadata) bot.BotAPI {
 	store := storage.Denied()
 	if meta.HasPermission(bot.PermStorage) {
-		store = e.store
+		// 按键空间隔离：两个插件的同名键互不覆盖（前缀由框架注入）。
+		store = storage.PluginScoped(name, e.store)
 	}
 	return &pluginAPI{
 		eng:   e,

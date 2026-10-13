@@ -373,6 +373,8 @@ type Storage interface {
 
 替换方式：配置 `storage.type`/`storage.dsn` 选择内置后端（`memory` 默认、`sqlite`、`mysql`，见 [configuration.md](configuration.md) 12.5），或 `kei.Options.Storage` 注入自定义 `bot.Storage`（非 nil 优先，由调用方拥有，`Run` 不关闭）。`pkg/kei.buildStorage` 为 nil 时按配置构造，并在 `Run` 返回前关闭自有实例。`internal/pluginmgr.Deps.Storage` 则接收最终解析出的实例，按插件权限分发。
 
+键空间与键长：插件拿到的 `Storage` 是**按插件名隔离的视图**——`internal/pluginmgr` 在组装 `PluginContext` 时与 `internal/engine.pluginAPI`（`BotAPI.Storage()`）都用 `storage.PluginScoped` 包一层，底层键统一带 `plugin:<插件名>:` 前缀。两个插件的同名键因此互不覆盖，插件也不需要自己拼前缀（键按原样传入，前缀由框架加；同一插件经 `PluginContext.Storage` 与 `BotAPI.Storage()` 看到的是同一批键）。键长上限 191 字节（`storage.MaxKeyBytes`，取自 SQL 列的 `size:191`）：内存、SQLite、MySQL 三个后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（`errors.Is(err, storage.ErrKeyTooLong)` 可判定），而不是只有 MySQL 报错；上限按字节计算，比 MySQL 的字符数约束更保守。
+
 SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参，`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。
 
 ### 11.3 PluginContext
@@ -423,7 +425,7 @@ type AdapterCatalog interface {
 | `Name` | `Metadata().Name` | 用于日志与配置查找 |
 | `Config` | `pluginmgr.Deps.Configs[name]` | 缺失时为 `bot.NewConfig(nil)` 空配置，取值方法安全 |
 | `Logger` | `pluginmgr.Deps.Logger` | 派生自根日志器并绑定 `plugin` 字段 |
-| `Storage` | `pluginmgr.Deps.Storage` | 未声明 `PermStorage` 或引擎未提供存储时为 `storage.Denied()` |
+| `Storage` | `pluginmgr.Deps.Storage` | 未声明 `PermStorage` 或引擎未提供存储时为 `storage.Denied()`；可用时是带 `plugin:<插件名>:` 前缀的隔离视图（见 11.2） |
 | `HTTPClient` | `pluginmgr.Deps.HTTPClient` | 仅声明 `PermNetwork` 时非 nil |
 | `Bot` | `pluginmgr.Deps.API(name, meta)` | 每插件独立门面；`Deps.API` 为 nil 时该字段为空（`nil` 接口） |
 | `Catalog` | `pluginmgr.Deps.Catalog` | 引擎实现 `bot.PluginCatalog`；未接线时为 nil |

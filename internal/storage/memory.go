@@ -58,6 +58,9 @@ func (m *Memory) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := CheckKey(key); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	it, ok := m.items[key]
 	m.mu.RUnlock()
@@ -70,6 +73,9 @@ func (m *Memory) Get(ctx context.Context, key string) ([]byte, error) {
 // Set 写入键值，ttl <= 0 表示永不过期。
 func (m *Memory) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := CheckKey(key); err != nil {
 		return err
 	}
 	it := item{value: append([]byte(nil), value...)}
@@ -85,6 +91,9 @@ func (m *Memory) Set(ctx context.Context, key string, value []byte, ttl time.Dur
 // Delete 删除键值，键不存在时不返回错误。
 func (m *Memory) Delete(ctx context.Context, key string) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := CheckKey(key); err != nil {
 		return err
 	}
 	m.mu.Lock()
