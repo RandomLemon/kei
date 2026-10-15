@@ -314,11 +314,11 @@ func Degrade(msg *Message, caps Capabilities) *Message
 
 | 段类型 | 触发条件 | 降级结果（源码表达式） |
 | --- | --- | --- |
-| `SegMarkdown` | `!caps.Markdown` | 文本段，内容 `str(seg.Data[KeyText])`（原样保留 Markdown 文本） |
-| `SegImage` | `!caps.Image` | `"[image] " + firstNonEmpty(str(KeyURL), str(KeyFile))` |
-| `SegFile` | `!caps.File` | `"[file] " + joinNonEmpty(" ", str(KeyFileName), firstNonEmpty(str(KeyURL), str(KeyFile)))` |
-| `SegAt` | `!caps.At` | `"@" + firstNonEmpty(str(KeyUserName), str(KeyUserID))` |
-| `SegFace` | `!caps.Text`（`Supports(SegFace) == c.Text`） | `"[face] " + str(KeyFaceID)` |
+| `SegMarkdown` | `!caps.Markdown` | 文本段，内容 `bot.SegmentData(seg, KeyText)`（原样保留 Markdown 文本） |
+| `SegImage` | `!caps.Image` | `"[image] " + bot.FirstNonEmpty(bot.SegmentData(seg, KeyURL), bot.SegmentData(seg, KeyFile))` |
+| `SegFile` | `!caps.File` | `"[file] " + joinNonEmpty(" ", bot.SegmentData(seg, KeyFileName), bot.FirstNonEmpty(bot.SegmentData(seg, KeyURL), bot.SegmentData(seg, KeyFile)))` |
+| `SegAt` | `!caps.At` | `"@" + bot.FirstNonEmpty(bot.SegmentData(seg, KeyUserName), bot.SegmentData(seg, KeyUserID))` |
+| `SegFace` | `!caps.Text`（`Supports(SegFace) == c.Text`） | `"[face] " + bot.SegmentData(seg, KeyFaceID)` |
 | `SegCard` | `!caps.Card` | `"[card] " + jsonText(seg.Data[KeyCard])` |
 | `SegReply` | `!caps.Reply` | 直接丢弃该段，不产生新段（消息本身仍发送） |
 | 其它类型 | `Supports` 返回 false（未知类型恒 false） | `"[" + string(seg.Type) + "]"` |
@@ -326,8 +326,9 @@ func Degrade(msg *Message, caps Capabilities) *Message
 
    辅助函数的取值语义：
 
-   - `str(v)`：nil → `""`；string 原样；其它类型 `fmt.Sprint(v)`。
+   - `bot.SegmentData(seg, key)`（`pkg/bot/segment.go`）：段数据的唯一取值约定 —— `Data` 为 nil、键缺失或值为 nil → `""`；string 原样；其余值 `fmt.Sprint`（数字、布尔因此会渲染成文本）。适配器与引擎日志读取段数据一律用它，不得自建第二套逻辑（见 [domain-model.md](domain-model.md) 5.6）。
    - `jsonText(v)`：nil → `""`；string 原样返回；否则 `json.Marshal`，序列化失败时回退 `fmt.Sprint(v)`。
+   - `bot.FirstNonEmpty(vals ...string)` 与 `bot.Truncate(s string, limit int)`（同文件）：前者返回第一个非空字符串，后者把响应体等截断到不超过 `limit` 字节并追加 `"..."`（不切开 UTF-8 序列），供适配器回显错误信息时避免刷屏；适配器不得各自复制。
    - `appendText(s)` 只在 `s == ""` 时跳过追加。除 `SegReply` 外的每条规则都带固定前缀或符号，因此只有 `SegMarkdown` 的 `KeyText` 为空时该段才会整体消失；数据键全缺的图片/文件/@/表情/卡片段仍会产生 `"[image] "`、`"[file] "`、`"@"`、`"[face] "`、`"[card] "` 这类文本段。
    - 全部段都受支持时函数直接 `return msg`，不产生拷贝，且入参消息不会被修改（只有存在不受支持的段时才新建 `Message` 与段切片，`ID`/`Kind` 原样保留）。
 3. 降级必须记录日志与指标；整条消息因降级变为空时发送失败并返回错误，不得静默丢消息。实现现状：
@@ -387,7 +388,7 @@ bots:
 
 约定与校验：
 
-- `AdapterContext` 的字段就是全部可用依赖：`BotID`（实例名，必须写进 `Event.BotID` 与 `SendRequest.BotID`）、`Config`、`Logger`、`Storage`、`HTTPClient`。`Config` 是 `bot.NewConfig(bots[] 条目中除 name/adapter/enabled/plugins 外的键)`（`NewConfig` 深拷贝，`Raw()` 返回副本，适配器改配置不会回到 `config.Config`），`Get`/`String`/`Bool`/`Int`/`Duration`/`Strings` 都支持 `"a.b.c"` 多级键，键缺失或类型不符时返回默认值。（`pkg/bot` 中 `AdapterContext.Config` 的注释仍写作「除 name/adapter/plugins 外」，`enabled` 是后加的实例级开关。）
+- `AdapterContext` 的字段就是全部可用依赖：`BotID`（实例名，必须写进 `Event.BotID` 与 `SendRequest.BotID`）、`Config`、`Logger`、`Storage`、`HTTPClient`。`Config` 是 `bot.NewConfig(bots[] 条目中除 name/adapter/enabled/plugins 外的键)`（`NewConfig` 深拷贝，`Raw()` 返回副本，适配器改配置不会回到 `config.Config`），`Get`/`String`/`Bool`/`Int`/`Duration`/`Strings` 都支持 `"a.b.c"` 多级键，键缺失或类型不符时返回默认值。
 - 实例级开关：`bots[]` 条目上的 `enabled: false` 跳过该实例（见 6.7），此时该实例的 `Settings` 不参与任何校验，也不会产生未知键告警。
 - 声明了 `PermNetListen` 的适配器才允许在实例配置里出现保留键 `listen_addr`（见 6.3）；`Options` 非空时应把 `listen_addr` 一并列入，否则会被当作未知键告警。
 - 未知键告警：`internal/adaptermgr.warnUnknownOptions` 对「不在 `AdapterMetadata.Options` 中的私有键」记 warn 日志 `适配器不认识的配置键`，字段为 `bot`/`adapter`/`key`。`Options` 为空表示不校验、静默跳过（此时连 `listen_addr` 也不会告警）；只告警不报错，以支持第三方适配器独立演进。
@@ -398,17 +399,18 @@ bots:
 
 第 6 章对适配器的要求与实现证据。通用硬性规则（分层与依赖、运行时契约、质量门）以 [`../AGENTS.md`](../AGENTS.md) 第 2 章为唯一规则本体，本节不重复其条款，只列适配器侧的落地要求与证据。
 
-1. 内置适配器放 `adapters/<platform>`；第三方适配器放独立包或独立 module，只依赖 `pkg/bot`，不得依赖 `internal/`，也不得要求核心侧改动。**已实现**：`adapters/mock`、`adapters/onebot` 的非测试源码只 import 标准库与 `github.com/RandomLemon/kei/pkg/bot`（测试另用 `pkg/message` 构造消息，同属公开 SDK）。
+1. 内置适配器放 `adapters/<platform>`；第三方适配器放独立包或独立 module，只依赖 `pkg/bot`，不得依赖 `internal/`，也不得要求核心侧改动。**已实现**：`adapters/mock` 的非测试源码只 import 标准库与 `github.com/RandomLemon/kei/pkg/bot`，`adapters/onebot` 另加内置适配器共享的 `internal/adapterkit`（内置适配器属于本仓库，可用 `internal/`，见第 11 条；测试另用 `pkg/message` 构造消息，同属公开 SDK）。第三方适配器不能 import `internal/`，入站 HTTP 事件源需在自己包内实现第 11 条列出的语义。
 2. 适配器必须在自己的 `init()` 中调用 `RegisterAdapter`；主程序通过空导入启用，是否实例化由配置中的 `bots[].adapter` 决定。**已实现**：两个内置适配器的 `register.go` 都在 `init()` 注册；`cmd/bot/main.go` 空导入 mock/onebot。注册名或工厂不合法的注册不会静默失效：`RegisterAdapter` 拒绝该次注册并记入 `AdapterRegistrationErrors`，启动校验（`adaptermgr.ValidateRegistry`）据此报错，而不是让它在运行时表现为「未注册」。
-3. Adapter 负责签名校验、协议解析、事件转换为统一 `Event`、把统一 `Message` 转为平台消息并发送。**已实现**：OneBot 的 `Authorization` 校验与 HTTP 上报解析、各连接类型的事件转换与发送序列化都在 `adapters/onebot` 包内。
+3. Adapter 负责签名校验、协议解析、事件转换为统一 `Event`、把统一 `Message` 转为平台消息并发送。**已实现**：OneBot 的 HTTP 上报解析（`parseEvent`）与各连接类型的事件转换、发送序列化都在 `adapters/onebot` 包内；入站令牌鉴权用共享的 `adapterkit.TokenAuthorizer`，方法校验、限长读体与 ACK 顺序等入站骨架见第 11 条。
 4. 必须声明 `Capabilities` 与 `Permissions`，声明必须与实现一致；错报能力会导致发送失败或内容丢失。**已实现**：内置适配器的能力位与权限见 6.7，并与发送路径逐一对齐（例如 OneBot 不声明 `Markdown`/`Card`）。
 5. 工厂必须支持同平台多实例：状态只能挂在实例上，`New` 每次返回互相隔离的实例。**已实现**：两个内置适配器的可变状态都在 `Adapter` 结构体上；`adaptermgr` 对每个 bot 调一次工厂。
 6. `Event.ID` 必须稳定且平台内唯一（用于去重），`Event.Platform` 必须属于 `AdapterMetadata.Platforms`，`Event.BotID` 必须等于 `AdapterContext.BotID`。**已实现（含以下边界）**：核心只在装配期用 warn 日志提示不一致——若 `adapter.Name()` 非空但不在 `meta.Platforms` 中，记 `适配器返回的平台名未在元信息中声明`，但不再报错；`adapter.Name()` 为空则装配失败。事件被投递后，去重由事件总线按 `Event.ID` + TTL 完成（`internal/eventbus` 与 `internal/dedup`），未知段类型等字段不做校验。
 7. `Start` 返回前必须完成监听/连接；`Stop` 必须幂等并等待已接收事件投递完毕；适配器内部 goroutine 必须有退出机制，不得泄漏。**已实现**：OneBot `Start` 只在当前 `mode` 需要监听时（`forward_http`/`reverse_http`/`reverse_ws`）先 `net.Listen` 再进入 `Serve`，`forward_ws` 不监听端口而是主动拨号；退出时显式收尾 hijacked 的反向 WebSocket 连接并取消正向重连循环。收尾预算显式且有界：`Stop` 先 `http.Server.Shutdown`（子预算 `httpShutdownTimeout` = 2s，只等在途请求），再收尾反向 WebSocket，两者共享 `shutdownTimeout` = 5s 总预算——调用方 ctx 没有截止时间时同样有界；反向 WebSocket 收尾超时后硬关底层连接并至多再等 `wsCloseGrace` = 1s，超时以「等待 N 条反向 WebSocket 连接退出超时」返回（`errors.Join` 与 http 错误并报）。`Start` 退栈与 `Stop` 经 `sync.Once` 共享同一次 WebSocket 收尾：一次启停不会叠加上两份等待预算。
-8. 平台回调必须快速 ACK：先 ACK 平台，再异步投递到核心；`EventSink.Emit` 返回只表示已入队。入队失败必须记录日志与指标，不得静默丢弃。**已实现（日志层面）**：OneBot 上报先回 `204` 再 `Emit`，失败记 warn `onebot: 投递事件失败`。**指标缺口**：投递失败没有对应指标，只有日志。
+8. 平台回调必须快速 ACK：先 ACK 平台，再异步投递到核心；`EventSink.Emit` 返回只表示已入队。入队失败必须记录日志与指标，不得静默丢弃。**已实现**：OneBot 上报先回 `204` 再 `Emit`，失败记 warn `onebot: 投递事件失败`；入队失败的原因（`queue_full`/`closed`/`error`）与去重命中（`duplicate`）由引擎在事件入口记入 `kei_events_dropped_total{platform,reason}`，`kei_events_published_total` 只统计真正入队的事件，两者之和等于投递尝试数；`platform` 标签按已装配适配器名归一化，未知平台并入 `unknown`（见 [engine.md](engine.md) 的指标小节）。
 9. 配置与密钥只能经 `AdapterContext.Config` 读取，不得直接读环境变量或文件。**已实现**：`adapters/` 下没有 `os.Getenv`/`os.ReadFile`/`os.Open` 调用；环境变量覆盖由配置加载层统一完成。
 10. 重复投递同一事件必须安全（核心按 `Event.ID` 去重），但适配器不得依赖去重来掩盖自身的重复投递。**已实现**：事件总线在 `Publish` 时用 TTL + 容量上限的去重集合丢弃重复 ID；内置适配器生成稳定 ID——OneBot 消息事件优先 `message_id`，缺失时与其它类型一律用 `self_id`/`post_type`/时间/子类型/会话/`message_id`/`target_id`/`flag` 确定性拼接，消息事件另附 `message` 内容哈希，保证同一秒内同会话的不同事件不撞 ID；ID 字段只接受数字、字符串与 `null`，对象/数组/布尔按结构错误拒绝（HTTP 上报回 `400`，WebSocket 上报丢弃并记 warn）。
-11. Mock Adapter 必须实现，用于本地测试和事件回放。**已实现**：`adapters/mock`（见 6.7）。
+11. 入站 HTTP 事件源的骨架（服务器超时默认值、请求体上限、鉴权钩子、ACK 顺序、关闭预算归一）只有一个实现：`internal/adapterkit`，内置适配器只提供鉴权与解析钩子。**已实现**：`adapters/onebot` 的事件服务由 `adapterkit.NewServer` 构造（`ReadHeaderTimeout` 10s、`ReadTimeout` 30s、`WriteTimeout` 30s、`IdleTimeout` 60s，`ErrorLog` 指向适配器日志器的 warn 级别），上报处理器由 `EventSourceOptions.Handler` 生成——方法非 `POST` → `405` 且带 `Allow: POST`；鉴权钩子返回 false → `401`；读体失败（含超 `DefaultMaxBodyBytes` = 1 MiB）→ `400`；解析失败 → `400`；成功 → 先写 `204` 并 `Flush` 再在请求 goroutine 内同步 `Emit`，`Emit` 失败只记 warn（`<名称>: 投递事件失败`）且不改变已发出的 ACK；令牌鉴权用 `adapterkit.TokenAuthorizer`（`Authorization: Bearer <token>` 或 `?access_token=<token>`，常数时间比较，token 为空时不校验）；收尾用 `adapterkit.Shutdown`（`http.ErrServerClosed` 归一为 `nil`，deadline 由调用方给）。共享实现不含事件队列——`EventSink.Emit` 的契约就是「快速返回、只表示已入队」，内置适配器当前没有队列，故不为假想需求抽队列层。**第三方适配器契约**：不能 import `internal/`，需在自己的包内实现上述语义，状态码、`Allow` 头、日志文案与「先 ACK 再 `Emit`」的顺序即契约，超时默认值取第 11 条列出的四项与 1 MiB 上限。
+12. Mock Adapter 必须实现，用于本地测试和事件回放。**已实现**：`adapters/mock`（见 6.7）。
 
 ### 6.7 内置适配器现状
 
@@ -419,10 +421,11 @@ bots:
 #### mock
 
 - 注册名/平台：`mock`（`adapters/mock/register.go`）；版本 `v0.1.0`，作者 `core`。
-- 权限：`[net_listen]`；配置键（`Options`）：`platform`、`listen_addr`。
+- 权限：`[net_listen]`；配置键（`Options`）：`platform`、`listen_addr`、`allow_remote_control_plane`。
 - 接入方式：不连接任何真实平台。事件经 `Adapter.Inject`/`InjectText` 手动注入，或经 HTTP 控制面 `POST /inject` 注入；`GET /sent` 查看发送记录，`DELETE /sent` 清空记录，`GET /healthz` 健康检查。控制面只在实例配置了非空 `listen_addr` 时启动，监听地址可经 `Addr()` 查询。
+- 控制面安全边界：控制面无鉴权，注入事件可触发命令执行，因此默认只接受回环地址（`127.0.0.1`、`::1`、`localhost`）；`:18080`、`0.0.0.0:18080`、具体网卡地址与其它主机名一律在装配期（工厂）与 `Start` 监听前被拒绝，错误含「不是回环地址」。确需暴露时显式设置 `allow_remote_control_plane: true`（程序内为 `Options.AllowRemoteControlPlane`）。
 - 能力：默认全能力（`Text`/`Markdown`/`Image`/`At`/`Card`/`File`/`Reply`/`Private`/`Group` 全为 true），便于验证降级路径之外的行为；`Options.Capabilities` 非零值时以它为准（可构造「仅文本」等边界）。
-- 行为：`Send` 不产生任何网络调用，返回 `mock-<自增序号>` 消息 ID 并把 `SendRecord` 记入内存；`Start` 要求非 nil `EventSink`，重复调用返回错误 `mock: already started`，未启动时 `Inject` 返回 `mock: adapter is not running`；`Inject` 会为缺失字段补默认值（平台、bot、时间、类型、ID、Sender、Message、群聊 Channel）。不发起出站请求，工厂不要求 `network` 权限，`HTTPClient` 为 nil 也能构造成功。
+- 行为：`Send` 不产生任何网络调用，返回 `mock-<自增序号>` 消息 ID 并把 `SendRecord` 记入内存；`Start` 要求非 nil `EventSink`，重复调用返回错误 `mock: already started`，未启动时 `Inject` 返回 `mock: adapter is not running`；控制面监听失败的 `Start` 不置运行状态（`Started()` 仍为 false、`Addr()` 为空），端口释放后同一实例可重试；`POST /inject` 的 `kind` 只接受闭集 `private`/`group`/`channel`（缺省 `group`），未知取值返回 `400` 且不投递事件；`Inject` 会为缺失字段补默认值（平台、bot、时间、类型、ID、Sender、Message、群聊 Channel）。不发起出站请求，工厂不要求 `network` 权限，`HTTPClient` 为 nil 也能构造成功。
 
 #### onebot
 

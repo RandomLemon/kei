@@ -80,7 +80,7 @@ OneBot / Mock / 第三方适配器
 
 `pkg/kei` 是唯一的装配实现：加载 YAML 配置 → 装配适配器（`internal/adaptermgr`）与插件（注册表 + `internal/pluginmgr`）→ 构造并运行引擎（`internal/engine`）→ 优雅退出。它是公开包，允许 import `internal/`（同 module 内合法），因为装配必须触碰 `internal/` 各包；这也是把装配从 `cmd/` 抽出来的原因——`cmd/` 无法被外部 module 复用。
 
-- 职责边界：只做装配与生命周期编排，不含平台名分支与业务逻辑，不空导入任何适配器或插件（编译期注册仍由调用方空导入完成）。配置语义完全来自 YAML，门面不新建第二套配置。
+- 职责边界：只做装配与生命周期编排，不含平台名分支与业务逻辑，不空导入任何适配器或插件（编译期注册仍由调用方空导入完成）。配置语义完全来自 YAML，门面不新建第二套配置。存储方言同样不由门面自动引入：`storage.type: sqlite/mysql` 需要调用方空导入 `pkg/kei/sql` 显式 opt-in（`cmd/bot` 已空导入），因此只 `import pkg/kei` 不会拉入 GORM 与 cgo；未导入时只有 `memory` 注册，配置 SQL 后端会在装配期报未知类型。
 - 依赖方向：`pkg/kei` → `internal/*` + `pkg/bot`；`pkg/bot` 与 `pkg/message` 不依赖 `pkg/kei`（`pkg/bot` 禁止 import `internal/`）。`cmd/bot` → `pkg/kei`，自身不再持有装配逻辑。
 - 依赖注入点：`Options` 只暴露 `Logger`/`HTTPClient`/`Storage`/`Plugins` 等可替换依赖，其余全部由配置决定。
 - 内联插件：`pkg/bot.FuncPlugin` 让「单文件定义业务逻辑」成为可能，注入实例一律启用（与配置冲突时启动失败）。
@@ -106,8 +106,10 @@ kei/
 │   ├── bot/                      # 公开 SDK：Event、Message、Adapter 注册表、Plugin、Registrar、Reply、BotAPI、Storage、Config
 │   ├── message/                  # 消息与消息段构建器
 │   └── kei/                      # 装配门面：加载配置、装配适配器与插件、启动引擎、优雅退出（cmd/bot 的唯一实现）
+│       └── sql/                  # SQL 方言显式 opt-in 包：空导入 sqlite/mysql；未导入时只有 memory 注册
 ├── internal/
 │   ├── engine/                   # 核心引擎：串联适配器、事件总线、路由与插件，对外提供 BotAPI
+│   ├── adapterkit/               # 内置适配器共享件：入站 HTTP 事件源（服务器超时默认值、请求体上限、鉴权钩子、ACK 顺序、关闭归一）
 │   ├── adaptermgr/               # 适配器装配：注册表查表、权限裁剪、保留键校验
 │   ├── pluginmgr/                # 插件注册与生命周期：Setup/Start 顺序执行，Stop 逆序，panic 隔离与超时保护
 │   ├── router/                   # 路由匹配与 Registrar 实现：规则表不可变快照 + 原子替换

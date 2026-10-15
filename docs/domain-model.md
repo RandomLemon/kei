@@ -246,6 +246,8 @@ const (
 2. 适配器在读取平台消息构造段时，值为空的键应省略而不是写入空串（例如 OneBot 适配器对 `KeyUserName`、`KeyFileName` 的处理）。
 3. 适配器在发送时对 `SegImage`、`SegFile` 同时尝试 `KeyFile` 与 `KeyURL`，两者都为空视为不可发送。
 4. 未知的 `SegmentType` 或未知 `Data` 键不影响类型契约：消费方必须忽略而不报错。
+5. 读取段数据一律用 `bot.SegmentData(seg, key)`（`pkg/bot/segment.go`），这是 `Segment.Data` 的**唯一**取值约定：`Data` 为 nil、键缺失或值为 nil 得到空串，`string` 原样返回，其余值按 `fmt.Sprint` 渲染（数字、布尔因此会渲染成文本）。适配器与引擎日志都不得自建第二套取值逻辑；`bot.Message.PlainText` 是唯一的例外——它按约定 1 对文本段做严格类型断言，路由匹配行为不随 `SegmentData` 变化。`Segment.Data` 的契约取值是标量，容器类型不属契约，`SegmentData` 对其只承诺 `fmt.Sprint` 的通用行为。
+6. `pkg/bot` 另提供两个通用小工具，适配器不得各自复制：`bot.FirstNonEmpty(vals ...string) string` 返回第一个非空字符串；`bot.Truncate(s string, limit int) string` 把响应体等截断到不超过 `limit` 字节并在末尾追加 `"..."`（`limit <= 0` 或未超长时原样返回，不切开 UTF-8 序列），用于日志或错误信息里回显响应体，避免单条大响应刷屏。
 
 源码补充（公开契约）：第九个键 `KeyCard = "card"`，以及全部九个 `Key*` 常量本身。
 

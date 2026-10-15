@@ -19,7 +19,7 @@ func Load(path string) (*Config, error)          // 读文件 + os.Environ() 覆
 func LoadBytes(data []byte, env []string) (*Config, error)  // 解析内存数据 + 指定 env
 ```
 
-`LoadBytes` 的固定顺序是：`decode`（YAML → 结构体，不做校验）→ `applyEnv`（环境变量覆盖）→ `applyDefaults`（填默认值）→ `validate`（校验）。因此环境变量覆盖同样受校验约束（例如 `KEI_LOG_LEVEL=trace` 会在 `log.level` 上报错）；空白值不参与覆盖（见 12.6），YAML 值与默认值都不会被它影响。
+`LoadBytes` 的固定顺序是：`decode`（YAML → 结构体，不做校验）→ `applyEnv`（环境变量覆盖）→ `applyDefaults`（填默认值）→ `validate`（校验）。因此环境变量覆盖同样受校验约束（例如 `KEI_LOG_LEVEL=trace` 会在 `log.level` 上报错）；空白值不参与覆盖（见 12.7），YAML 值与默认值都不会被它影响。
 
 ### 12.1 结构体与顶层键
 
@@ -35,6 +35,7 @@ type Config struct {
 	Limits   LimitsConfig               `yaml:"limits"`
 	Auth     AuthConfig                 `yaml:"auth"`
 	Storage  StorageConfig              `yaml:"storage"`
+	Engine   EngineConfig               `yaml:"engine"`
 
 	// EnvOverrides 记录本次加载中实际生效的环境变量覆盖，供启动日志使用；
 	// 不是 YAML 键（yaml:"-"），解码不会读写。
@@ -42,7 +43,7 @@ type Config struct {
 }
 ```
 
-顶层只允许上面 8 个 YAML 键（`EnvOverrides` 不是键），其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins`/`storage` 由自定义解码函数处理，条目上的未知键不会报错，而是收进各自的 `Settings`/`Params`（见 12.2–12.3、12.5）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。
+顶层只允许上面 9 个 YAML 键（`EnvOverrides` 不是键），其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins`/`storage`/`engine` 由自定义解码函数处理：`bots`/`plugins`/`storage` 条目上的未知键不会报错，而是收进各自的 `Settings`/`Params`（见 12.2–12.3、12.5），`engine` 的未知键报错（见 12.6）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。所有手写映射遍历都拒绝重复键（`eachPair`）：重复时报 `<段路径>: 键 %q 重复`，不再静默取最后一个值。
 
 | 段 | 键 | 结构体字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- | --- |
@@ -54,22 +55,35 @@ type Config struct {
 | `limits` | `send_rate` | `LimitsConfig.SendRate` | float64 | `0` | 每个 bot 每秒允许发送的条数；`0` 表示不限流 |
 | `limits` | `send_burst` | `LimitsConfig.SendBurst` | int | `0` | 发送侧突发容量；`<=0` 时取 `send_rate`（同上，`Engine.New` 只在 `send_rate > 0` 时建限流器） |
 | `auth` | `admin_users` | `AuthConfig.AdminUsers` | []string | 空 | 管理员用户 ID 列表，供 `middleware.Auth`（`Engine.isAdmin`，按 `Event.Sender.ID` 精确比较）判定 |
-| `bots` | — | `[]BotConfig` | 序列 | 无默认，至少一个 | 见 12.2 |
+| `bots` | — | `[]BotConfig` | 序列 | 可为空（只运行插件时） | 见 12.2 |
 | `plugins` | — | `map[string]PluginConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.3 |
 | `adapters` | — | `map[string]AdapterConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.4 |
 | `storage` | `type` | `StorageConfig.Type` | string | `memory` | 存储后端类型；必须匹配 `^[a-z0-9_-]+$`，是否存在由装配期判定（见 12.5） |
 | `storage` | `dsn` | `StorageConfig.DSN` | string | `""` | 数据源，语义由后端定义；`memory` 忽略 |
 | `storage` | 其余键 | `StorageConfig.Params` | 映射 | `{}` | 原样传给后端，如 `cleanup_interval`、`max_open_conns` |
+| `engine` | `command_prefixes` | `EngineConfig.CommandPrefixes` | []string | 空（引擎用 `["/"]`） | 命令前缀列表；每项去空白后必须非空 |
+| `engine` | `event_timeout` | `EngineConfig.EventTimeout` | 时长或秒数 | `0`（引擎 30s） | 单条事件整体处理超时 |
+| `engine` | `rule_timeout` | `EngineConfig.RuleTimeout` | 时长或秒数 | `0`（引擎 10s） | 单条规则 Handler 执行超时 |
+| `engine` | `shutdown_timeout` | `EngineConfig.ShutdownTimeout` | 时长或秒数 | `0`（引擎 10s） | 优雅关闭总超时 |
+| `engine` | `bus_workers` | `EngineConfig.BusWorkers` | int | `0`（引擎 4） | 事件总线分片 worker 数 |
+| `engine` | `bus_queue_size` | `EngineConfig.BusQueueSize` | int | `0`（引擎 256） | 每个分片队列容量 |
+| `engine` | `dedup_ttl` | `EngineConfig.DedupTTL` | 时长或秒数 | `0`（引擎 5m） | 事件去重时间窗 |
+| `engine` | `dedup_capacity` | `EngineConfig.DedupCapacity` | int | `0`（引擎 4096） | 去重集合容量上限（总线按分片均分） |
+| `engine` | `send_retries` | `EngineConfig.SendRetries` | int | `0` | 发送失败重试次数（不含首次）；`0` 表示不重试，负数非法 |
+| `engine` | `send_backoff` | `EngineConfig.SendBackoff` | 时长或秒数 | `0`（引擎 100ms） | 发送重试初始退避 |
 
-默认值由 `applyDefaults` 落地：`log.level`/`log.format` 为空时填 `info`/`text`；`storage.type` 为空时填 `memory`；`Plugins`/`Adapters` 为 nil 时填空映射。`limits`、`auth.admin_users`、`metrics.addr` 的默认值就是 Go 零值，`applyDefaults` 不做处理。
+`engine` 段的完整语义、取值规则与到 `internal/engine.Options` 的字段对应见 12.6。
 
-校验逐段进行，错误都带字段路径（`Config.validate` 及其方法 `LogConfig.validate`、`StorageConfig.validate`、`LimitsConfig.validate`）：
+默认值由 `applyDefaults` 落地：`log.level`/`log.format` 为空时填 `info`/`text`；`storage.type` 为空时填 `memory`；`Plugins`/`Adapters` 为 nil 时填空映射。`limits`、`auth.admin_users`、`metrics.addr` 的默认值就是 Go 零值，`applyDefaults` 不做处理。`engine` 段同样保持零值：默认值由引擎侧（`internal/engine.Options` 的 `orInt`/`orDuration`）填充，`applyDefaults` 不替引擎填默认。
 
-- `bots` 至少一个；`bots[i].name` 非空且全局唯一；`bots[i].adapter` 非空且匹配 `^[a-z0-9_-]+$`；`bots[i].enabled` 必须是布尔（解码阶段报错，不参与此处校验）。
+校验逐段进行，错误都带字段路径（`Config.validate` 及其方法 `LogConfig.validate`、`StorageConfig.validate`、`EngineConfig.validate`、`LimitsConfig.validate`）：
+
+- `bots` 可以为空（只运行插件时）；`bots[i].name` 非空且全局唯一；`bots[i].adapter` 非空且匹配 `^[a-z0-9_-]+$`；`bots[i].enabled` 必须是布尔（解码阶段报错，不参与此处校验）。
 - `log.level` 必须属于 `{debug, info, warn, error}`，`log.format` 属于 `{text, json}`（比较前转小写；空值留给 `applyDefaults`）。
 - `limits.*` 的速率与突发容量都不能为负。
 - 插件名不能为空；适配器名不能为空且匹配 `^[a-z0-9_-]+$`。
 - `storage.type` 非空且匹配 `^[a-z0-9_-]+$`；类型是否存在不在配置层校验（由装配期负责），`dsn` 是否必填也不在此校验（由各后端负责）。
+- `engine.command_prefixes` 每项去空白后非空；`engine.*` 的时长与容量类键不能为负（`0`/未配置表示用引擎默认值，`send_retries` 的 `0` 表示不重试）。
 
 加载失败的错误都包装了来源：`Load` 返回 `config: 读取配置文件 <path>: ...`（读文件失败）或 `config: 配置文件 <path>: ...`（解析/覆盖/校验失败），`Load` 内部对 `os.ErrNotExist` 做 `%w` 包装；YAML 语法错误为 `config: YAML 解析失败: ...`；段级解码错误会再包一层 `<段名> 段: ...`。
 
@@ -149,13 +163,13 @@ type StorageConfig struct {
 
 存储后端由 `storage.type` 选择，`dsn` 与其余键进入 `Params` 后原样交给对应后端。`type` 默认 `memory`，`storage` 段整体可以省略。
 
-- **已注册类型**：`memory`（默认，进程内内存，重启即丢）、`sqlite`（GORM + cgo 版 `github.com/mattn/go-sqlite3`，`dsn` 是文件路径或 `file:...?params`）、`mysql`（GORM + `github.com/go-sql-driver/mysql`，`dsn` 形如 `user:pass@tcp(host:3306)/db?parseTime=true`）。`parseTime=true` 是过期时间列能扫描为 `time.Time` 的前提，核心不校验，缺失时由驱动报错。
+- **已注册类型**：`memory`（默认，进程内内存，重启即丢）、`sqlite`（GORM + cgo 版 `github.com/mattn/go-sqlite3`，`dsn` 是文件路径或 `file:...?params`）、`mysql`（GORM + `github.com/go-sql-driver/mysql`，`dsn` 形如 `user:pass@tcp(host:3306)/db?parseTime=true`）。`parseTime=true` 是过期时间列能扫描为 `time.Time` 的前提，核心不校验，缺失时由驱动报错。**SQL 方言是显式 opt-in**：未空导入 `pkg/kei/sql` 时只有 `memory` 注册，配置 `storage.type: sqlite/mysql` 会在装配期报未知类型；嵌入式使用需自行空导入 `_ "github.com/RandomLemon/kei/pkg/kei/sql"`（`cmd/bot` 已空导入），以免不用 SQL 后端却引入 GORM 与 cgo（见 [architecture.md](architecture.md) 3.1）。
 - **类型注册表在装配期**：`internal/storage` 提供 `Register`/`Open`/`Kinds`，各后端包在 `init()` 注册；`pkg/kei.buildStorage` 调用 `storage.Open`，未知类型在此报错并列出已注册类型：`kei: 初始化 storage: storage: 未知存储类型 "x"（已注册: memory, mysql, sqlite）`。配置层不维护类型白名单，第三方可注入 `Options.Storage` 使用自定义实现。
 - **后端参数**：`type`/`dsn` 之外的键进入 `Params` 并原样传给后端；下列已知键的取值在配置层校验（`StorageConfig.validate`），类型不符、非整数或负数直接报错，错误路径为 `storage.params.<key>`，环境变量覆盖的值同样校验：
 
 | 键 | 适用后端 | 取值 | 语义 |
 | --- | --- | --- | --- |
-| `cleanup_interval` | `memory`、`sqlite`、`mysql` | 时长字符串（`1m`）或秒数 | 过期条目后台清理间隔，默认 `1m`；`0` 关闭后台清理（过期键读取时仍判为不存在；SQL 后端在 `Get` 命中过期行时惰性删除，内存实现不删除、`Len` 计入它们） |
+| `cleanup_interval` | `memory`、`sqlite`、`mysql` | 时长字符串（`1m`）或秒数 | 过期条目后台清理间隔，默认 `1m`；`0` 关闭后台清理（过期键读取时仍判为不存在；SQL 后端在 `Get` 命中过期行时惰性删除，内存实现不删除、`Len` 计入它们）。清理失败不再静默：后台清理失败记 Warn、惰性删除失败记 Debug |
 | `max_open_conns` | `mysql` | 非负整数 | 连接池最大连接数；`0` 表示不限制；三者都缺失时不改动驱动默认值 |
 | `max_idle_conns` | `mysql` | 非负整数 | 最大空闲连接数；`0` 表示不保留 |
 | `conn_max_lifetime` | `mysql` | 时长或秒数 | 连接最长存活时间；`0` 表示不按龄关闭 |
@@ -164,7 +178,46 @@ type StorageConfig struct {
 - **键长上限**：存储键最大 191 字节（`internal/storage.MaxKeyBytes`，取自 SQL 列定义的 `size:191`）。内存、SQLite、MySQL 三个内置后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（`errors.Is(err, storage.ErrKeyTooLong)`），不会出现「内存/SQLite 能存、只有 MySQL 报错」的差异。插件/适配器经框架拿到的存储还带 `plugin:<name>:`/`adapter:<botID>:` 隔离前缀（见 [plugin.md](plugin.md) 11.2、[adapter.md](adapter.md) 6.3），前缀计入上述字节数。
 - **注入优先**：`Options.Storage` 非 nil 时优先使用（由调用方拥有，`Run` 不关闭）；为 nil 时按 `storage.type` 构造，并在 `Run` 返回前关闭自有实例。
 
-### 12.6 环境变量覆盖
+### 12.6 `engine`
+
+`engine` 段把引擎的可调参数搬到 YAML，让「唯一装配路径」（`pkg/kei.Run`）也能配置它们——门面不提供 YAML 之外的第二套配置。字段与 `internal/engine.Options` 一一对应，由 `pkg/kei.Run` 原样透传：
+
+```go
+type EngineConfig struct {
+	CommandPrefixes []string      // command_prefixes
+	EventTimeout    time.Duration // event_timeout
+	RuleTimeout     time.Duration // rule_timeout
+	ShutdownTimeout time.Duration // shutdown_timeout
+	BusWorkers      int           // bus_workers
+	BusQueueSize    int           // bus_queue_size
+	DedupTTL        time.Duration // dedup_ttl
+	DedupCapacity   int           // dedup_capacity
+	SendRetries     int           // send_retries
+	SendBackoff     time.Duration // send_backoff
+}
+```
+
+```yaml
+engine:
+  command_prefixes: ["!", "/"]   # 命令前缀；缺省 ["/"]，改为 ["!"] 后命令变成 !manage ping
+  event_timeout: 30s             # 单条事件整体处理超时
+  rule_timeout: 10s              # 单条规则 Handler 执行超时
+  shutdown_timeout: 10s          # 优雅关闭总超时
+  bus_workers: 4                 # 事件总线分片 worker 数
+  bus_queue_size: 256            # 每个分片队列容量
+  dedup_ttl: 5m                  # 事件去重时间窗
+  dedup_capacity: 4096           # 去重集合容量上限
+  send_retries: 2                # 示例值：失败后重试 2 次（不含首次）；缺省 0 = 不重试
+  send_backoff: 100ms            # 发送重试初始退避
+```
+
+- **取值规则**：时长写时长字符串（`10s`）或秒数（`30`，数字按秒），整数不得为小数；规则与 `storage.params` 一致（`decodeDurationValue`/`decodeIntValue`）。`command_prefixes` 是字符串序列，每项去空白后必须非空。键存在但无值（`event_timeout:`）视为未配置。未知键报 `config: engine 段: engine: 未知键 "<key>"`；重复键报 `config: engine 段: engine: 键 "<key>" 重复`。
+- **`0`/未配置 = 引擎默认值**：`applyDefaults` 不替引擎填默认，`engine` 段保持零值并原样透传；由 `internal/engine.Options` 的 `orInt`/`orDuration` 回落到默认（30s/10s/10s/4/256/5m/4096，见 [engine.md](engine.md) 7.1），命令行前缀为空列表时用 `["/"]`。**例外是 `send_retries`**：`0` 是有意义的取值（不重试），负数非法。
+- **校验**（`EngineConfig.validate`，错误路径 `engine.<key>`）：`command_prefixes` 每项去空白后非空；时长与容量类不能为负；`send_retries` 允许 `0`、负数报错。因此 `send_retries: -1` 会在配置层被拦住，不会与显式 `0` 相混。
+- **环境变量覆盖**：`KEI_ENGINE_COMMAND_PREFIXES`（逗号分隔）与其余 9 个键的 `KEI_ENGINE_*`，规则见 12.7。
+- **字段对应**：配置键 `command_prefixes`/`event_timeout`/`rule_timeout`/`shutdown_timeout`/`bus_workers`/`bus_queue_size`/`dedup_ttl`/`dedup_capacity`/`send_retries`/`send_backoff` 依次对应 `Options.CommandPrefixes`/`EventTimeout`/`RuleTimeout`/`ShutdownTimeout`/`BusWorkers`/`BusQueueSize`/`DedupTTL`/`DedupCapacity`/`SendRetries`/`SendBackoff`。
+
+### 12.7 环境变量覆盖
 
 规则在 `internal/config/env.go`（`applyEnv`、`applyEnvPath`、`canonicalName`、`canonicalSegments`）：
 
@@ -182,6 +235,9 @@ type StorageConfig struct {
 | `KEI_AUTH_ADMIN_USERS` | 逗号分隔列表，忽略空白与空项；无有效项时为 nil |
 | `KEI_STORAGE_TYPE` / `KEI_STORAGE_DSN` | `storage.type` / `storage.dsn`（原样字符串） |
 | `KEI_STORAGE_PARAMS_<KEY>` | `storage.Params[<key>]`（键名按规范化规则映射，值按 YAML 规则推断类型） |
+| `KEI_ENGINE_COMMAND_PREFIXES` | `engine.command_prefixes`（逗号分隔列表，忽略空白与空项） |
+| `KEI_ENGINE_EVENT_TIMEOUT` / `KEI_ENGINE_RULE_TIMEOUT` / `KEI_ENGINE_SHUTDOWN_TIMEOUT` / `KEI_ENGINE_DEDUP_TTL` / `KEI_ENGINE_SEND_BACKOFF` | 时长（`time.ParseDuration`，如 `10s`）；非法值报错并点名变量 |
+| `KEI_ENGINE_BUS_WORKERS` / `KEI_ENGINE_BUS_QUEUE_SIZE` / `KEI_ENGINE_DEDUP_CAPACITY` / `KEI_ENGINE_SEND_RETRIES` | 整数；非法值报错并点名变量 |
 
 - `KEI_BOTS_<BOT>_<KEY>`：`<BOT>` 按规范化名匹配**配置中已存在的** bot（快照于覆盖开始前，因此 `KEI_BOTS_X_NAME` 之后的其他变量仍按旧名匹配；同时命中多个 bot 时取规范化名最长者，长度相同则全部应用）。`<KEY>` 为 `name`/`adapter`/`plugins`（逗号分隔列表）时写入对应字段，为 `enabled` 时按布尔覆盖实例启用状态（值不可解析为布尔则**静默忽略**），其余键写入 `Settings`。
 - `KEI_PLUGINS_<NAME>_<KEY>`：只命中配置中已存在的插件名，未知插件名忽略。`<KEY>` 为 `enabled` 时按布尔覆盖（值不可解析为布尔则**静默忽略**），其余键写入该插件的 `Settings`。
@@ -208,9 +264,12 @@ KEI_ADAPTERS_MYIM_ENABLED=false          # 只对 adapters 段已声明的适配
 KEI_STORAGE_TYPE=sqlite                  # 切换存储后端
 KEI_STORAGE_DSN=/var/lib/kei/storage.db
 KEI_STORAGE_PARAMS_CLEANUP_INTERVAL=5m   # storage.Params["cleanup_interval"] = "5m"
+KEI_ENGINE_COMMAND_PREFIXES='!'          # engine.command_prefixes = ["!"]，命令变成 !manage ping
+KEI_ENGINE_DEDUP_TTL=10m                 # engine.dedup_ttl
+KEI_ENGINE_SEND_RETRIES=0                # engine.send_retries（0 = 不重试）
 ```
 
-### 12.7 示例
+### 12.8 示例
 
 以下片段取自 `configs/config.yaml`（注释与未改动的部分已省略），键名与取值均为该文件中的真实键名：
 
@@ -261,18 +320,31 @@ plugins:
 #   type: sqlite
 #   dsn: /var/lib/kei/storage.db
 #   cleanup_interval: 1m
+
+# 可选：引擎可调参数。整段缺省时全部吃引擎默认值（见 12.6）。
+# engine:
+#   command_prefixes: ["/"]
+#   event_timeout: 30s
+#   rule_timeout: 10s
+#   shutdown_timeout: 10s
+#   bus_workers: 4
+#   bus_queue_size: 256
+#   dedup_ttl: 5m
+#   dedup_capacity: 4096
+#   send_retries: 2
+#   send_backoff: 100ms
 ```
 
-### 12.8 配置要求（逐条核对）
+### 12.9 配置要求（逐条核对）
 
 1. 配置结构体放在 `internal/config`。
-   核对：`internal/config/config.go` 定义 `Config`、`LogConfig`、`MetricsConfig`、`LimitsConfig`、`AuthConfig`、`StorageConfig`、`BotConfig`、`PluginConfig`、`AdapterConfig`；环境变量覆盖在 `internal/config/env.go`；配置测试在 `internal/config/config_test.go`。
+   核对：`internal/config/config.go` 定义 `Config`、`LogConfig`、`MetricsConfig`、`LimitsConfig`、`AuthConfig`、`StorageConfig`、`EngineConfig`、`BotConfig`、`PluginConfig`、`AdapterConfig`；环境变量覆盖在 `internal/config/env.go`；配置测试在 `internal/config/config_test.go`。
 2. 支持环境变量覆盖。
-   核对：`applyEnv`/`applyEnvPath`（`env.go`），规则见 12.6；`Load` 传入 `os.Environ()`。
+   核对：`applyEnv`/`applyEnvPath`（`env.go`），规则见 12.7；`Load` 传入 `os.Environ()`。
 3. 支持插件独立配置；适配器实例配置写在 `bots[]` 条目上。
    核对：`PluginConfig.Settings`（`decodePlugin`）、`BotConfig.Settings`（`decodeBot` 的 `default` 分支）；实例级经 `AdapterContext.Config` 读取。
 4. 配置加载失败必须返回明确错误。
-   核对：`Load`/`LoadBytes` 全程 `%w` 包装并带 `path`；`decode` 报未知顶层键、顶层非映射、YAML 语法错误；`Config.validate` 与 `LogConfig.validate`/`StorageConfig.validate`/`LimitsConfig.validate` 报带字段路径的错误（见 12.1）。
+   核对：`Load`/`LoadBytes` 全程 `%w` 包装并带 `path`；`decode` 报未知顶层键、顶层非映射、YAML 语法错误；`Config.validate` 与 `LogConfig.validate`/`StorageConfig.validate`/`EngineConfig.validate`/`LimitsConfig.validate` 报带字段路径的错误（见 12.1）。
 5. `adapters.<name>.enabled` 控制适配器是否启用，缺省为 **true**（与插件相反：适配器不需要声明即可用，声明只用于启用/禁用）。环境变量 `KEI_ADAPTERS_<NAME>_ENABLED` 可覆盖。
    核对：`AdapterConfig.IsEnabled`、`Config.AdapterEnabled`（未声明返回 true）、`decodeAdapter` 的 `enabled` 分支、`applyAdapterEnv` 的 `enabled` 分支。注意环境变量只对 `adapters` 段已声明的名字生效（`applyAdapterEnv` 遍历 `c.Adapters`）。
 6. `enabled: false` 的适配器不装配、其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn 日志），也不做字段校验；核心仍可只运行插件。
@@ -285,6 +357,8 @@ plugins:
    核对：`internal/adaptermgr/adaptermgr.go` 的 `checkReservedOptions`（`Validate` 阶段）；键常量 `bot.OptListenAddr`。
 10. 适配器不认识的私有键必须告警（不报错），以支持第三方适配器独立演进；键集来自 `AdapterMetadata.Options`。
     核对：`adaptermgr.warnUnknownOptions`（`Build` 中实例级调用用 `meta.Options`）。告警不阻断装配。
+11. 引擎可调参数经配置 `engine` 段透传到唯一装配路径；`bots` 可为空以支持「只运行插件」。
+    核对：`EngineConfig`（`decodeEngine`）、`EngineConfig.validate`、`pkg/kei/kei.go` 的 `engine.New(engine.Options{...})` 透传 10 个字段；`Config.validate` 不再要求 `bots` 非空（见 12.6、12.2）。
 
 ---
 

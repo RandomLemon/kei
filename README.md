@@ -25,7 +25,7 @@ flowchart TD
   `事件 ID + TTL` 去重；优雅关闭前排空已入队事件。
 - **中间件**：Recover / Logger / Metrics / Timeout / Auth / RateLimit / Dedup 可组合，洋葱模型。
 - **插件**：插件通过 `init()` 注册、配置启用，只依赖 `pkg/bot`，核心不因插件崩溃而退出。
-- **运行时依赖**：仅 `gopkg.in/yaml.v3` 与 GORM（`gorm.io/gorm` + SQLite/MySQL 方言驱动）。
+- **运行时依赖**：核心仅 `gopkg.in/yaml.v3`。GORM（`gorm.io/gorm` + SQLite/MySQL 方言驱动）只在用 SQL 存储后端时引入——需显式空导入 `pkg/kei/sql`，只 `import pkg/kei` 或只用默认的 `memory` 后端不会链接 GORM 与 cgo（详见「已知限制」与「创建一个新 chatbot」）。
 
 ## 目录结构
 
@@ -37,6 +37,7 @@ kei/
 │   ├── bot/               公开 SDK：Event/Message/Adapter 注册表/Plugin/Registrar/Reply/BotAPI
 │   ├── message/           消息段构建器
 │   └── kei/               装配门面：加载配置、装配适配器与插件、启动引擎、优雅退出
+│       └── sql/           SQL 方言显式 opt-in（空导入 sqlite/mysql，不用 SQL 后端可省略）
 ├── internal/
 │   ├── engine/            核心引擎（BotAPI 实现、发送限流与重试、优雅关闭）
 │   ├── eventbus/          事件总线（分片保序、去重、drain）
@@ -113,11 +114,11 @@ curl -sS 127.0.0.1:19090/metrics | grep kei_events
 # 5) Ctrl-C 优雅退出（停止接收 → 排空已入队事件 → 停止适配器 → 停止插件）
 ```
 
-`adapters/mock` 的 HTTP 控制面（仅在配置了 `listen_addr` 时启动）：
+`adapters/mock` 的 HTTP 控制面（仅在配置了 `listen_addr` 时启动；无鉴权，默认只接受回环地址，确需暴露时配置 `allow_remote_control_plane: true`）：
 
 | 方法/路径 | 说明 |
 | --- | --- |
-| `POST /inject` | 注入事件，JSON 字段：`text`/`user_id`/`user_name`/`channel_id`/`kind`/`id`/`type`；返回 `202` |
+| `POST /inject` | 注入事件，JSON 字段：`text`/`user_id`/`user_name`/`channel_id`/`kind`/`id`/`type`；`kind` 只接受 `private`/`group`/`channel`（未知取值返回 `400`）；成功返回 `202` |
 | `GET /sent` | 已发送消息记录（含结果与错误） |
 | `DELETE /sent` | 清空记录 |
 | `GET /healthz` | 存活检查 |
@@ -148,6 +149,9 @@ curl -sS 127.0.0.1:19090/metrics | grep kei_events
   	_ "github.com/RandomLemon/kei/adapters/mock"
   	_ "github.com/RandomLemon/kei/adapters/onebot"
   	_ "github.com/RandomLemon/kei/plugins/echo"
+
+  	// 用 storage.type: sqlite/mysql 时启用；不用 SQL 后端则不要导入，否则会引入 GORM 与 cgo 依赖。
+  	_ "github.com/RandomLemon/kei/pkg/kei/sql"
   )
 
   func main() {
@@ -173,7 +177,9 @@ curl -sS 127.0.0.1:19090/metrics | grep kei_events
 
   `Options.Storage` 为 nil 时按配置 `storage` 段构造：`storage.type` 取 `memory`（默认）/`sqlite`/`mysql`，
   `storage.dsn` 及段内其余键传给对应后端（见 [docs/configuration.md](docs/configuration.md) 12.5）；
-  未知 `storage.type` 在启动时直接报错并列出已注册类型。
+  未知 `storage.type` 在启动时直接报错并列出已注册类型。`sqlite`/`mysql` 方言为显式 opt-in：嵌入式使用需
+  空导入 `_ "github.com/RandomLemon/kei/pkg/kei/sql"`（`cmd/bot` 已空导入），只用 `memory` 时不要导入，
+  以免引入 GORM 与 cgo。
 
 **1. 跑通环境与骨架**
 
@@ -272,6 +278,10 @@ bots:
 plugins:
   echo:    { enabled: true }
   manage:  { enabled: true }
+# engine:                                  # 可选：引擎可调参数，整段缺省即吃引擎默认值
+#   command_prefixes: ["/"]                # 命令前缀；改为 ["!"] 即 !manage ping
+#   dedup_ttl: 5m
+#   send_retries: 2
 ```
 
 要点：
@@ -288,6 +298,12 @@ plugins:
 - `adapters.<name>` 段可选，且只支持 `enabled` 键：进程内适配器只靠 `bots[].adapter`
   引用即可工作，此处仅用于显式启用/禁用。`enabled` **缺省 true**（与插件相反）：写
   `enabled: false` 即不加载该适配器，其 `bots[]` 条目一并跳过（每个跳过的 bot 记 warn）。
+- `bots` 可以为空（缺省或显式 `bots: []`），此时核心只运行插件（启动时记 warn
+  `没有启用的适配器，核心将只运行插件`），因此「只跑插件」不必伪造一个 bot。
+- `engine` 段可选，把引擎可调参数（命令前缀、事件/规则/关闭超时、总线 worker 与队列、
+  去重 TTL 与容量、发送重试与退避）搬到 YAML；整段缺省（或时长/容量类写 `0`）时全部用引擎
+  默认值，`send_retries: 0` 表示不重试。键名与对应关系见
+  [docs/configuration.md](docs/configuration.md) 12.6。
 
 ### 环境变量覆盖
 
@@ -302,6 +318,8 @@ KEI_BOTS_QQ_MAIN_SECRET=xxx              # bot 名 qq-main → 其 secret
 KEI_PLUGINS_WEATHER_API_KEY=xxx
 KEI_STORAGE_TYPE=sqlite                  # 切换存储后端（默认 memory）
 KEI_STORAGE_DSN=/var/lib/kei/storage.db
+KEI_ENGINE_COMMAND_PREFIXES='!'          # 命令前缀改为 !（即 !manage ping）
+KEI_ENGINE_DEDUP_TTL=10m                 # 事件去重时间窗
 ```
 
 值的类型按 YAML 规则推断（`true`→bool、`3`→int、其余→string），所以 `enabled: "false"` 也能生效。
@@ -628,7 +646,7 @@ OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 
   「写一个适配器」自行接入（独立包或独立 module，核心零改动）。
 - 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称；
   不指定则只有该平台仅有一个 bot 时才能自动选择。
-- `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。后端参数（`cleanup_interval`、`max_open_conns` 等）在配置加载阶段校验，类型不符或负数直接报错；存储键按插件名/适配器实例名自动隔离（`plugin:<name>:` / `adapter:<botID>:` 前缀），单键最长 191 字节，超长键在任何后端都返回同一个错误。
+- `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。`sqlite`/`mysql` 方言需空导入 `pkg/kei/sql`（`cmd/bot` 已空导入；嵌入式使用请自行空导入，否则装配期报未知类型）。后端参数（`cleanup_interval`、`max_open_conns` 等）在配置加载阶段校验，类型不符或负数直接报错；存储键按插件名/适配器实例名自动隔离（`plugin:<name>:` / `adapter:<botID>:` 前缀），单键最长 191 字节，超长键在任何后端都返回同一个错误。
 - OneBot 一个 bot 实例同一时刻只启用一种接入方式（`mode`）：HTTP 双向用
   `forward_http`/`reverse_http`，`reverse_ws` 由 OneBot 实现连入，`forward_ws` 由 kei
   主动连出且不监听端口。一个 bot 实例只服务一个账号（`self_id` 非空时按 `X-Self-ID`

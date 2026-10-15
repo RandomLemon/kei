@@ -56,7 +56,7 @@ plugins:
 - 七条规则都经 `reg.OnCommand("manage", …)` 注册同一命令名，子命令用 `withSubcommand`（`manage.go:131`）区分：它借助 `bot.WithMatch` 断言 `Event.Command.Args[0]` 与该子命令名忽略大小写相等。这样每条子命令仍各自持有优先级、规则 ID 与 `WithAdmin()` 门槛，无需把手写 dispatch 塞进单个 Handler。
 - 子命令划分来自 `pkg/bot.ParseCommand`：`/manage ping` 解析为 `Command.Name == "manage"`、`Args == ["ping"]`；`/manage`（无参数）与 `/manage xyz`（未知子命令）不命中任何规则，因此不会有回复。命令名比较（`Rule.Command`）与子命令参数比较（`withSubcommand`）都忽略大小写，`/MANAGE PING`、`/manage HELP` 同样命中。
 - 全部使用 `bot.WithPriority(100)` 与 `bot.WithID("manage:<sub>")`：优先级 100 让管理命令先于兜底规则（例如 `WithPriority(-100)` 的 fallback）执行，规则 ID 用于日志与指标定位（`../plugin.md` 9.2）。
-- 命令名不含前缀；默认前缀为 `/`（`internal/engine/engine.go:73`、`:150`），可用引擎选项 `CommandPrefixes` 覆盖（例如改为 `!` 时命令变成 `!manage ping`）。
+- 命令名不含前缀；默认前缀为 `/`（`internal/engine/engine.go:73`、`:150`），可用引擎选项 `CommandPrefixes` 覆盖（配置 `engine.command_prefixes`，见 [`../configuration.md`](../configuration.md) 12.6；例如改为 `!` 时命令变成 `!manage ping`）。
 - `WithAdmin()` 只设置 `Rule.AdminOnly`；真正的拦截者是全局中间件 `middleware.Auth`（第 5 节）。因此不存在「插件内部自己判管理员」的逻辑。
 - `/manage status` **始终**带 `bot.WithAdmin()`：主机 CPU/内存/磁盘/GPU 等硬件与固件细节属于敏感信息，不随 `plugins_admin_only` 开关变化（后者只作用于 `/manage plugins`）。代价是示例配置（`auth.admin_users` 为空）下该命令对任何事件都返回未授权，需先配置管理员（第 8 节第 3 条）。
 - 七条子命令都是同步回复，无后台任务；`/manage status` 是唯一会短暂阻塞的 Handler（`/proc/stat` 两次采样间隔 200ms，见 3.6），其余为纯文本拼接。`Start`/`Stop` 是空实现（`manage.go:141`、`:144`）。
@@ -204,7 +204,7 @@ GPU：
 | `plugins.manage.plugins_admin_only` | bool | `false` | 为真时给 `/manage plugins` 规则追加 `bot.WithAdmin()`（`manage.go:97`–`99` 读取 `p.cfg.Bool("plugins_admin_only", false)`） |
 
 - `enabled` 的解码与「未列出即不启用」语义由配置层统一处理（见 [`../configuration.md`](../configuration.md) 12.3），插件私有配置经 `PluginContext.Config` 读取。本节只记录 manage 自己的键。
-- 环境变量覆盖与 `plugins.<name>` 段的通用规则一致（只命中配置中**已存在**的插件名，见 `../configuration.md` 12.6）：`KEI_PLUGINS_MANAGE_ENABLED=false` 停用插件；`KEI_PLUGINS_MANAGE_PLUGINS_ADMIN_ONLY=true` 等效于 YAML 里写 `plugins_admin_only: true`。
+- 环境变量覆盖与 `plugins.<name>` 段的通用规则一致（只命中配置中**已存在**的插件名，见 `../configuration.md` 12.7）：`KEI_PLUGINS_MANAGE_ENABLED=false` 停用插件；`KEI_PLUGINS_MANAGE_PLUGINS_ADMIN_ONLY=true` 等效于 YAML 里写 `plugins_admin_only: true`。
 - 示例配置 `configs/config.yaml` 中 manage 是启用的，并把 `plugins_admin_only` 设为 `true`（见第 8 节第 3 条注意事项）。
 
 ## 5. 管理员校验链路

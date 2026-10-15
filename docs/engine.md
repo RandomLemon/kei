@@ -68,10 +68,12 @@ type AdapterBinding struct {
 | `BusQueueSize` | 每个分片队列容量 | 256 |
 | `DedupTTL` | 事件去重时间窗 | 5m |
 | `DedupCapacity` | 去重集合容量上限（总线按分片均分，规则去重集合独占） | 4096 |
-| `SendRetries` | 发送失败重试次数（不含首次），负数按 0 | 2 |
+| `SendRetries` | 发送失败重试次数（不含首次），负数按 0 | 0（不重试） |
 | `SendBackoff` | 发送重试初始退避 | 100ms |
 | `HTTPClient` | 插件 HTTP 客户端，nil 时使用 `Timeout: 15s` 的默认客户端 | 15s |
 | `CommandPrefixes` | 命令前缀 | `["/"]` |
+
+这些可调参数在唯一装配路径（`pkg/kei.Run`）上由配置 `engine` 段透传，配置键与 `Options` 字段一一对应（键名与取值规则见 [configuration.md](configuration.md) 12.6）：`command_prefixes`→`CommandPrefixes`、`event_timeout`→`EventTimeout`、`rule_timeout`→`RuleTimeout`、`shutdown_timeout`→`ShutdownTimeout`、`bus_workers`→`BusWorkers`、`bus_queue_size`→`BusQueueSize`、`dedup_ttl`→`DedupTTL`、`dedup_capacity`→`DedupCapacity`、`send_retries`→`SendRetries`、`send_backoff`→`SendBackoff`。配置未写（或时长/容量类写 0）时字段保持零值，由上表的 `orInt`/`orDuration` 回落默认；`SendRetries` 例外——`0` 是有效取值（不重试），不是「用默认」。配置层不替引擎填默认值。
 
 插件生命周期各阶段超时由 `internal/pluginmgr` 决定，默认 Setup/Start/Stop 各 15s。
 
@@ -129,15 +131,16 @@ type AdapterBinding struct {
 	}
 ```
 
-适配器通过 `EventSink` 投递事件；`eventSink.Emit` 先记 `EventPublished` 指标，再 `bus.Publish`，失败时按 `queue_full`/`closed`/`error` 记 `EventDropped`：
+适配器通过 `EventSink` 投递事件；`eventSink.Emit` 先把上报平台归一化为已装配适配器名，再调 `bus.Publish`，按返回值分别埋点——只有真正入队才记 `EventPublished`，去重命中的事件记 `EventDropped(platform, "duplicate")` 且仍返回 nil（重复不是错误），错误路径按 `queue_full`/`closed`/`error` 记 `EventDropped`：
 
 ```go
 func (s *eventSink) Emit(ctx context.Context, ev *bot.Event) error {
 	if ev == nil {
 		return errors.New("engine: nil event")
 	}
-	s.eng.met.EventPublished(ev.Platform)
-	if err := s.eng.bus.Publish(ctx, ev); err != nil {
+	platform := s.eng.metricPlatform(ev.Platform)
+	enqueued, err := s.eng.bus.Publish(ctx, ev)
+	if err != nil {
 		reason := "error"
 		switch {
 		case errors.Is(err, eventbus.ErrQueueFull):
@@ -145,12 +148,20 @@ func (s *eventSink) Emit(ctx context.Context, ev *bot.Event) error {
 		case errors.Is(err, eventbus.ErrClosed):
 			reason = "closed"
 		}
-		s.eng.met.EventDropped(ev.Platform, reason)
+		s.eng.met.EventDropped(platform, reason)
 		return err
 	}
+	if !enqueued {
+		// 去重命中：事件未入队，但对外契约仍成功（重复不是错误）。
+		s.eng.met.EventDropped(platform, "duplicate")
+		return nil
+	}
+	s.eng.met.EventPublished(platform)
 	return nil
 }
 ```
+
+`bus.Publish` 返回 `(enqueued, err)`：入队为 `(true, nil)`，ID 重复被忽略为 `(false, nil)`，队列满/已关闭/空事件为 `(false, 对应错误)`；`Bus.Emit` 为满足 `bot.EventSink` 只返回错误，需要区分「入队」与「去重忽略」的调用方直接用 `Publish`。
 
 业务处理在事件总线的 worker 中进行。`Engine` 在 `New` 时以 `e.handle` 作为唯一订阅者注册到总线，`handle` 施加事件级超时并分发：
 
@@ -223,7 +234,7 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 1. 解析目标适配器（`resolve`）：`target.BotID` 非空时必须已注册且其平台名与 `target.Platform` 一致（`engine: bot %q is on platform %q, not %q`）；为空时仅当该平台只有一个 bot 才自动选择，否则报错要求显式指定（`engine: platform %q has %d bots, target.BotID is required`）；平台无 bot 时报 `engine: no adapter for platform %q`。
 2. `bot.Degrade(req.Message, ad.Capabilities())` 按平台能力降级消息段；降级后没有可发送的段则直接报错，绝不静默发送空消息。
 3. 发送前限流：配置了 `limits.send_rate > 0` 时为每个 bot 建一个令牌桶 `ratelimit.New(SendRate, SendBurst, 0, 0)`，发送前 `lim.Wait(ctx, botID)` 阻塞到拿到令牌或 ctx 结束（发送链路不允许丢消息）。
-4. 重试：`attempts = SendRetries + 1`（默认 3 次尝试）；第 n 次重试（n ≥ 1）前先等待 `SendBackoff << (attempt-1)`（默认 100ms、200ms），等待期间响应 ctx 取消。每次尝试都记 `MessageSent(platform, 耗时, err)` 指标。ctx 已取消或某次尝试返回错误且 `ctx.Err() != nil` 时停止重试；错误以 `engine: send via %s: %w` 包装返回。重试是 at-least-once 语义：对端已收到但响应失败时会重复投递。
+4. 重试：`attempts = SendRetries + 1`（未配置 `send_retries` 时为 1 次尝试，即不重试；配置段见 [configuration.md](configuration.md) 12.6）；第 n 次重试（n ≥ 1）前先等待 `SendBackoff << (attempt-1)`（默认 100ms、200ms），等待期间响应 ctx 取消。每次尝试都记 `MessageSent(platform, 耗时, err)` 指标。ctx 已取消或某次尝试返回错误且 `ctx.Err() != nil` 时停止重试；错误以 `engine: send via %s: %w` 包装返回。重试是 at-least-once 语义：对端已收到但响应失败时会重复投递。
 
 令牌桶实现（`internal/ratelimit`）：`rate` 为每秒补充令牌数，`burst` 为桶容量（`<= 0` 时取 `max(1, rate)`），`rate <= 0` 表示不限流（`Allow` 恒为 true）。`Allow(key)`/`AllowN(key, n)` 放行时才扣令牌；`Buckets()`/`GC()` 暴露活跃桶数与空闲回收，空闲阈值默认 10 分钟。桶表容量有上限 `maxKeys`（`New` 的第 4 个参数，`<= 0` 时默认 10000）：活跃桶数达到上限后，插入新 key 时按「最久未使用」淘汰一个桶（`order` 为 `container/list` 维护的 LRU，淘汰 O(1)；任何访问——包括被拒绝的调用——都会刷新位置），被淘汰的 key 下次出现时重建为满桶。因此 key 空间不可枚举（例如伪造的用户 ID）时内存仍有界。`Wait` 在无法放行时按 `retryAfter` 计算需要等待的时长后重试，`retryAfter` 为 0 时睡 1ms 避免忙等；`retryAfter` 是只读估算——先按当前时间把令牌补到 `now` 再算 `max(0, (1-tokens)/rate)`，不修改桶状态，也不依赖调用方刚刚调用过 `Allow`（陈旧快照会把等待算长，例如桶已空了半个周期仍按整整一个令牌计）。
 
@@ -251,14 +262,14 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 
 ```go
 func New(opts Options) *Bus
-func (b *Bus) Publish(_ context.Context, ev *bot.Event) error
+func (b *Bus) Publish(_ context.Context, ev *bot.Event) (enqueued bool, err error)
 func (b *Bus) Emit(ctx context.Context, ev *bot.Event) error
 func (b *Bus) Subscribe(handler func(context.Context, *bot.Event)) error
 func (b *Bus) Close(ctx context.Context) error
 func (b *Bus) Stats() Stats
 ```
 
-仓库中不存在名为 `eventbus.EventBus` 的接口类型：`*eventbus.Bus` 是具体实现，对外暴露 `Publish`/`Subscribe`，并实现 `bot.EventSink`（`Emit`，与 `Publish` 语义完全一致，供适配器投递事件）。`Engine` 持有具体类型 `*eventbus.Bus`。
+仓库中不存在名为 `eventbus.EventBus` 的接口类型：`*eventbus.Bus` 是具体实现，对外暴露 `Publish`/`Subscribe`，并实现 `bot.EventSink`（`Emit`，供适配器投递事件）。`Publish` 以 `enqueued` 区分「入队」与「去重忽略」，`Emit` 受 `bot.EventSink` 契约限制只返回错误（入队与去重命中都返回 nil，需要区分时用 `Publish`）。`Engine` 持有具体类型 `*eventbus.Bus`。
 
 ### 8.1 配置与默认值
 
@@ -286,15 +297,15 @@ type Stats struct {
 
 ### 8.2 Publish 语义
 
-`Publish` 永不阻塞，也不响应 ctx 取消（`ctx` 仅为满足 `bot.EventSink` 契约）。顺序固定为：空事件报错 → 定位分片并在分片锁内检查关闭状态 → 去重命中则忽略 → 队列已满则丢弃 → 写入去重集 → 复制事件并入队。
+`Publish` 永不阻塞，也不响应 ctx 取消（`ctx` 仅为满足 `bot.EventSink` 契约）。顺序固定为：空事件报错 → 定位分片并在分片锁内检查关闭状态 → 去重命中则忽略 → 队列已满则丢弃 → 写入去重集 → 复制事件并入队。返回 `(enqueued, err)`：`enqueued` 表示事件是否真正入队，取值与错误组合如下。
 
 **事件对象的所有权**：入队时总线复制 `*bot.Event` 并独占副本，队列、worker、处理器与路由器的命令解析都只接触副本，因此 `Publish` 返回后调用方可以立即复用 `ev`（放回 `sync.Pool`、覆写字段等）——旧实现把调用方的指针直接入队，`Router.Dispatch` 稍后写回的 `ev.Command` 会与这种复用方式竞态。复制是**浅拷贝**：`ev` 引用的 `Message`/`Sender`/`Channel` 等对象仍与副本共享，投递后不得再修改它们。复制只发生在确定入队的那条路径上，去重命中与队列满的调用不产生额外分配。
 
-- 空事件返回 `errNilEvent`（`eventbus: nil event`）。
-- 已关闭返回 `ErrClosed`（`eventbus: closed`）。
-- 事件 ID 已出现过：`Duplicated` 加一，返回 nil（去重是「成功」而非错误）。
-- 队列已满：`Dropped` 加一，写 `Warn` 日志，返回包装了 `ErrQueueFull` 的错误（`eventbus: publish %q: queue full`）；被丢弃的事件**不写入去重集**，因此调用方重试仍可成功投递。该日志在分片锁之外写、且**按分片限流**：连续打满时每个分片每个窗口（`dropLogInterval = 1s`）至多一条，字段含 `event_id`/`session_key`/`queue_size`/`dropped_total`（写日志当刻的累计丢弃数）；丢弃总数以 `Stats().Dropped` 为准。因此阻塞式日志处理器只会拖慢本次投递，不会占着分片锁。
-- 成功入队：`Published` 加一，返回 nil。返回值只表示事件已入队或已被去重忽略，不表示已被处理。
+- 空事件返回 `(false, errNilEvent)`（`eventbus: nil event`）。
+- 已关闭返回 `(false, ErrClosed)`（`eventbus: closed`）。
+- 事件 ID 已出现过：`Duplicated` 加一，返回 `(false, nil)`（去重是「成功」而非错误，因此错误为 nil、但事件未入队）。
+- 队列已满：`Dropped` 加一，写 `Warn` 日志，返回 `(false, 包装了 ErrQueueFull 的错误)`（`eventbus: publish %q: queue full`）；被丢弃的事件**不写入去重集**，因此调用方重试仍可成功投递。该日志在分片锁之外写、且**按分片限流**：连续打满时每个分片每个窗口（`dropLogInterval = 1s`）至多一条，字段含 `event_id`/`session_key`/`queue_size`/`dropped_total`（写日志当刻的累计丢弃数）；丢弃总数以 `Stats().Dropped` 为准。因此阻塞式日志处理器只会拖慢本次投递，不会占着分片锁。
+- 成功入队：`Published` 加一，返回 `(true, nil)`。`enqueued` 为 true 只表示事件已入队，不表示已被处理；`enqueued=false` 且 `err=nil` 只可能是去重忽略。
 
 容量检查与入队都在分片互斥锁内完成，因此不存在「检查通过后被并发写满、发送阻塞」的窗口，也不会向已关闭的 channel 发送。锁内只做内存操作（去重集与队列），日志与计数器都在锁外：去重集合按事件 ID 哈希拆成 `Workers` 份（见 8.5），因此不同 ID 的投递不会在同一把去重锁上串行，投递方之间只有分片锁这一处串行点。
 
@@ -393,7 +404,7 @@ type Rule struct {
 - 规则表按 `Priority` **降序**执行，同优先级按注册顺序（`slices.SortStableFunc`）。同一次事件命中的所有规则都会被完整执行，各自的错误用 `errors.Join` 聚合并包装为 `router: 规则 %s 执行失败: %w`；没有任何规则命中时 `Dispatch` 返回 nil。
 - `Dispatch` 在 `ev.Command == nil && ev.Message != nil` 时用配置的前缀（默认 `["/"]`）解析命令并写回 `ev`（`bot.ParseCommand`）。
 - 每条命中规则注入独立的 `bot.Route`（`Plugin`、`RuleID`、`Trigger`、`Priority`、`AdminOnly`、`RegexMatches`），并创建独立的 `bot.Reply`（`internal/reply.Builder`，每次规则调用一次，`Send`/`SendResult` 时才真正发送，并实现可选扩展 `bot.ExtendedReply`；事件消息带 ID 时自动追加 `SegReply` 引用原消息（平台不支持引用时该段被降级丢弃，见 [plugin.md](plugin.md) 9.3）；工厂缺失时退化为 `bot.NoopReply`），避免多条规则的回复互相污染。
-- 规则表以「不可变快照 + 原子替换」发布：`Dispatch` 可被多个总线 worker 并发调用，注册与 `UpdateRules` 由写锁串行化。`UpdateRules(fn)` 在写锁内把 `fn` 依次应用到每条规则的**副本**上，全部校验通过后按优先级重建快照并整体替换（引擎用它写入 `BotIDs`）；中途失败（`fn` 为 nil 或把某条规则的 `Handler` 置空）时已应用的改动一并丢弃，既不发布新快照也不改到已发布的规则，因此不存在半更新状态。`Rules()` 返回深层副本，`RegistrationErrors()` 返回错误副本（无法通过返回值上报的注册错误，例如正则编译失败、重复 ID）。引擎只经 `Engine.Rules()`/`Engine.RegistrationErrors()` 暴露只读视图，不暴露可写的 `Router`。
+- 规则表以「不可变快照 + 原子替换」发布：`Dispatch` 可被多个总线 worker 并发调用，注册与 `UpdateRules` 由写锁串行化。`UpdateRules(fn)` 在写锁内把 `fn` 依次应用到每条规则的**副本**上，全部校验通过后按优先级重建快照并整体替换（引擎用它写入 `BotIDs`）；中途失败（`fn` 为 nil 或把某条规则的 `Handler` 置空）时已应用的改动一并丢弃，既不发布新快照也不改到已发布的规则，因此不存在半更新状态。`Rules()` 返回深层副本，`RegistrationErrors()` 返回错误副本（无法通过返回值上报的注册错误，例如正则编译失败、重复 ID）。引擎只经 `Engine.Rules()`/`Engine.RegistrationErrors()` 暴露只读视图，不暴露可写的 `Router`（两者都是仓库内视图：`engine.Engine` 为 `internal` 类型，仓库外不可达；注册失败对外的信号是 `recordErr` 的 Warn 日志，见 [plugin.md](plugin.md) 9.2）。
 - 匹配阶段的 panic 按规则隔离：`Rule.Matches`（插件的 `WithMatch` 断言、事件文本解析）在 `Dispatch` 内部逐条 recover，panic 只跳过该条规则——其余规则照常匹配与执行，panic 记 `Error` 日志（`plugin`/`rule`/`platform`/`type`/`event_id`/`panic`/`stack`）并计入 `RuleMatchPanic`（`kei_rule_match_panics_total{plugin,rule}`），错误以 `router: 规则匹配 panic: 规则 <id>: <panic>` 形式（包装 `ErrMatchPanic`，可用 `errors.Is` 判定）进入 `Dispatch` 的聚合返回值。修复前该类 panic 会冒泡出 `Dispatch`，被事件总线的「处理器 panic」兜底捕获并中止该事件的所有剩余规则，且日志里没有 rule 标识。
 
 ### 10.4 中间件洋葱模型
@@ -462,6 +473,10 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 `internal/metrics` 以自研的 Prometheus 文本格式实现（`Registry` 实现 `metrics.Recorder`，`Handler()` 暴露为 `/metrics` 可用的 `http.Handler`），全部计数器族为 `kei_events_published_total{platform}`、`kei_events_dropped_total{platform,reason}`、`kei_events_handled_total{plugin,rule,result}`、`kei_event_handling_seconds{plugin,rule}`（直方图）、`kei_messages_sent_total{platform,result}`、`kei_message_send_seconds{platform}`（直方图）、`kei_rules_matched_total{plugin,rule}`、`kei_rule_overruns_total{plugin,rule}`、`kei_rule_match_panics_total{plugin,rule}`。全部 `Recorder` 方法对 nil 接收者安全，因此未启用指标的部署可传 `(*metrics.Registry)(nil)` 作为空实现。
 
+事件投递的计数口径：`kei_events_published_total` 只统计**实际成功入队**的事件，`kei_events_dropped_total` 统计未入队的投递尝试（`reason="duplicate"` 为去重命中，另有 `queue_full`/`closed`/`error`），因此 `published + dropped` 等于投递尝试总数；去重命中不是错误，`EventSink.Emit` 仍返回 nil。`kei_events_dropped_total{platform,reason}` 的 `reason="duplicate"` 与 `(*eventbus.Bus).Stats().Duplicated` 计数一致。
+
+`platform` 标签会归一化为**已装配适配器的平台名**（`Adapter.Name()`）：事件上报的平台名不在已装配集合内时统一记为 `unknown`，避免未经校验的上报值（平台回调甚至可指定平台名）为每个新取值新增一条时间序列、导致指标注册表内存无界增长。`kei_messages_sent_total`/`kei_message_send_seconds` 的 `platform` 取自解析后的适配器名，本身就是已知平台，无需归一化。
+
 `kei_rule_overruns_total{plugin,rule}` 记录**规则超时那一刻仍未返回**的调用数：父 ctx 结束（引擎关闭、`EventTimeout` 到期）导致的取消不计入——那不是规则超时；超时后很快退出的良性情况也计入（对应日志里的实际耗时可用于分辨），持续不退出者另有 Error 级堆栈告警（见 7.8）。
 
 `kei_rule_match_panics_total{plugin,rule}` 记录**规则匹配阶段 panic** 的次数：每次 panic 只跳过该条规则、不影响同一事件的其余规则（见 10.3），该计数用于发现反复抛 panic 的插件断言（`WithMatch`）。
@@ -486,7 +501,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 以下为当前实现的真实边界与缺口，均为正文已描述事实之外的补充；其余实现细节（Rule 字段全集、Option 全集、分片 worker 模型、`RateLimit` 作用域、指标已实现）见正文第 7 至第 10 章，此处不重复。
 
 - **被拒绝的适配器注册是启动期致命错误**：`bot.RegisterAdapter`（`pkg/bot/adapter_registry.go`）在 `meta.Name == ""` 或 `factory == nil` 时不入表，而是把该次注册记入 `bot.AdapterRegistrationErrors()`（保留注册顺序与拒绝原因）；`adaptermgr.ValidateRegistry` 在校验进程内注册表后调用 `validateRegistrationRejects`，非空时报错终止启动：`adaptermgr: 适配器注册被拒绝: %s；RegisterAdapter 要求 Name 非空且 factory 非 nil`，其中 `%s` 为逐条 `名称（原因）`，空名显示为 `<空名>`。因此空 `Name` 既不会让适配器静默可用，也不会表现为运行时「未注册」，而是在进程启动阶段失败。同名重复注册不走这条路径，由 `validateRegistryOf` 单独报错，见 7.6。
-- **无 `eventbus.EventBus` 接口**：`internal/eventbus` 只导出具体类型 `*eventbus.Bus`（`Engine` 亦持有具体类型）；其完整方法集为 `Publish(ctx, ev) error`、`Emit(ctx, ev) error`（实现 `bot.EventSink`）、`Subscribe(handler) error`、`Close(ctx) error`、`Stats() Stats`。`Publish` 不阻塞：分片队列满时丢弃事件并返回 `eventbus: publish %q: queue full`（`errors.Is(err, ErrQueueFull)`），已关闭时返回 `ErrClosed`。
+- **无 `eventbus.EventBus` 接口**：`internal/eventbus` 只导出具体类型 `*eventbus.Bus`（`Engine` 亦持有具体类型）；其完整方法集为 `Publish(ctx, ev) (bool, error)`、`Emit(ctx, ev) error`（实现 `bot.EventSink`）、`Subscribe(handler) error`、`Close(ctx) error`、`Stats() Stats`。`Publish` 不阻塞：分片队列满时丢弃事件并返回 `(false, eventbus: publish %q: queue full)`（`errors.Is(err, ErrQueueFull)`），已关闭时返回 `(false, ErrClosed)`，去重命中返回 `(false, nil)`。
 - **`Timeout` 无法终止不响应 ctx 的调用**：Go 不能强杀 goroutine，规则超时只是放弃等待——不响应取消的插件中间件或 Handler 会继续运行、继续占用该 goroutine，直到自行返回。框架的兜底是契约（`pkg/bot` 的 `Handler` 注释要求响应 ctx 取消）与归因（`kei_rule_overruns_total` 计数、Warn 日志、卡死时的 goroutine 堆栈 Error，见 7.8、10.5），而不是强制退出。
 
 ## 相关文档

@@ -135,7 +135,7 @@ type Option func(*Rule)
 | `OnEvent` | `EventType`（不限定会话类型与平台） | `RegistrationErrors` |
 | `OnAll` | 无过滤条件，所有事件都会命中 | `RegistrationErrors` |
 
-`OnRegex` 的失败通道是 `Router.RegistrationErrors()`（`recordErr` 累计并记 Warn 日志）：非法正则只是不注册该规则、不 panic，`Setup` 本身仍返回 nil；引擎不主动消费该列表，需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取（引擎只暴露只读副本，见 [engine.md](engine.md) 10.3）。
+`OnRegex` 的失败通道是 `Router.RegistrationErrors()`（`recordErr` 累计并记 Warn 日志）：非法正则只是不注册该规则、不 panic，`Setup` 本身仍返回 nil。引擎不主动消费该列表；注册失败**对外**可见的信号就是 `recordErr` 逐条记下的 Warn 日志——`Engine.RegistrationErrors()` 只是仓库内（引擎与测试）的只读视图，`engine.Engine` 是 `internal` 类型、仓库外拿不到，因此它不是面向嵌入方或插件作者的公开通道（见 [engine.md](engine.md) 10.3）。
 
 空触发参数与正则编译失败走同一通道：不注册规则、错误记入 `RegistrationErrors`（`recordErr` 记 Warn 日志），不会退化成匹配全部事件的兜底。`OnKeyword` 在注册时复制 `Keywords` 切片，注册后修改入参不影响路由；`RecordingRegistrar`（插件单测用，`pkg/bot/registrar_recorder.go`）行为一致：空参数不落规则、错误进 `Errors()`。
 
@@ -420,7 +420,7 @@ type Storage interface {
 
 内存实现位于 `internal/storage`：
 
-- `storage.NewMemory() *Memory` / `storage.NewMemoryWithCleanup(interval)`：构造并发安全的存储并启动过期清理 goroutine（默认 `defaultCleanupInterval = time.Minute` 扫一次，`interval <= 0` 时不启动）。经注册表 `storage.Open("memory", cfg)` 使用时读取 `cleanup_interval`（默认 1 分钟，`0` 关闭后台清理，与 SQL 后端同义）。使用完必须 `Close()` 释放后台 goroutine，`Close` 可重复调用。
+- `storage.NewMemory() *Memory` / `storage.NewMemoryWithCleanup(interval)`：构造并发安全的存储并启动过期清理 goroutine（默认 `defaultCleanupInterval = time.Minute` 扫一次，`interval <= 0` 时不启动）。经注册表 `storage.Open("memory", cfg, logger)` 使用时读取 `cleanup_interval`（默认 1 分钟，`0` 关闭后台清理，与 SQL 后端同义）。使用完必须 `Close()` 释放后台 goroutine，`Close` 可重复调用。
 - `Get` 返回值的副本，键不存在或已过期返回 `bot.ErrNotFound`；`Set` 拷贝入参切片，`ttl <= 0` 表示永不过期；`Delete` 对不存在的键返回 nil；`Len()` 返回当前条目数（含尚未清理的过期条目）。入参 ctx 已取消时立即返回 `ctx.Err()`。
 - `storage.Denied() bot.Storage`：拒绝一切访问的实现，`Get`/`Set`/`Delete` 都返回 `bot.ErrPermissionDenied`（公开哨兵，插件/适配器可经 `errors.Is(err, bot.ErrPermissionDenied)` 判定）。未声明 `PermStorage` 的插件（`internal/engine.pluginAPI`）与适配器（`internal/adaptermgr`）拿到的就是它。
 
@@ -428,7 +428,7 @@ type Storage interface {
 
 键空间与键长：插件拿到的 `Storage` 是**按插件名隔离的视图**——`internal/pluginmgr` 在组装 `PluginContext` 时与 `internal/engine.pluginAPI`（`BotAPI.Storage()`）都用 `storage.PluginScoped` 包一层，底层键统一带 `plugin:<插件名>:` 前缀。两个插件的同名键因此互不覆盖，插件也不需要自己拼前缀（键按原样传入，前缀由框架加；同一插件经 `PluginContext.Storage` 与 `BotAPI.Storage()` 看到的是同一批键）。键长上限 191 字节（`storage.MaxKeyBytes`，取自 SQL 列的 `size:191`）：内存、SQLite、MySQL 三个后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（`errors.Is(err, storage.ErrKeyTooLong)` 可判定），而不是只有 MySQL 报错；上限按字节计算，比 MySQL 的字符数约束更保守。
 
-SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参，`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。
+SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参，`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。清理失败不再静默：后台清理失败记 **Warn**（表在无界增长，必须告警），`Get` 惰性删除失败记 **Debug**（读取路径高频、多为并发删除等预期噪声，`Get` 仍照常返回 `bot.ErrNotFound`）；日志器经装配链传入（`storage.Open(kind, cfg, logger)` / `sqlstore.New(db, cleanup, logger)`，nil 时为 `slog.Default()`）。
 
 ### 11.3 PluginContext
 
