@@ -119,7 +119,7 @@ func mustSubscribe(t *testing.T, b *Bus, h func(context.Context, *bot.Event)) {
 // mustPublish 投递事件并断言无错误。
 func mustPublish(t *testing.T, b *Bus, ev *bot.Event) {
 	t.Helper()
-	if err := b.Publish(context.Background(), ev); err != nil {
+	if _, err := b.Publish(context.Background(), ev); err != nil {
 		t.Fatalf("Publish(%q): %v", ev.ID, err)
 	}
 }
@@ -199,7 +199,7 @@ func TestSameSessionLandsOnSingleShard(t *testing.T) {
 			defer wg.Done()
 			for i := range perSession {
 				ev := newEvent(session, fmt.Sprintf("s%d-e%03d", s, i))
-				if err := b.Publish(context.Background(), ev); err != nil {
+				if _, err := b.Publish(context.Background(), ev); err != nil {
 					errs <- err
 					return
 				}
@@ -403,7 +403,10 @@ func TestQueueFullDropsWithoutBlocking(t *testing.T) {
 
 	// 队列已满：必须立刻返回 ErrQueueFull，绝不阻塞调用方。
 	done := make(chan error, 1)
-	go func() { done <- b.Publish(context.Background(), newEvent("s", "q3")) }()
+	go func() {
+		_, err := b.Publish(context.Background(), newEvent("s", "q3"))
+		done <- err
+	}()
 
 	select {
 	case err := <-done:
@@ -421,6 +424,65 @@ func TestQueueFullDropsWithoutBlocking(t *testing.T) {
 	if stats.Published != 2 || stats.Dropped != 1 || stats.Handled != 2 {
 		t.Fatalf("Stats = %+v, 期望 Published=2 Dropped=1 Handled=2", stats)
 	}
+}
+
+// TestPublishReportsEnqueued 验证 Publish 的 enqueued 返回值：真正入队为 true，
+// 去重命中、队列满、已关闭都为 false，其中后两者还返回对应错误。
+func TestPublishReportsEnqueued(t *testing.T) {
+	t.Run("入队与去重", func(t *testing.T) {
+		b := New(Options{Workers: 1, QueueSize: 8, Logger: testLogger()})
+		defer closeBus(t, b)
+
+		if enqueued, err := b.Publish(context.Background(), newEvent("s", "dup")); !enqueued || err != nil {
+			t.Fatalf("首次投递 = (%v, %v), 期望 (true, nil)", enqueued, err)
+		}
+		// 同一 ID 再投：去重命中，未入队但不是错误。
+		if enqueued, err := b.Publish(context.Background(), newEvent("s", "dup")); enqueued || err != nil {
+			t.Fatalf("重复投递 = (%v, %v), 期望 (false, nil)", enqueued, err)
+		}
+		if got := b.Stats(); got.Published != 1 || got.Duplicated != 1 {
+			t.Fatalf("Stats = %+v, 期望 Published=1 Duplicated=1", got)
+		}
+	})
+
+	t.Run("队列满", func(t *testing.T) {
+		b := New(Options{Workers: 1, QueueSize: 1, Logger: testLogger()})
+		defer closeBus(t, b)
+
+		entered := make(chan struct{}, 1)
+		release := newGate()
+		defer release.release()
+		mustSubscribe(t, b, func(_ context.Context, _ *bot.Event) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			release.wait()
+		})
+
+		mustPublish(t, b, newEvent("s", "q1"))
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("worker 未开始处理首个事件")
+		}
+		mustPublish(t, b, newEvent("s", "q2")) // 占满容量为 1 的队列
+
+		enqueued, err := b.Publish(context.Background(), newEvent("s", "q3"))
+		if enqueued || !errors.Is(err, ErrQueueFull) {
+			t.Fatalf("队列满 = (%v, %v), 期望 (false, ErrQueueFull)", enqueued, err)
+		}
+	})
+
+	t.Run("已关闭", func(t *testing.T) {
+		b := New(Options{Workers: 1, QueueSize: 4, Logger: testLogger()})
+		closeBus(t, b)
+
+		enqueued, err := b.Publish(context.Background(), newEvent("s", "after"))
+		if enqueued || !errors.Is(err, ErrClosed) {
+			t.Fatalf("关闭后 = (%v, %v), 期望 (false, ErrClosed)", enqueued, err)
+		}
+	})
 }
 
 // syncWriter 是并发安全的 io.Writer，用于在测试中捕获日志输出。
@@ -503,7 +565,7 @@ func TestQueueFullDropLogging(t *testing.T) {
 		drop := func(prefix string, n int) {
 			t.Helper()
 			for i := range n {
-				err := b.Publish(context.Background(), newEvent("s", fmt.Sprintf("%s-%d", prefix, i)))
+				_, err := b.Publish(context.Background(), newEvent("s", fmt.Sprintf("%s-%d", prefix, i)))
 				if !errors.Is(err, ErrQueueFull) {
 					t.Fatalf("第 %d 条应被丢弃: %v", i, err)
 				}
@@ -547,7 +609,10 @@ func TestQueueFullDropLogging(t *testing.T) {
 
 		// 第一条丢弃日志会阻塞在日志处理器里（限流窗口已由它占用）。
 		dropped := make(chan error, 1)
-		go func() { dropped <- b.Publish(context.Background(), newEvent("s", "drop-1")) }()
+		go func() {
+			_, err := b.Publish(context.Background(), newEvent("s", "drop-1"))
+			dropped <- err
+		}()
 		select {
 		case <-logHandler.started:
 		case <-time.After(5 * time.Second):
@@ -556,7 +621,10 @@ func TestQueueFullDropLogging(t *testing.T) {
 
 		// 同一分片的后续投递不得被日志处理器卡住。
 		done := make(chan error, 1)
-		go func() { done <- b.Publish(context.Background(), newEvent("s", "drop-2")) }()
+		go func() {
+			_, err := b.Publish(context.Background(), newEvent("s", "drop-2"))
+			done <- err
+		}()
 		select {
 		case err := <-done:
 			if !errors.Is(err, ErrQueueFull) {
@@ -642,8 +710,7 @@ func TestCloseIsIdempotentAndRejectsPublish(t *testing.T) {
 	closeBus(t, b)
 	closeBus(t, b)
 
-	err := b.Publish(context.Background(), newEvent("s", "after"))
-	if !errors.Is(err, ErrClosed) {
+	if _, err := b.Publish(context.Background(), newEvent("s", "after")); !errors.Is(err, ErrClosed) {
 		t.Fatalf("关闭后 Publish 返回 %v, 期望 ErrClosed", err)
 	}
 	if err := b.Emit(context.Background(), newEvent("s", "after")); !errors.Is(err, ErrClosed) {
@@ -759,7 +826,7 @@ func TestNilEventRejected(t *testing.T) {
 	rec := &recorder{}
 	mustSubscribe(t, b, rec.handler)
 
-	if err := b.Publish(context.Background(), nil); err == nil {
+	if _, err := b.Publish(context.Background(), nil); err == nil {
 		t.Fatal("Publish(nil) 未返回错误")
 	}
 	mustPublish(t, b, newEvent("s", "ok"))
@@ -912,7 +979,7 @@ func TestConcurrentPublishSameIDHandledOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if err := b.Publish(context.Background(), newEvent("race", "same-id")); err != nil {
+			if _, err := b.Publish(context.Background(), newEvent("race", "same-id")); err != nil {
 				errs <- err
 			}
 		}()
@@ -1082,7 +1149,7 @@ func TestPublishEventOwnership(t *testing.T) {
 		for i := range 20 {
 			ev := newEvent("pooled", fmt.Sprintf("pooled-%d", i))
 			// 队列满（handler 慢）不影响本用例要验证的竞态：丢弃是可接受结果。
-			if err := b.Publish(context.Background(), ev); err != nil && !errors.Is(err, ErrQueueFull) {
+			if _, err := b.Publish(context.Background(), ev); err != nil && !errors.Is(err, ErrQueueFull) {
 				t.Fatalf("Publish(%d): %v", i, err)
 			}
 			// 投递后立刻复用：整体覆写并放回「池」。

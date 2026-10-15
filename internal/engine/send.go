@@ -74,6 +74,8 @@ func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.Se
 		}
 		start := time.Now()
 		res, err := ad.Send(ctx, out)
+		// ad 由 resolve 从已装配适配器选出，ad.Name() 必是 e.platforms 中的已知
+		// 平台名，标签基数有界，无需再经 metricPlatform 归一化。
 		e.met.MessageSent(ad.Name(), time.Since(start), err)
 		if err == nil {
 			if res == nil {

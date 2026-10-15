@@ -163,18 +163,24 @@ func New(opts Options) *Bus {
 
 // Publish 把事件投递到会话所属分片。
 //
-// 返回 nil 表示事件已入队，或事件因 ID 重复被忽略；它不表示事件已被处理。
-// Publish 永不阻塞：队列已满时丢弃事件并返回包装了 ErrQueueFull 的错误；
+// enqueued 表示事件是否真正入队：入队返回 (true, nil)；事件因 ID 重复被忽略
+// 返回 (false, nil)；队列已满返回 (false, 包装了 ErrQueueFull 的错误)；
+// 总线已关闭返回 (false, ErrClosed)；ev 为 nil 返回 (false, errNilEvent)。
+// 因此调用方需把 (true, nil) 计为已发布、(false, nil) 计为去重丢弃，才能让
+// 「已发布 + 已丢弃」等于投递尝试总数；对 bot.EventSink 契约而言两者都成功
+// （err == nil），enqueued 只是更细的区分。enqueued 为 true 不表示事件已被处理。
+//
+// Publish 永不阻塞：队列已满时丢弃事件并返回错误；
 // 去重与入队只在分片自身与事件 ID 所属的去重分片上串行，不同分片互不影响。
-// ctx 仅为满足 bot.EventSink 契约，投递本身是非阻塞的，不响应取消。
+// ctx 契约不变：仅为满足 bot.EventSink 契约，投递本身是非阻塞的，不响应取消。
 //
 // 入队时会复制事件对象并独占副本，因此 Publish 返回后调用方可以立即复用 ev
 // （放回 sync.Pool、覆写字段等）：队列与处理器只接触副本，命令解析等回写也落在
 // 副本上，不会回写调用方的对象。复制是浅拷贝——ev 引用的 Message/Sender/Channel
 // 等对象仍与副本共享，投递后不得再修改它们。
-func (b *Bus) Publish(_ context.Context, ev *bot.Event) error {
+func (b *Bus) Publish(_ context.Context, ev *bot.Event) (enqueued bool, err error) {
 	if ev == nil {
-		return errNilEvent
+		return false, errNilEvent
 	}
 	key := ev.SessionKey()
 	sh := b.shards[shardIndex(key, len(b.shards))]
@@ -186,25 +192,25 @@ func (b *Bus) Publish(_ context.Context, ev *bot.Event) error {
 	sh.mu.Lock()
 	if sh.closed {
 		sh.mu.Unlock()
-		return ErrClosed
+		return false, ErrClosed
 	}
 	if set.Seen(ev.ID) {
 		sh.mu.Unlock()
 		b.stats.duplicated.Add(1)
-		return nil
+		return false, nil
 	}
 	if len(sh.q) >= cap(sh.q) {
 		// 丢弃的事件不写入去重集合，重试仍可成功投递。
 		sh.mu.Unlock()
 		b.stats.dropped.Add(1)
 		b.logDrop(sh, ev, key)
-		return fmt.Errorf("eventbus: publish %q: %w", ev.ID, ErrQueueFull)
+		return false, fmt.Errorf("eventbus: publish %q: %w", ev.ID, ErrQueueFull)
 	}
 	if !set.Add(ev.ID) {
 		// 同一 ID 但不同会话的并发投递（各自持有不同分片锁）兜底去重。
 		sh.mu.Unlock()
 		b.stats.duplicated.Add(1)
-		return nil
+		return false, nil
 	}
 	// 复制事件：此后调用方即可复用 ev，而队列与处理器只接触副本。
 	// 只在确定入队时复制，丢弃与去重路径不产生额外分配。
@@ -212,7 +218,7 @@ func (b *Bus) Publish(_ context.Context, ev *bot.Event) error {
 	sh.q <- &owned
 	sh.mu.Unlock()
 	b.stats.published.Add(1)
-	return nil
+	return true, nil
 }
 
 // dropLogInterval 是同一分片「队列已满」告警的最小间隔。
@@ -237,9 +243,14 @@ func (b *Bus) logDrop(sh *shard, ev *bot.Event, key string) {
 		"dropped_total", b.stats.dropped.Load())
 }
 
-// Emit 实现 bot.EventSink，语义与 Publish 完全一致。
+// Emit 实现 bot.EventSink，返回值的错误语义与 Publish 一致。
+//
+// bot.EventSink 契约只允许返回错误，因此这里丢弃 enqueued 标志：入队与去重命中
+// 都返回 nil，队列已满/已关闭/空事件返回对应错误。需要区分「入队」与「去重忽略」
+// 的调用方应直接使用 Publish。
 func (b *Bus) Emit(ctx context.Context, ev *bot.Event) error {
-	return b.Publish(ctx, ev)
+	_, err := b.Publish(ctx, ev)
+	return err
 }
 
 // Subscribe 注册事件处理器。

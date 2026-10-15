@@ -37,7 +37,6 @@ const (
 	defaultBusQueueSize    = 256
 	defaultDedupTTL        = 5 * time.Minute
 	defaultDedupCapacity   = 4096
-	defaultSendRetries     = 2
 	defaultSendBackoff     = 100 * time.Millisecond
 	defaultHTTPTimeout     = 15 * time.Second
 )
@@ -90,7 +89,8 @@ type Options struct {
 	// 事件总线的去重按分片均分该容量，中间件层的规则去重集合独占该容量。
 	DedupCapacity int
 
-	// SendRetries 是发送失败后的重试次数（不含首次），默认 2。
+	// SendRetries 是发送失败后的重试次数（不含首次）；零值表示不重试，
+	// 负数按 0 处理（负数 clamp 在 New 里完成，见 opts.SendRetries）。
 	SendRetries int
 	// SendBackoff 是发送重试的初始退避，默认 100ms。
 	SendBackoff time.Duration
@@ -492,7 +492,9 @@ func (e *Engine) Rules() []*bot.Rule { return e.router.Rules() }
 // RegistrationErrors 返回注册阶段累计错误的副本。
 //
 // 插件提供的正则编译失败等无法通过 Setup 返回值上报的错误会记录在这里
-// （Router 同时记 Warn 日志）；引擎自身不消费该列表，供集成方审计。
+// （Router 同时记 Warn 日志）。该方法是仓库内（引擎自身不消费，供引擎与测试）
+// 的只读视图，不构成对外审计通道：Engine 是 internal 类型，仓库外拿不到；
+// 注册失败对外可见的信号是 Router 逐条记下的 Warn 日志。
 func (e *Engine) RegistrationErrors() []error { return e.router.RegistrationErrors() }
 
 // Bus 返回事件总线。
@@ -536,16 +538,38 @@ type eventSink struct {
 	eng *Engine
 }
 
+// unknownPlatformLabel 是事件上报了未装配平台时指标标签的归一化取值。
+//
+// 平台标签来自适配器上报的事件（甚至可由平台请求体指定），未经归一化时
+// 每个新取值都会在指标注册表中新增一条时间序列，内存无界增长。
+const unknownPlatformLabel = "unknown"
+
+// metricPlatform 把事件上报的平台名归一化为已装配适配器的平台名。
+//
+// 命中 e.platforms（New 中由 Adapter.Name() 建立、之后只读，适配器名即平台名）
+// 则原样返回，否则返回 unknownPlatformLabel。归一化后 platform 标签的基数上界
+// 是已装配适配器数，不再随未经校验的上报值增长。
+func (e *Engine) metricPlatform(platform string) string {
+	if _, ok := e.platforms[platform]; ok {
+		return platform
+	}
+	return unknownPlatformLabel
+}
+
 // 确保 eventSink 满足 bot.EventSink。
 var _ bot.EventSink = (*eventSink)(nil)
 
 // Emit 投递事件；实现必须快速返回，业务处理在事件总线的 worker 中进行。
+//
+// 埋点语义：published 只统计真正入队的事件，published + dropped 等于投递尝试总数。
+// 去重命中不是错误（仍返回 nil），但事件未入队，计入 dropped{reason="duplicate"}。
 func (s *eventSink) Emit(ctx context.Context, ev *bot.Event) error {
 	if ev == nil {
 		return errors.New("engine: nil event")
 	}
-	s.eng.met.EventPublished(ev.Platform)
-	if err := s.eng.bus.Publish(ctx, ev); err != nil {
+	platform := s.eng.metricPlatform(ev.Platform)
+	enqueued, err := s.eng.bus.Publish(ctx, ev)
+	if err != nil {
 		reason := "error"
 		switch {
 		case errors.Is(err, eventbus.ErrQueueFull):
@@ -553,9 +577,15 @@ func (s *eventSink) Emit(ctx context.Context, ev *bot.Event) error {
 		case errors.Is(err, eventbus.ErrClosed):
 			reason = "closed"
 		}
-		s.eng.met.EventDropped(ev.Platform, reason)
+		s.eng.met.EventDropped(platform, reason)
 		return err
 	}
+	if !enqueued {
+		// 去重命中：事件未入队，但对外契约仍成功（重复不是错误）。
+		s.eng.met.EventDropped(platform, "duplicate")
+		return nil
+	}
+	s.eng.met.EventPublished(platform)
 	return nil
 }
 
