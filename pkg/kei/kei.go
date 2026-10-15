@@ -6,6 +6,7 @@
 //		kei "github.com/RandomLemon/kei/pkg/kei"
 //		_ "github.com/RandomLemon/kei/adapters/onebot" // 空导入注册适配器
 //		_ "github.com/RandomLemon/kei/plugins/echo"    // 空导入注册插件
+//		_ "github.com/RandomLemon/kei/pkg/kei/sql"     // 用 storage.type: sqlite/mysql 时启用；不用 SQL 后端则不要导入，否则会引入 GORM 与 cgo 依赖
 //	)
 //
 //	func main() {
@@ -15,7 +16,9 @@
 //	}
 //
 // 启停顺序与配置语义与 cmd/bot 完全一致：适配器与插件都经各自注册表装配，启用由配置
-// 决定；本包只做装配，不含平台名分支与业务逻辑，也不空导入任何适配器或插件。
+// 决定；本包只做装配，不含平台名分支与业务逻辑，也不空导入任何适配器或插件。存储方言
+// 同样由调用方显式 opt-in：`storage.type: sqlite/mysql` 需要空导入 pkg/kei/sql（cmd/bot
+// 已空导入），门面本身不引入 GORM 与 cgo。
 package kei
 
 import (
@@ -27,8 +30,6 @@ import (
 	"github.com/RandomLemon/kei/internal/adaptermgr"
 	"github.com/RandomLemon/kei/internal/engine"
 	"github.com/RandomLemon/kei/internal/metrics"
-	_ "github.com/RandomLemon/kei/internal/storage/mysql"
-	_ "github.com/RandomLemon/kei/internal/storage/sqlite"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
@@ -70,7 +71,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	logEnvOverrides(logger, cfg)
 
-	store, closeStore, err := buildStorage(opts, cfg)
+	store, closeStore, err := buildStorage(opts, cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -126,6 +127,18 @@ func Run(ctx context.Context, opts Options) error {
 		HTTPClient: httpClient,
 		Adapters:   adapters,
 		Plugins:    plugins,
+
+		// engine 段的 10 个可调项原样透传；零值由引擎填默认（见 internal/engine.Options）。
+		CommandPrefixes: cfg.Engine.CommandPrefixes,
+		EventTimeout:    cfg.Engine.EventTimeout,
+		RuleTimeout:     cfg.Engine.RuleTimeout,
+		ShutdownTimeout: cfg.Engine.ShutdownTimeout,
+		BusWorkers:      cfg.Engine.BusWorkers,
+		BusQueueSize:    cfg.Engine.BusQueueSize,
+		DedupTTL:        cfg.Engine.DedupTTL,
+		DedupCapacity:   cfg.Engine.DedupCapacity,
+		SendRetries:     cfg.Engine.SendRetries,
+		SendBackoff:     cfg.Engine.SendBackoff,
 	})
 	if err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -87,6 +88,54 @@ func applyEnvPath(c *Config, botNames []string, segments []string, key, value st
 	case "storage_dsn":
 		c.Storage.DSN = value
 		recordEnv(c, key, "storage.dsn", value)
+	case "engine_command_prefixes":
+		c.Engine.CommandPrefixes = splitList(value)
+		recordEnv(c, key, "engine.command_prefixes", value)
+	case "engine_event_timeout":
+		if err := envDuration(key, "Engine.EventTimeout", value, &c.Engine.EventTimeout); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.event_timeout", value)
+	case "engine_rule_timeout":
+		if err := envDuration(key, "Engine.RuleTimeout", value, &c.Engine.RuleTimeout); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.rule_timeout", value)
+	case "engine_shutdown_timeout":
+		if err := envDuration(key, "Engine.ShutdownTimeout", value, &c.Engine.ShutdownTimeout); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.shutdown_timeout", value)
+	case "engine_bus_workers":
+		if err := envInt(key, "Engine.BusWorkers", value, &c.Engine.BusWorkers); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.bus_workers", value)
+	case "engine_bus_queue_size":
+		if err := envInt(key, "Engine.BusQueueSize", value, &c.Engine.BusQueueSize); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.bus_queue_size", value)
+	case "engine_dedup_ttl":
+		if err := envDuration(key, "Engine.DedupTTL", value, &c.Engine.DedupTTL); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.dedup_ttl", value)
+	case "engine_dedup_capacity":
+		if err := envInt(key, "Engine.DedupCapacity", value, &c.Engine.DedupCapacity); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.dedup_capacity", value)
+	case "engine_send_retries":
+		if err := envInt(key, "Engine.SendRetries", value, &c.Engine.SendRetries); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.send_retries", value)
+	case "engine_send_backoff":
+		if err := envDuration(key, "Engine.SendBackoff", value, &c.Engine.SendBackoff); err != nil {
+			return err
+		}
+		recordEnv(c, key, "engine.send_backoff", value)
 	default:
 		switch {
 		case strings.HasPrefix(full, "storage_params_"):
@@ -350,6 +399,17 @@ func envInt(key, path, value string, dst *int) error {
 		return fmt.Errorf("config: 环境变量 %s 覆盖 %s 失败，需要整数，实际为 %q", key, path, value)
 	}
 	*dst = n
+	return nil
+}
+
+// envDuration 解析时长型覆盖值（time.ParseDuration，如 "10s"）。调用方
+// （applyEnvPath）已过滤空白值。
+func envDuration(key, path, value string, dst *time.Duration) error {
+	d, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("config: 环境变量 %s 覆盖 %s 失败，需要时长（如 10s），实际为 %q", key, path, value)
+	}
+	*dst = d
 	return nil
 }
 

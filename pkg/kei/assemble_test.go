@@ -16,6 +16,10 @@ import (
 	"github.com/RandomLemon/kei/internal/storage"
 	"github.com/RandomLemon/kei/pkg/bot"
 
+	// 测试直接注册 sqlite 方言（同 module 测试可 import internal）；不空导入
+	// pkg/kei/sql，避免把 mysql 也拖进来。
+	_ "github.com/RandomLemon/kei/internal/storage/sqlite"
+
 	_ "github.com/RandomLemon/kei/adapters/mock"
 	_ "github.com/RandomLemon/kei/adapters/onebot"
 	_ "github.com/RandomLemon/kei/plugins/echo"
@@ -185,7 +189,7 @@ func TestBuildConfigErrors(t *testing.T) {
 	}{
 		{"两个来源同时设置", Options{ConfigFile: "a.yaml", Config: []byte(mockBotYAML)}, "ConfigFile 与 Config 不能同时设置"},
 		{"都未设置", Options{}, "必须提供 ConfigFile 或 Config"},
-		{"内联配置的校验错误原样透出", Options{Config: []byte("bots: []")}, "至少需要一个 bot"},
+		{"内联配置的校验错误原样透出", Options{Config: []byte("bots:\n  - name: b\n")}, "bots[0].adapter: 不能为空"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,6 +198,19 @@ func TestBuildConfigErrors(t *testing.T) {
 				t.Fatalf("err = %v, want 包含 %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestBuildConfigEmptyBotsAllowed 断言空 bots 配置在门面路径上也能加载（只运行插件）。
+func TestBuildConfigEmptyBotsAllowed(t *testing.T) {
+	for _, yaml := range []string{"bots: []", "log:\n  level: info\n"} {
+		cfg, err := buildConfig(Options{Config: []byte(yaml)})
+		if err != nil {
+			t.Fatalf("buildConfig(%q): %v", yaml, err)
+		}
+		if len(cfg.Bots) != 0 {
+			t.Fatalf("Bots = %+v, want 空", cfg.Bots)
+		}
 	}
 }
 
@@ -248,7 +265,7 @@ func TestBuildStorageInjected(t *testing.T) {
 	defer func() { _ = injected.Close() }()
 
 	cfg := mustConfig(t, mockBotYAML)
-	got, closeStore, err := buildStorage(Options{Storage: injected}, cfg)
+	got, closeStore, err := buildStorage(Options{Storage: injected}, cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("buildStorage: %v", err)
 	}
@@ -266,7 +283,7 @@ func TestBuildStorageConfiguredSQLite(t *testing.T) {
 	cfg := mustConfig(t, "bots:\n  - name: b\n    adapter: mock\nstorage:\n  type: sqlite\n  dsn: "+dsn)
 	ctx := context.Background()
 
-	first, closeFirst, err := buildStorage(Options{}, cfg)
+	first, closeFirst, err := buildStorage(Options{}, cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("buildStorage: %v", err)
 	}
@@ -275,7 +292,7 @@ func TestBuildStorageConfiguredSQLite(t *testing.T) {
 	}
 	closeFirst()
 
-	second, closeSecond, err := buildStorage(Options{}, cfg)
+	second, closeSecond, err := buildStorage(Options{}, cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("第二次 buildStorage: %v", err)
 	}
@@ -291,7 +308,7 @@ func TestBuildStorageConfiguredSQLite(t *testing.T) {
 
 func TestBuildStorageUnknownType(t *testing.T) {
 	cfg := mustConfig(t, "bots:\n  - name: b\n    adapter: mock\nstorage:\n  type: nosuch\n")
-	_, _, err := buildStorage(Options{}, cfg)
+	_, _, err := buildStorage(Options{}, cfg, slog.New(slog.DiscardHandler))
 	if err == nil || !strings.Contains(err.Error(), "未知存储类型") {
 		t.Fatalf("错误 = %v", err)
 	}

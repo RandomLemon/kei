@@ -25,6 +25,9 @@ import (
 	_ "github.com/RandomLemon/kei/adapters/onebot"
 	_ "github.com/RandomLemon/kei/plugins/echo"
 	_ "github.com/RandomLemon/kei/plugins/manage"
+
+	// SQL 存储方言（sqlite/mysql）为显式 opt-in，CLI 保持对配置里 storage.type 的支持。
+	_ "github.com/RandomLemon/kei/pkg/kei/sql"
 )
 
 func main() {

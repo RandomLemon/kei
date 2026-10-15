@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fullYAML 是一份覆盖全部配置段的样例配置。
@@ -505,11 +506,6 @@ func TestValidateErrors(t *testing.T) {
 		yaml   string
 		substr string
 	}{
-		{
-			name:   "无 bot",
-			yaml:   "log:\n  level: info\n",
-			substr: "bots",
-		},
 		{
 			name:   "bot 名为空",
 			yaml:   "bots:\n  - adapter: mock\n",
@@ -1092,4 +1088,254 @@ func TestEmptyEnvValuesDoNotOverride(t *testing.T) {
 	if len(cfg.EnvOverrides) != 0 {
 		t.Fatalf("空值不应记入 EnvOverrides: %+v", cfg.EnvOverrides)
 	}
+}
+
+// TestEmptyBotsAllowed 断言 bots 可为空：缺省、显式 [] 与 null 都加载成功，
+// 以支持「只运行插件」的部署形态。
+func TestEmptyBotsAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{"完全不写 bots", "log:\n  level: info\n"},
+		{"显式 bots: []", "bots: []\n"},
+		{"显式 bots: null", "bots:\n"},
+		{"空 bots 且启用插件", "bots: []\nplugins:\n  echo: true\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadBytes(t, tc.yaml)
+			if len(cfg.Bots) != 0 {
+				t.Fatalf("Bots = %+v, want 空", cfg.Bots)
+			}
+		})
+	}
+}
+
+// TestDuplicateKeys 断言手写映射遍历拒绝重复键，错误含字段路径与「重复」。
+//
+// struct 解码路径（log/metrics/limits/auth）由 yaml.v3 自行报 already set；手写路径
+// （bots/storage/plugins/adapters/engine）必须用 eachPair 拦住，避免合并冲突或复制
+// 粘贴的配置静默取最后一个值。
+func TestDuplicateKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "bots 条目内重复键",
+			yaml: "bots:\n  - name: a\n    name: b\n    adapter: mock\n",
+			want: `bots[0]: 键 "name" 重复`,
+		},
+		{
+			name: "bots 条目内重复私有键",
+			yaml: "bots:\n  - name: a\n    adapter: mock\n    app_id: x\n    app_id: y\n",
+			want: `bots[0]: 键 "app_id" 重复`,
+		},
+		{
+			name: "storage 重复 type",
+			yaml: storageBaseYAML + "storage:\n  type: sqlite\n  type: mysql\n",
+			want: `storage: 键 "type" 重复`,
+		},
+		{
+			name: "plugins.<n> 重复 enabled",
+			yaml: storageBaseYAML + "plugins:\n  echo:\n    enabled: true\n    enabled: false\n",
+			want: `plugins.echo: 键 "enabled" 重复`,
+		},
+		{
+			name: "adapters.<n> 重复 enabled",
+			yaml: storageBaseYAML + "adapters:\n  onebot:\n    enabled: true\n    enabled: false\n",
+			want: `adapters.onebot: 键 "enabled" 重复`,
+		},
+		{
+			name: "engine 重复键",
+			yaml: storageBaseYAML + "engine:\n  dedup_ttl: 1m\n  dedup_ttl: 2m\n",
+			want: `engine: 键 "dedup_ttl" 重复`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadBytes([]byte(tc.yaml), nil)
+			if err == nil {
+				t.Fatal("应报重复键错误")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误 = %v, 应包含 %q", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), "重复") {
+				t.Fatalf("错误 %q 未含「重复」", err)
+			}
+		})
+	}
+}
+
+// TestEngineSection 断言 engine 段解码：全部 10 个键、时长与秒数两种写法。
+func TestEngineSection(t *testing.T) {
+	cfg := mustLoadBytes(t, storageBaseYAML+`
+engine:
+  command_prefixes: ["!", "/x"]
+  event_timeout: 45s
+  rule_timeout: 5
+  shutdown_timeout: 20s
+  bus_workers: 8
+  bus_queue_size: 512
+  dedup_ttl: 2m
+  dedup_capacity: 128
+  send_retries: 3
+  send_backoff: 250ms
+`)
+	e := cfg.Engine
+	if len(e.CommandPrefixes) != 2 || e.CommandPrefixes[0] != "!" || e.CommandPrefixes[1] != "/x" {
+		t.Fatalf("CommandPrefixes = %v", e.CommandPrefixes)
+	}
+	if e.EventTimeout != 45*time.Second {
+		t.Fatalf("EventTimeout = %v", e.EventTimeout)
+	}
+	if e.RuleTimeout != 5*time.Second {
+		t.Fatalf("RuleTimeout = %v（秒数应按秒解析）", e.RuleTimeout)
+	}
+	if e.ShutdownTimeout != 20*time.Second {
+		t.Fatalf("ShutdownTimeout = %v", e.ShutdownTimeout)
+	}
+	if e.BusWorkers != 8 || e.BusQueueSize != 512 {
+		t.Fatalf("bus = %d/%d", e.BusWorkers, e.BusQueueSize)
+	}
+	if e.DedupTTL != 2*time.Minute || e.DedupCapacity != 128 {
+		t.Fatalf("dedup = %v/%d", e.DedupTTL, e.DedupCapacity)
+	}
+	if e.SendRetries != 3 || e.SendBackoff != 250*time.Millisecond {
+		t.Fatalf("send = %d/%v", e.SendRetries, e.SendBackoff)
+	}
+
+	t.Run("缺省保持零值（由引擎填默认）", func(t *testing.T) {
+		cfg := mustLoadBytes(t, storageBaseYAML)
+		e := cfg.Engine
+		if len(e.CommandPrefixes) != 0 || e.EventTimeout != 0 || e.RuleTimeout != 0 ||
+			e.ShutdownTimeout != 0 || e.BusWorkers != 0 || e.BusQueueSize != 0 ||
+			e.DedupTTL != 0 || e.DedupCapacity != 0 || e.SendRetries != 0 || e.SendBackoff != 0 {
+			t.Fatalf("engine 应保持零值: %+v", e)
+		}
+	})
+
+	t.Run("空列表与 0 合法（用默认）", func(t *testing.T) {
+		if _, err := LoadBytes([]byte(storageBaseYAML+
+			"engine:\n  command_prefixes: []\n  event_timeout: 0\n  bus_workers: 0\n"), nil); err != nil {
+			t.Fatalf("空列表/0 应合法: %v", err)
+		}
+	})
+
+	t.Run("send_retries: 0 合法（不重试）", func(t *testing.T) {
+		cfg := mustLoadBytes(t, storageBaseYAML+"engine:\n  send_retries: 0\n")
+		if cfg.Engine.SendRetries != 0 {
+			t.Fatalf("SendRetries = %d", cfg.Engine.SendRetries)
+		}
+	})
+}
+
+// TestEngineValidateErrors 断言 engine 段的非法取值在配置层被拦住（错误路径 engine.<key>）。
+func TestEngineValidateErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{"command_prefixes 含空白项", storageBaseYAML + "engine:\n  command_prefixes: [\"!\", \"  \"]\n", "engine.command_prefixes[1]"},
+		{"command_prefixes 非序列", storageBaseYAML + "engine:\n  command_prefixes: \"!\"\n", "engine.command_prefixes"},
+		{"event_timeout 负数", storageBaseYAML + "engine:\n  event_timeout: -1s\n", "engine.event_timeout: 不能为负数"},
+		{"rule_timeout 负数", storageBaseYAML + "engine:\n  rule_timeout: -1\n", "engine.rule_timeout: 不能为负数"},
+		{"shutdown_timeout 负数", storageBaseYAML + "engine:\n  shutdown_timeout: -1s\n", "engine.shutdown_timeout: 不能为负数"},
+		{"dedup_ttl 负数", storageBaseYAML + "engine:\n  dedup_ttl: -1s\n", "engine.dedup_ttl: 不能为负数"},
+		{"send_backoff 负数", storageBaseYAML + "engine:\n  send_backoff: -1s\n", "engine.send_backoff: 不能为负数"},
+		{"bus_workers 负数", storageBaseYAML + "engine:\n  bus_workers: -1\n", "engine.bus_workers: 不能为负数"},
+		{"bus_queue_size 负数", storageBaseYAML + "engine:\n  bus_queue_size: -1\n", "engine.bus_queue_size: 不能为负数"},
+		{"dedup_capacity 负数", storageBaseYAML + "engine:\n  dedup_capacity: -1\n", "engine.dedup_capacity: 不能为负数"},
+		{"send_retries 负数", storageBaseYAML + "engine:\n  send_retries: -1\n", "engine.send_retries: 不能为负数"},
+		{"event_timeout 非时长", storageBaseYAML + "engine:\n  event_timeout: abc\n", "engine.event_timeout: 需要时长"},
+		{"bus_workers 非整数", storageBaseYAML + "engine:\n  bus_workers: 1.5\n", "engine.bus_workers: 需要整数"},
+		{"未知键", storageBaseYAML + "engine:\n  unknown_key: 1\n", `engine: 未知键 "unknown_key"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadBytes([]byte(tc.yaml), nil)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("错误 = %v, 应包含 %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestEngineEnvOverride 断言 KEI_ENGINE_* 覆盖各字段并逐条记入 EnvOverrides。
+func TestEngineEnvOverride(t *testing.T) {
+	cfg := mustLoadBytes(t, storageBaseYAML,
+		"KEI_ENGINE_COMMAND_PREFIXES=!,/x",
+		"KEI_ENGINE_EVENT_TIMEOUT=45s",
+		"KEI_ENGINE_RULE_TIMEOUT=5s",
+		"KEI_ENGINE_SHUTDOWN_TIMEOUT=20s",
+		"KEI_ENGINE_BUS_WORKERS=8",
+		"KEI_ENGINE_BUS_QUEUE_SIZE=512",
+		"KEI_ENGINE_DEDUP_TTL=2m",
+		"KEI_ENGINE_DEDUP_CAPACITY=128",
+		"KEI_ENGINE_SEND_RETRIES=3",
+		"KEI_ENGINE_SEND_BACKOFF=250ms",
+	)
+	e := cfg.Engine
+	if len(e.CommandPrefixes) != 2 || e.CommandPrefixes[0] != "!" || e.CommandPrefixes[1] != "/x" {
+		t.Fatalf("CommandPrefixes = %v", e.CommandPrefixes)
+	}
+	if e.EventTimeout != 45*time.Second || e.RuleTimeout != 5*time.Second || e.ShutdownTimeout != 20*time.Second {
+		t.Fatalf("超时 = %v/%v/%v", e.EventTimeout, e.RuleTimeout, e.ShutdownTimeout)
+	}
+	if e.BusWorkers != 8 || e.BusQueueSize != 512 || e.DedupCapacity != 128 || e.SendRetries != 3 {
+		t.Fatalf("整数项 = %+v", e)
+	}
+	if e.DedupTTL != 2*time.Minute || e.SendBackoff != 250*time.Millisecond {
+		t.Fatalf("时长项 = %v/%v", e.DedupTTL, e.SendBackoff)
+	}
+
+	want := []EnvOverride{
+		{Key: "KEI_ENGINE_COMMAND_PREFIXES", Path: "engine.command_prefixes", Value: "!,/x"},
+		{Key: "KEI_ENGINE_EVENT_TIMEOUT", Path: "engine.event_timeout", Value: "45s"},
+		{Key: "KEI_ENGINE_RULE_TIMEOUT", Path: "engine.rule_timeout", Value: "5s"},
+		{Key: "KEI_ENGINE_SHUTDOWN_TIMEOUT", Path: "engine.shutdown_timeout", Value: "20s"},
+		{Key: "KEI_ENGINE_BUS_WORKERS", Path: "engine.bus_workers", Value: "8"},
+		{Key: "KEI_ENGINE_BUS_QUEUE_SIZE", Path: "engine.bus_queue_size", Value: "512"},
+		{Key: "KEI_ENGINE_DEDUP_TTL", Path: "engine.dedup_ttl", Value: "2m"},
+		{Key: "KEI_ENGINE_DEDUP_CAPACITY", Path: "engine.dedup_capacity", Value: "128"},
+		{Key: "KEI_ENGINE_SEND_RETRIES", Path: "engine.send_retries", Value: "3"},
+		{Key: "KEI_ENGINE_SEND_BACKOFF", Path: "engine.send_backoff", Value: "250ms"},
+	}
+	if len(cfg.EnvOverrides) != len(want) {
+		t.Fatalf("EnvOverrides = %+v\nwant %+v", cfg.EnvOverrides, want)
+	}
+	for i := range want {
+		if cfg.EnvOverrides[i] != want[i] {
+			t.Fatalf("EnvOverrides[%d] = %+v, want %+v", i, cfg.EnvOverrides[i], want[i])
+		}
+	}
+}
+
+// TestEngineEnvBadValues 断言非法环境变量值报错并点名变量。
+func TestEngineEnvBadValues(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"KEI_ENGINE_EVENT_TIMEOUT", "abc"},
+		{"KEI_ENGINE_SEND_BACKOFF", "10"},
+		{"KEI_ENGINE_BUS_WORKERS", "x"},
+		{"KEI_ENGINE_DEDUP_CAPACITY", "1.5"},
+		{"KEI_ENGINE_SEND_RETRIES", "nope"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			_, err := LoadBytes([]byte(storageBaseYAML), []string{tc.key + "=" + tc.value})
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("%s=%s 错误 = %v, 应点名变量", tc.key, tc.value, err)
+			}
+		})
+	}
+
+	// 非法的负数经校验被拦（环境变量与 YAML 同一套校验）。
+	t.Run("负数经校验被拦", func(t *testing.T) {
+		_, err := LoadBytes([]byte(storageBaseYAML), []string{"KEI_ENGINE_SEND_RETRIES=-1"})
+		if err == nil || !strings.Contains(err.Error(), "engine.send_retries: 不能为负数") {
+			t.Fatalf("错误 = %v", err)
+		}
+	})
 }

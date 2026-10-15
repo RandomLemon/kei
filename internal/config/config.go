@@ -6,8 +6,8 @@
 // 名为 "telegram-main" 的 bot 的 Settings["app_id"]。未匹配任何已知路径的
 // KEI_* 变量会被忽略（不报错）。
 //
-// 顶层允许的键为 log、metrics、bots、plugins、adapters、limits、auth、storage，
-// 其余顶层键一律报错。
+// 顶层允许的键为 log、metrics、bots、plugins、adapters、limits、auth、storage、
+// engine，其余顶层键一律报错。
 package config
 
 import (
@@ -44,7 +44,7 @@ type Config struct {
 	Log LogConfig `yaml:"log"`
 	// Metrics 是指标暴露配置。
 	Metrics MetricsConfig `yaml:"metrics"`
-	// Bots 是机器人实例列表，至少需要一个。
+	// Bots 是机器人实例列表，可为空（只运行插件时）。
 	Bots []BotConfig `yaml:"bots"`
 	// Plugins 是插件名到插件配置的映射。
 	Plugins map[string]PluginConfig `yaml:"plugins"`
@@ -56,6 +56,8 @@ type Config struct {
 	Auth AuthConfig `yaml:"auth"`
 	// Storage 是存储后端配置。
 	Storage StorageConfig `yaml:"storage"`
+	// Engine 是引擎可调参数配置；全部字段零值表示「由引擎填默认值」。
+	Engine EngineConfig `yaml:"engine"`
 	// EnvOverrides 记录本次加载中实际生效的环境变量覆盖，按应用顺序排列；
 	// 供启动时以 DEBUG 日志输出，排查某个键来自 YAML 还是环境变量。
 	// 它不是 YAML 键，解码不会读写该字段。
@@ -112,6 +114,35 @@ type StorageConfig struct {
 	DSN string `yaml:"dsn"`
 	// Params 是除 type/dsn 外的其余键，原样传给后端。
 	Params map[string]any
+}
+
+// EngineConfig 是引擎可调参数配置。
+//
+// 所有字段的零值都表示「由引擎填默认值」：`applyDefaults` 不在此替引擎填默认值，
+// 取值原样透传给 internal/engine.Options，由引擎的 orInt/orDuration 回落默认
+// （见 docs/engine.md 7.1）。因此未配置与显式写 0 在时长/容量类键上等价。
+type EngineConfig struct {
+	// CommandPrefixes 是命令前缀，默认 ["/"]；空列表表示用默认。
+	CommandPrefixes []string `yaml:"command_prefixes"`
+	// EventTimeout 是单条事件整体处理超时，默认 30s。
+	EventTimeout time.Duration `yaml:"event_timeout"`
+	// RuleTimeout 是单条规则 Handler 的执行超时，默认 10s。
+	RuleTimeout time.Duration `yaml:"rule_timeout"`
+	// ShutdownTimeout 是优雅关闭总超时，默认 10s。
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	// BusWorkers 是事件总线分片 worker 数，默认 4。
+	BusWorkers int `yaml:"bus_workers"`
+	// BusQueueSize 是每个分片队列容量，默认 256。
+	BusQueueSize int `yaml:"bus_queue_size"`
+	// DedupTTL 是事件去重时间窗，默认 5m。
+	DedupTTL time.Duration `yaml:"dedup_ttl"`
+	// DedupCapacity 是去重集合容量上限，默认 4096。
+	DedupCapacity int `yaml:"dedup_capacity"`
+	// SendRetries 是发送失败后的重试次数（不含首次）；0 表示不重试，
+	// 负数非法。注意这与时长/容量类不同：0 是有意义的取值，不是「用默认」。
+	SendRetries int `yaml:"send_retries"`
+	// SendBackoff 是发送重试的初始退避，默认 100ms。
+	SendBackoff time.Duration `yaml:"send_backoff"`
 }
 
 // BotConfig 描述一个机器人实例。
@@ -230,6 +261,8 @@ func decode(data []byte) (*Config, error) {
 			cfg.Plugins, err = decodePlugins(val)
 		case "adapters":
 			cfg.Adapters, err = decodeAdapters(val)
+		case "engine":
+			cfg.Engine, err = decodeEngine(val)
 		default:
 			return nil, fmt.Errorf("config: 未知顶层键 %q", key)
 		}
@@ -238,6 +271,30 @@ func decode(data []byte) (*Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// eachPair 校验 node 是映射后遍历其键值对，并拒绝重复键。
+//
+// path 是错误文案里的字段路径（如 storage、bots[0]、plugins.echo、engine）；
+// kindErr 是节点类型不符时的整条措辞，沿用各段原有文案（如 "必须是映射"）。
+// 键重复时报 `<path>: 键 %q 重复`，避免合并冲突/复制粘贴的配置静默取最后一个值
+// （struct 解码路径由 yaml.v3 自行报 already set）。回调返回错误时立即中止。
+func eachPair(node *yaml.Node, path, kindErr string, fn func(key string, val *yaml.Node) error) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New(kindErr)
+	}
+	seen := make(map[string]struct{}, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, val := node.Content[i].Value, node.Content[i+1]
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("%s: 键 %q 重复", path, key)
+		}
+		seen[key] = struct{}{}
+		if err := fn(key, val); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // decodeBots 解析 bots 序列。
@@ -261,43 +318,44 @@ func decodeBots(node *yaml.Node) ([]BotConfig, error) {
 
 // decodeBot 解析单个 bot 条目；name/adapter/enabled/plugins 之外的键进入 Settings。
 func decodeBot(index int, node *yaml.Node) (BotConfig, error) {
-	if node.Kind != yaml.MappingNode {
-		return BotConfig{}, fmt.Errorf("bots[%d]: 必须是映射", index)
-	}
 	var bot BotConfig
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key, val := node.Content[i].Value, node.Content[i+1]
-		switch key {
-		case "name":
-			if err := val.Decode(&bot.Name); err != nil {
-				return BotConfig{}, fmt.Errorf("bots[%d].name: %w", index, err)
+	err := eachPair(node, fmt.Sprintf("bots[%d]", index), fmt.Sprintf("bots[%d]: 必须是映射", index),
+		func(key string, val *yaml.Node) error {
+			switch key {
+			case "name":
+				if err := val.Decode(&bot.Name); err != nil {
+					return fmt.Errorf("bots[%d].name: %w", index, err)
+				}
+			case "adapter":
+				if err := val.Decode(&bot.Adapter); err != nil {
+					return fmt.Errorf("bots[%d].adapter: %w", index, err)
+				}
+			case "plugins":
+				list, err := decodeStringList(val)
+				if err != nil {
+					return fmt.Errorf("bots[%d].plugins: %w", index, err)
+				}
+				bot.Plugins = list
+			case "enabled":
+				var enabled bool
+				if err := val.Decode(&enabled); err != nil {
+					return fmt.Errorf("bots[%d].enabled: %w", index, err)
+				}
+				bot.Enabled = &enabled
+			default:
+				var v any
+				if err := val.Decode(&v); err != nil {
+					return fmt.Errorf("bots[%d].%s: %w", index, key, err)
+				}
+				if bot.Settings == nil {
+					bot.Settings = make(map[string]any)
+				}
+				bot.Settings[key] = normalizeValue(v)
 			}
-		case "adapter":
-			if err := val.Decode(&bot.Adapter); err != nil {
-				return BotConfig{}, fmt.Errorf("bots[%d].adapter: %w", index, err)
-			}
-		case "plugins":
-			list, err := decodeStringList(val)
-			if err != nil {
-				return BotConfig{}, fmt.Errorf("bots[%d].plugins: %w", index, err)
-			}
-			bot.Plugins = list
-		case "enabled":
-			var enabled bool
-			if err := val.Decode(&enabled); err != nil {
-				return BotConfig{}, fmt.Errorf("bots[%d].enabled: %w", index, err)
-			}
-			bot.Enabled = &enabled
-		default:
-			var v any
-			if err := val.Decode(&v); err != nil {
-				return BotConfig{}, fmt.Errorf("bots[%d].%s: %w", index, key, err)
-			}
-			if bot.Settings == nil {
-				bot.Settings = make(map[string]any)
-			}
-			bot.Settings[key] = normalizeValue(v)
-		}
+			return nil
+		})
+	if err != nil {
+		return BotConfig{}, err
 	}
 	return bot, nil
 }
@@ -307,31 +365,31 @@ func decodeStorage(node *yaml.Node) (StorageConfig, error) {
 	if isNull(node) {
 		return StorageConfig{}, nil
 	}
-	if node.Kind != yaml.MappingNode {
-		return StorageConfig{}, errors.New("必须是映射")
-	}
 	var s StorageConfig
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key, val := node.Content[i].Value, node.Content[i+1]
+	err := eachPair(node, "storage", "必须是映射", func(key string, val *yaml.Node) error {
 		switch key {
 		case "type":
 			if err := val.Decode(&s.Type); err != nil {
-				return StorageConfig{}, fmt.Errorf("storage.type: %w", err)
+				return fmt.Errorf("storage.type: %w", err)
 			}
 		case "dsn":
 			if err := val.Decode(&s.DSN); err != nil {
-				return StorageConfig{}, fmt.Errorf("storage.dsn: %w", err)
+				return fmt.Errorf("storage.dsn: %w", err)
 			}
 		default:
 			var v any
 			if err := val.Decode(&v); err != nil {
-				return StorageConfig{}, fmt.Errorf("storage.%s: %w", key, err)
+				return fmt.Errorf("storage.%s: %w", key, err)
 			}
 			if s.Params == nil {
 				s.Params = make(map[string]any)
 			}
 			s.Params[key] = normalizeValue(v)
 		}
+		return nil
+	})
+	if err != nil {
+		return StorageConfig{}, err
 	}
 	return s, nil
 }
@@ -341,17 +399,17 @@ func decodePlugins(node *yaml.Node) (map[string]PluginConfig, error) {
 	if isNull(node) {
 		return map[string]PluginConfig{}, nil
 	}
-	if node.Kind != yaml.MappingNode {
-		return nil, errors.New("plugins 必须是映射")
-	}
 	out := make(map[string]PluginConfig, len(node.Content)/2)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		name := node.Content[i].Value
-		pc, err := decodePlugin(name, node.Content[i+1])
+	err := eachPair(node, "plugins", "plugins 必须是映射", func(name string, val *yaml.Node) error {
+		pc, err := decodePlugin(name, val)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		out[name] = pc
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -370,24 +428,28 @@ func decodePlugin(name string, node *yaml.Node) (PluginConfig, error) {
 		return PluginConfig{Enabled: enabled}, nil
 	case yaml.MappingNode:
 		pc := PluginConfig{}
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			key, val := node.Content[i].Value, node.Content[i+1]
-			if key == "enabled" {
-				enabled, ok := decodeBool(val)
-				if !ok {
-					return PluginConfig{}, fmt.Errorf("plugins.%s.enabled: 需要布尔值", name)
+		err := eachPair(node, "plugins."+name, fmt.Sprintf("plugins.%s: 需要布尔值或映射", name),
+			func(key string, val *yaml.Node) error {
+				if key == "enabled" {
+					enabled, ok := decodeBool(val)
+					if !ok {
+						return fmt.Errorf("plugins.%s.enabled: 需要布尔值", name)
+					}
+					pc.Enabled = enabled
+					return nil
 				}
-				pc.Enabled = enabled
-				continue
-			}
-			var v any
-			if err := val.Decode(&v); err != nil {
-				return PluginConfig{}, fmt.Errorf("plugins.%s.%s: %w", name, key, err)
-			}
-			if pc.Settings == nil {
-				pc.Settings = make(map[string]any)
-			}
-			pc.Settings[key] = normalizeValue(v)
+				var v any
+				if err := val.Decode(&v); err != nil {
+					return fmt.Errorf("plugins.%s.%s: %w", name, key, err)
+				}
+				if pc.Settings == nil {
+					pc.Settings = make(map[string]any)
+				}
+				pc.Settings[key] = normalizeValue(v)
+				return nil
+			})
+		if err != nil {
+			return PluginConfig{}, err
 		}
 		return pc, nil
 	default:
@@ -431,41 +493,104 @@ func decodeAdapters(node *yaml.Node) (map[string]AdapterConfig, error) {
 	if isNull(node) {
 		return map[string]AdapterConfig{}, nil
 	}
-	if node.Kind != yaml.MappingNode {
-		return nil, errors.New("adapters 必须是映射")
-	}
 	out := make(map[string]AdapterConfig, len(node.Content)/2)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		name := node.Content[i].Value
-		ac, err := decodeAdapter(name, node.Content[i+1])
+	err := eachPair(node, "adapters", "adapters 必须是映射", func(name string, val *yaml.Node) error {
+		ac, err := decodeAdapter(name, val)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		out[name] = ac
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
 // decodeAdapter 解析单个适配器条目，只接受 enabled 键。
 func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
-	if node.Kind != yaml.MappingNode {
-		return AdapterConfig{}, fmt.Errorf("adapters.%s: 必须是映射", name)
-	}
 	var ac AdapterConfig
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key, val := node.Content[i].Value, node.Content[i+1]
-		switch key {
-		case "enabled":
-			enabled, ok := decodeBool(val)
-			if !ok {
-				return AdapterConfig{}, fmt.Errorf("adapters.%s.enabled: 需要布尔值", name)
+	err := eachPair(node, "adapters."+name, fmt.Sprintf("adapters.%s: 必须是映射", name),
+		func(key string, val *yaml.Node) error {
+			switch key {
+			case "enabled":
+				enabled, ok := decodeBool(val)
+				if !ok {
+					return fmt.Errorf("adapters.%s.enabled: 需要布尔值", name)
+				}
+				ac.Enabled = &enabled
+			default:
+				return fmt.Errorf("adapters.%s: 未知键 %q（只支持 enabled）", name, key)
 			}
-			ac.Enabled = &enabled
-		default:
-			return AdapterConfig{}, fmt.Errorf("adapters.%s: 未知键 %q（只支持 enabled）", name, key)
-		}
+			return nil
+		})
+	if err != nil {
+		return AdapterConfig{}, err
 	}
 	return ac, nil
+}
+
+// decodeEngine 解析 engine 段：未知键报错，时长/整数沿用 storage.params 的取值规则
+// （时长写字符串或秒数、整数不得为小数）。键存在但无值（null）视为未配置。
+//
+// 所有字段保持零值即可由引擎填默认值，本函数不替引擎填默认（见 EngineConfig）。
+func decodeEngine(node *yaml.Node) (EngineConfig, error) {
+	if isNull(node) {
+		return EngineConfig{}, nil
+	}
+	var e EngineConfig
+	durations := map[string]*time.Duration{
+		"event_timeout":    &e.EventTimeout,
+		"rule_timeout":     &e.RuleTimeout,
+		"shutdown_timeout": &e.ShutdownTimeout,
+		"dedup_ttl":        &e.DedupTTL,
+		"send_backoff":     &e.SendBackoff,
+	}
+	ints := map[string]*int{
+		"bus_workers":    &e.BusWorkers,
+		"bus_queue_size": &e.BusQueueSize,
+		"dedup_capacity": &e.DedupCapacity,
+		"send_retries":   &e.SendRetries,
+	}
+	err := eachPair(node, "engine", "engine: 必须是映射", func(key string, val *yaml.Node) error {
+		if isNull(val) {
+			return nil
+		}
+		if key == "command_prefixes" {
+			list, err := decodeStringList(val)
+			if err != nil {
+				return fmt.Errorf("engine.command_prefixes: %w", err)
+			}
+			e.CommandPrefixes = list
+			return nil
+		}
+		var v any
+		if err := val.Decode(&v); err != nil {
+			return fmt.Errorf("engine.%s: %w", key, err)
+		}
+		if dst, ok := durations[key]; ok {
+			d, err := decodeDurationValue(normalizeValue(v))
+			if err != nil {
+				return fmt.Errorf("engine.%s: %w", key, err)
+			}
+			*dst = d
+			return nil
+		}
+		if dst, ok := ints[key]; ok {
+			n, err := decodeIntValue(normalizeValue(v))
+			if err != nil {
+				return fmt.Errorf("engine.%s: %w", key, err)
+			}
+			*dst = n
+			return nil
+		}
+		return fmt.Errorf("engine: 未知键 %q", key)
+	})
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	return e, nil
 }
 
 // decodeStringList 解析字符串序列。
@@ -542,6 +667,9 @@ func toStringKey(k any) string {
 }
 
 // applyDefaults 填充缺失的默认值。
+//
+// Engine 段刻意保持零值：引擎参数（超时、容量、重试等）的默认值由 internal/engine
+// 的 orInt/orDuration 在构造时填充，这里替它填默认只会造成两套默认值。
 func applyDefaults(c *Config) {
 	if c.Log.Level == "" {
 		c.Log.Level = defaultLogLevel
@@ -562,9 +690,6 @@ func applyDefaults(c *Config) {
 
 // validate 校验配置，返回带字段路径的错误。
 func (c *Config) validate() error {
-	if len(c.Bots) == 0 {
-		return errors.New("config: bots: 至少需要一个 bot")
-	}
 	seen := make(map[string]struct{}, len(c.Bots))
 	for i := range c.Bots {
 		b := &c.Bots[i]
@@ -602,6 +727,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.Log.validate(); err != nil {
+		return err
+	}
+	if err := c.Engine.validate(); err != nil {
 		return err
 	}
 	return c.Limits.validate()
@@ -764,6 +892,49 @@ func (l LimitsConfig) validate() error {
 	for _, b := range bursts {
 		if b.value < 0 {
 			return fmt.Errorf("config: %s: 不能为负数", b.path)
+		}
+	}
+	return nil
+}
+
+// validate 校验引擎配置：命令行前缀每项去空白后非空；时长与容量类不允许负数。
+//
+// 空列表与零值合法：它们表示「用引擎默认值」（`internal/engine` 的 orInt/orDuration
+// 回落到默认）。`send_retries` 的 0 是有意义的取值（不重试）而非「用默认」，但同样
+// 只需拒绝负数——负数若放行会被引擎归一为 0，配置层必须拦住以免与显式 0 混为一谈。
+func (e EngineConfig) validate() error {
+	for i, p := range e.CommandPrefixes {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("config: engine.command_prefixes[%d]: 不能为空白", i)
+		}
+	}
+	durations := [...]struct {
+		path  string
+		value time.Duration
+	}{
+		{"engine.event_timeout", e.EventTimeout},
+		{"engine.rule_timeout", e.RuleTimeout},
+		{"engine.shutdown_timeout", e.ShutdownTimeout},
+		{"engine.dedup_ttl", e.DedupTTL},
+		{"engine.send_backoff", e.SendBackoff},
+	}
+	for _, d := range durations {
+		if d.value < 0 {
+			return fmt.Errorf("config: %s: 不能为负数", d.path)
+		}
+	}
+	ints := [...]struct {
+		path  string
+		value int
+	}{
+		{"engine.bus_workers", e.BusWorkers},
+		{"engine.bus_queue_size", e.BusQueueSize},
+		{"engine.dedup_capacity", e.DedupCapacity},
+		{"engine.send_retries", e.SendRetries},
+	}
+	for _, n := range ints {
+		if n.value < 0 {
+			return fmt.Errorf("config: %s: 不能为负数", n.path)
 		}
 	}
 	return nil
