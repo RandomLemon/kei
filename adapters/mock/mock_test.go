@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -266,5 +267,140 @@ func TestHTTPHandlerRejectsGarbage(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("未启动的适配器注入应返回 409, got %d", resp.StatusCode)
+	}
+}
+
+// TestListenFailureKeepsAdapterRestartable 断言控制面监听失败不会把实例置为
+// 运行状态：实例不能自称健康（Started），且端口释放后可用同一实例重试启动。
+func TestListenFailureKeepsAdapterRestartable(t *testing.T) {
+	holder, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("占位监听: %v", err)
+	}
+	addr := holder.Addr().String()
+
+	ad := New(Options{Name: "mock-main", ListenAddr: addr})
+	if err := ad.Start(context.Background(), &recordingSink{events: make(chan *bot.Event, 1)}); err == nil {
+		t.Fatal("地址被占用时 Start 应返回错误")
+	}
+	if ad.Started() {
+		t.Fatal("监听失败后 Started 必须为 false")
+	}
+	if ad.Addr() != "" {
+		t.Fatalf("监听失败后 Addr 应为空, got %q", ad.Addr())
+	}
+	if _, err := ad.InjectText(context.Background(), "/echo hi"); err == nil {
+		t.Fatal("监听失败后注入应返回错误")
+	}
+
+	if err := holder.Close(); err != nil {
+		t.Fatalf("释放占位监听: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ad.Start(ctx, &recordingSink{events: make(chan *bot.Event, 1)}) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for !ad.Started() {
+		if time.Now().After(deadline) {
+			t.Fatal("释放端口后重试启动未在超时内成功")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("重试 Start 返回错误: %v", err)
+	}
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShutdown()
+	if err := ad.Stop(shutdownCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// TestControlPlaneKindClosedSet 断言 /inject 只接受闭集内的 kind：
+// 未知取值返回 400 且不投递事件，channel 等合法取值照常注入。
+func TestControlPlaneKindClosedSet(t *testing.T) {
+	ad, sink, stop := startAdapter(t, Options{Name: "mock-main", ListenAddr: "127.0.0.1:0"})
+	defer stop()
+	base := "http://" + ad.Addr()
+
+	resp, err := http.Post(base+"/inject", "application/json", strings.NewReader(`{"text":"hi","kind":"bogus"}`))
+	if err != nil {
+		t.Fatalf("POST /inject: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("未知 kind 状态 = %d, want 400", resp.StatusCode)
+	}
+	select {
+	case ev := <-sink.events:
+		t.Fatalf("未知 kind 不应投递事件: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	resp, err = http.Post(base+"/inject", "application/json", strings.NewReader(`{"text":"hi","kind":"channel","channel_id":"c1"}`))
+	if err != nil {
+		t.Fatalf("POST /inject: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("channel kind 状态 = %d, want 202", resp.StatusCode)
+	}
+	select {
+	case ev := <-sink.events:
+		if ev.Message.Kind != bot.MessageChannel || ev.Channel == nil || ev.Channel.ID != "c1" {
+			t.Fatalf("channel 事件与请求不符: %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("控制面未投递 channel 事件")
+	}
+}
+
+// TestControlPlaneAddrValidation 断言控制面默认只接受回环地址，opt-in 后放行。
+func TestControlPlaneAddrValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		addr     string
+		loopback bool
+	}{
+		{name: "ipv4", addr: "127.0.0.1:0", loopback: true},
+		{name: "ipv4-port", addr: "127.0.0.1:18080", loopback: true},
+		{name: "localhost", addr: "localhost:18080", loopback: true},
+		{name: "localhost-case", addr: "LOCALHOST:18080", loopback: true},
+		{name: "ipv6", addr: "[::1]:0", loopback: true},
+		{name: "unset", addr: "", loopback: true},
+		{name: "all-interfaces", addr: ":18080"},
+		{name: "any", addr: "0.0.0.0:18080"},
+		{name: "ipv6-any", addr: "[::]:18080"},
+		{name: "lan", addr: "192.168.1.10:18080"},
+		{name: "hostname", addr: "example.com:18080"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ad := New(Options{Name: "mock-main", ListenAddr: tc.addr})
+			err := ad.checkControlPlaneAddr()
+			if tc.loopback && err != nil {
+				t.Fatalf("回环地址/未配置控制面不应被拒绝: %v", err)
+			}
+			if !tc.loopback && err == nil {
+				t.Fatal("非回环地址默认应被拒绝")
+			}
+
+			ad = New(Options{Name: "mock-main", ListenAddr: tc.addr, AllowRemoteControlPlane: true})
+			if err := ad.checkControlPlaneAddr(); err != nil {
+				t.Fatalf("显式 opt-in 后不应拒绝: %v", err)
+			}
+		})
+	}
+
+	// Start 用同一份校验在监听前拒绝非回环地址。
+	ad := New(Options{Name: "mock-main", ListenAddr: "0.0.0.0:18080"})
+	err := ad.Start(context.Background(), &recordingSink{events: make(chan *bot.Event, 1)})
+	if err == nil || !strings.Contains(err.Error(), "不是回环地址") {
+		t.Fatalf("Start 应拒绝非回环控制面地址, got %v", err)
+	}
+	if ad.Started() {
+		t.Fatal("Start 被拒绝后 Started 必须为 false")
 	}
 }

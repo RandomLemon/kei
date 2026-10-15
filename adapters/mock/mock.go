@@ -35,7 +35,15 @@ type Options struct {
 	// Platform 是平台名，默认 "mock"。
 	Platform string
 	// ListenAddr 非空时启动 HTTP 控制面，例如 "127.0.0.1:0"。
+	//
+	// 控制面没有鉴权（任何能访问它的调用方都能注入事件、清空发送记录），
+	// 因此默认只接受回环地址（127.0.0.1 / ::1 / localhost）；其它地址会导致
+	// Start 失败，确需监听时设置 AllowRemoteControlPlane 显式放行。
 	ListenAddr string
+	// AllowRemoteControlPlane 允许控制面监听非回环地址。
+	//
+	// 仅在明确知道控制面暴露面（例如容器内网）时使用；默认关闭。
+	AllowRemoteControlPlane bool
 	// Logger 可为 nil。
 	Logger *slog.Logger
 	// Capabilities 为零值时表示全能力，便于验证降级路径之外的行为。
@@ -81,6 +89,7 @@ func New(opts Options) *Adapter {
 	if opts.Platform == "" {
 		opts.Platform = defaultPlatform
 	}
+	opts.ListenAddr = strings.TrimSpace(opts.ListenAddr)
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -107,6 +116,9 @@ func (a *Adapter) Addr() string {
 }
 
 // Start 记录事件出口，可选启动 HTTP 控制面，然后阻塞直到 ctx 结束。
+//
+// 只有控制面监听成功（或未配置控制面）后才置为运行状态：监听失败时
+// Started 仍为 false，调用方可以换地址重试。控制面地址校验见 Options.ListenAddr。
 func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 	if sink == nil {
 		return errors.New("mock: nil sink")
@@ -116,33 +128,77 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 		a.mu.Unlock()
 		return errors.New("mock: already started")
 	}
-	a.started = true
-	a.stopped = false
-	a.sink = sink
+	if err := a.checkControlPlaneAddr(); err != nil {
+		a.mu.Unlock()
+		return err
+	}
 
+	var (
+		ln  net.Listener
+		srv *http.Server
+	)
 	if a.opts.ListenAddr != "" {
-		ln, err := net.Listen("tcp", a.opts.ListenAddr)
+		var err error
+		ln, err = net.Listen("tcp", a.opts.ListenAddr)
 		if err != nil {
 			a.mu.Unlock()
 			return fmt.Errorf("mock: listen %s: %w", a.opts.ListenAddr, err)
 		}
-		a.ln = ln
-		a.addr = ln.Addr().String()
-		a.srv = &http.Server{
+		srv = &http.Server{
 			Handler:           a.handler(),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
+		a.ln = ln
+		a.srv = srv
+		a.addr = ln.Addr().String()
+	}
+
+	a.started = true
+	a.stopped = false
+	a.sink = sink
+	addr := a.addr
+	a.mu.Unlock()
+
+	if srv != nil {
 		go func() {
-			if err := a.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				a.log.Error("mock control plane stopped", "error", err)
 			}
 		}()
-		a.log.Info("mock control plane listening", "addr", a.addr)
+		a.log.Info("mock control plane listening", "addr", addr)
 	}
-	a.mu.Unlock()
 
 	<-ctx.Done()
 	return nil
+}
+
+// checkControlPlaneAddr 校验控制面监听地址：默认只允许回环地址。
+//
+// 控制面无鉴权，注入事件可触发命令执行，因此非回环地址必须显式 opt-in。
+func (a *Adapter) checkControlPlaneAddr() error {
+	if a.opts.ListenAddr == "" || a.opts.AllowRemoteControlPlane {
+		return nil
+	}
+	if listenAddrIsLoopback(a.opts.ListenAddr) {
+		return nil
+	}
+	return fmt.Errorf("mock: 控制面监听地址 %q 不是回环地址（控制面无鉴权，可注入事件）；确需监听请设置 allow_remote_control_plane", a.opts.ListenAddr)
+}
+
+// listenAddrIsLoopback 判断监听地址是否限定在回环接口上。
+//
+// 空主机名（如 ":18080"）表示监听所有接口，与具体网卡地址一样按非回环处理；
+// 主机名只认 "localhost"，其它名字即使解析到回环也不放行（避免依赖解析结果）。
+func listenAddrIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Stop 关闭 HTTP 控制面，幂等。
@@ -311,6 +367,21 @@ func (a *Adapter) newEvent(text, userID, userName, channelID string, kind bot.Me
 	return ev
 }
 
+// parseKind 把控制面提交的 kind 归一为受支持的会话类型。
+//
+// 空值默认群聊；未知取值直接报错，避免拼错的 kind 被静默当成群聊、
+// 让集成测试验证到错误的代码路径。
+func parseKind(raw string) (bot.MessageKind, error) {
+	switch kind := bot.MessageKind(strings.TrimSpace(raw)); kind {
+	case "":
+		return bot.MessageGroup, nil
+	case bot.MessagePrivate, bot.MessageGroup, bot.MessageChannel:
+		return kind, nil
+	default:
+		return "", fmt.Errorf("mock: 未知的 kind %q，可用值：private/group/channel", raw)
+	}
+}
+
 // injectRequest 是 HTTP 控制面接受的事件描述。
 type injectRequest struct {
 	ID        string `json:"id"`
@@ -348,9 +419,10 @@ func (a *Adapter) handleInject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kind := bot.MessageKind(strings.TrimSpace(req.Kind))
-	if kind == "" {
-		kind = bot.MessageGroup
+	kind, err := parseKind(req.Kind)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	ev := a.newEvent(req.Text, req.UserID, req.UserName, req.ChannelID, kind)
 	ev.ID = req.ID

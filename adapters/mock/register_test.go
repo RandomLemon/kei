@@ -38,7 +38,7 @@ func TestRegisterMetadata(t *testing.T) {
 	if len(meta.Description) == 0 {
 		t.Fatal("Description 不能为空")
 	}
-	if got, want := strings.Join(meta.Options, ","), "platform,listen_addr"; got != want {
+	if got, want := strings.Join(meta.Options, ","), "platform,listen_addr,allow_remote_control_plane"; got != want {
 		t.Fatalf("Options = %q, want %q", got, want)
 	}
 }
@@ -81,5 +81,27 @@ func TestFactoryWithoutHTTPClient(t *testing.T) {
 	ctx.HTTPClient = nil
 	if _, err := factory(ctx); err != nil {
 		t.Fatalf("Mock 不要求 network 权限, 不应失败: %v", err)
+	}
+}
+
+// TestFactoryRejectsRemoteControlPlane 断言配置层的非回环控制面地址在装配期报错，
+// 只有显式 allow_remote_control_plane 才放行。
+func TestFactoryRejectsRemoteControlPlane(t *testing.T) {
+	_, factory, _ := bot.LookupAdapter(adapterName)
+
+	if _, err := factory(testContext(map[string]any{"listen_addr": "0.0.0.0:18080"})); err == nil ||
+		!strings.Contains(err.Error(), "不是回环地址") {
+		t.Fatalf("非回环 listen_addr 应被拒绝, got %v", err)
+	}
+
+	ad, err := factory(testContext(map[string]any{
+		"listen_addr":                "0.0.0.0:18080",
+		"allow_remote_control_plane": true,
+	}))
+	if err != nil {
+		t.Fatalf("显式 opt-in 后工厂不应失败: %v", err)
+	}
+	if ad == nil {
+		t.Fatal("工厂返回了 nil 实例")
 	}
 }
