@@ -131,13 +131,13 @@
   - 修复：`Stop` 顶部定一个 deadline，`srv.Shutdown` 先于 `hub.shutdown`，各阶段显式子预算；`Start` defer 复用有界 ctx。
   - 验收：测试卡住的 WS 会话下 `Stop` 在预算内返回。
 
-- [ ] **25. mock：`started` 置位早于 listen；`kind` 不校验** `[静态]`
+- [x] **25. mock：`started` 置位早于 listen；`kind` 不校验** `[静态]` — 完成 0252a4b：`Start` 改为「控制面监听成功后才置运行状态」——`net.Listen` 失败时 `started`/`sink` 不写入、`Addr()` 为空，端口释放后同一实例可重试成功；`POST /inject` 的 `kind` 走新增的 `parseKind` 闭集校验（`private`/`group`/`channel`，缺省 group），未知取值回 400 且不投递事件。回归测试 `TestListenFailureKeepsAdapterRestartable`（占位监听 → `Started()==false`、`Addr()==""`、注入报错 → 释放端口后重试启动成功）、`TestControlPlaneKindClosedSet`（未知 kind 400 且无事件、`channel` 照常 202 注入）。取证：HEAD worktree 探针实测监听失败后 `Started()=true`（缺陷坐实）；未知 kind 返回 202 且事件 `Message.Kind` 原样为 `bogus`——比本条描述的「静默变群聊」更糟：非法值直接进事件、Channel 也未建立。文档：`docs/adapter.md` 6.7 mock 段、`README.md` 控制面表、`docs/testing.md`（mock 13→17）。
   - 位置：`adapters/mock/mock.go:110-127`、`:349-355`、`:305-309`
   - 问题：`net.Listen` 失败后 `started==true`、`sink` 已设 → 实例自称健康且永久不可重试；`/inject` 未知 `kind` 静默变群聊，测试可能验证了错误的代码路径。
   - 修复：成功 listen 后再置 `started`/`sink`；失败路径复位状态；`kind` 只接受闭集，否则 400。
   - 验收：单测 listen 失败后 `Started()==false` 且可重试；非法 kind 返回 400。
 
-- [ ] **26. mock：控制面无鉴权且未限制 loopback** `[静态]`
+- [x] **26. mock：控制面无鉴权且未限制 loopback** `[静态]` — 完成 0252a4b：控制面默认只接受回环地址——新增 `Options.AllowRemoteControlPlane`（配置键 `allow_remote_control_plane`，已登记进 `AdapterMetadata.Options`）作为显式 opt-in，`checkControlPlaneAddr` 在工厂（装配期）与 `Start` 监听前各校验一次；`:18080`（全部接口）、`0.0.0.0:18080`、`[::]:18080`、局域网 IP 与其它主机名一律拒绝（错误含「不是回环地址」），`127.0.0.1`/`::1`/`localhost`（大小写不敏感）与未配置控制面通过。回归测试 `TestControlPlaneAddrValidation`（表驱动，另断言 `Start` 在监听前拒绝）与 `TestFactoryRejectsRemoteControlPlane`（工厂拒绝 + opt-in 放行）。取证：HEAD worktree 探针实测 `0.0.0.0:0` 直接监听成功并报告 `Addr()=[::]:40643`（旧实现无任何校验）。文档：`docs/adapter.md` 6.7（配置键与控制面安全边界）、`README.md`、`docs/testing.md`。残余：控制面仍无鉴权，非回环监听只能靠显式 opt-in 约束（`allow_remote_control_plane` 已在文档中标注风险）。
   - 位置：`adapters/mock/mock.go:327-336`、`:373-385`；权限声明 `adapters/mock/register.go`
   - 问题：`listen_addr: 0.0.0.0:18080` 即把事件注入（可触发命令执行）与 `DELETE /sent` 暴露到网络。
   - 修复：`New` 拒绝非 loopback 地址（除非显式 opt-in），或复用 onebot 的 token 机制。
@@ -161,13 +161,13 @@
   - 修复：同一临界区内完成快照（或在 `total` 读取后再修正 +Inf）。
   - 验收：并发观测下断言各桶单调不减。
 
-- [ ] **30. metrics：重复事件从不计入 `dropped`** `[读码]`
+- [x] **30. metrics：重复事件从不计入 `dropped`** `[读码]` — 完成 95fafd9：`eventbus.Publish` 签名改为 `(enqueued bool, err error)`（真正入队 `(true,nil)`、去重命中 `(false,nil)`、队列满 `(false, ErrQueueFull 包装)`、已关闭 `(false, ErrClosed)`、nil 事件 `(false, 错误)`），`Bus.Emit` 保持只返回 error 以满足 `bot.EventSink`；`eventSink.Emit` 只在入队时记 `EventPublished`，去重命中记 `EventDropped(platform, "duplicate")` 且仍返回 nil（对外契约不变），错误路径维持 `queue_full`/`closed`/`error` 分类；语义收敛为 **`published + dropped = 投递尝试数`**。回归测试：`internal/eventbus` 的 `TestPublishReportsEnqueued`、`internal/engine/metrics_test.go` 的 `TestEventSinkRepeatedEventIsDroppedNotPublished`。取证：HEAD worktree 内同一测试失败——实测 `kei_events_published_total{platform="mock"}=2` 且无任何 dropped 行。文档：`docs/engine.md`（8.x Publish/Emit 语义、指标小节、附录方法集 `Publish(ctx, ev) (bool, error)`）、`docs/adapter.md` 6.6 第 8 条（删去「投递失败没有对应指标」的缺口）、`docs/testing.md`。
   - 位置：`internal/engine/engine.go:503-512`（先记 `published`）、`internal/eventbus/bus.go:176-179`（去重返回 nil）
   - 问题：`published - dropped` 高估入队量，`kei_events_dropped_total` 看不到 duplicate，而 `Bus.Stats().Duplicated` 有值。
   - 修复：让 `Publish` 区分“入队/去重”，或在 `Emit` 侧对去重记 `reason="duplicate"`。
   - 验收：单测重复事件后指标计数正确。
 
-- [ ] **31. metrics：`platform` 标签基数无界** `[读码]`
+- [x] **31. metrics：`platform` 标签基数无界** `[读码]` — 完成 95fafd9：引擎新增 `unknownPlatformLabel = "unknown"` 与 `(*Engine).metricPlatform`——事件自报平台命中 `e.platforms`（`New` 中由 `Adapter.Name()` 建立、之后只读）时原样返回，否则统一并入 `unknown`，因此 `platform` 标签基数上界 = 已装配适配器数；`EventPublished`/`EventDropped` 都走归一化，`send.go` 的 `MessageSent(ad.Name())` 用的是已解析适配器名、本身有界（加注释说明，不做多余改动）。回归测试 `TestEventSinkNormalizesUnknownPlatformLabel`：两个伪造平台 `spoof-a`/`spoof-b` 的事件后，指标文本里不出现这两个取值、只有 `platform="unknown"`，已装配平台 `mock` 保持原标签。取证：HEAD worktree 实测两条伪造平台各自成一条独立序列（缺陷坐实）。文档：`docs/engine.md` 指标小节、`docs/adapter.md` 6.6 第 8 条、`docs/testing.md`。
   - 位置：`internal/metrics/registry.go:66-71`、`:107-121`；来源 `ev.Platform`（mock 可从请求体指定，`adapters/mock/mock.go:355-358`）
   - 问题：未校验的标签值可为每请求新增序列，Registry 内存无界。
   - 修复：按已注册适配器名归一化，未知平台并入 `reason="unknown_platform"`。
@@ -239,50 +239,50 @@
 
 ## P2 — 结构 / 一致性 / 文档
 
-- [ ] **41. `pkg/kei` 空导入存储方言，嵌入方被迫吃下 GORM + cgo** `[读码]`
+- [x] **41. `pkg/kei` 空导入存储方言，嵌入方被迫吃下 GORM + cgo** `[读码]` — 完成 91e83f7：`pkg/kei` 删除对 `internal/storage/{sqlite,mysql}` 的空导入，新增公开 opt-in 包 `pkg/kei/sql`（只空导入两个方言，包注释写明「不用 SQL 后端请不要导入，否则引入 GORM 与 cgo」）；`cmd/bot/main.go` 空导入它以保持 CLI 对 `storage.type: sqlite/mysql` 的既有支持；`pkg/kei/assemble_test.go` 需要 sqlite 的用例改为直接空导入 `internal/storage/sqlite`（不把 mysql 一并拖入）。取证：`CGO_ENABLED=0 go build ./pkg/kei` 成功、`go list -deps ./pkg/kei` 无 gorm/sqlite/mysql、`go list -deps ./cmd/bot` 仍含三者；`go build ./...`、`go vet ./...`、`go test ./pkg/kei/ ./cmd/bot/` 全绿。文档：`docs/architecture.md` 3.1 与第 4 章目录树（`pkg/kei/sql`）、`docs/configuration.md` 12.5、`README.md`（运行时依赖/目录树/嵌入式示例/已知限制）、`docs/testing.md`。
   - 位置：`pkg/kei/kei.go:29-31`；对照 `docs/architecture.md` 3.1“不空导入任何适配器或插件”
   - 问题：只要 import `pkg/kei` 就链接 `gorm` + `mattn/go-sqlite3`（需 `CGO_ENABLED=1`），即便用 `memory` 或注入 `Options.Storage`；存储后端不像适配器/插件那样由调用方 opt-in，与“注册表 + 配置装配”原则不一致。
   - 修复：把空导入移到 `cmd/bot`，或提供 `pkg/kei/sql` opt-in 包；文档如实描述。
 
-- [ ] **42. 引擎可调参数在唯一装配路径上不可达** `[读码]`
+- [x] **42. 引擎可调参数在唯一装配路径上不可达** `[读码]` — 完成 91e83f7：新增配置顶层 `engine` 段（`EngineConfig` 10 键与 `internal/engine.Options` 一一对应：`command_prefixes`/`event_timeout`/`rule_timeout`/`shutdown_timeout`/`bus_workers`/`bus_queue_size`/`dedup_ttl`/`dedup_capacity`/`send_retries`/`send_backoff`），手写 `decodeEngine`（未知键报错、时长/整数复用 `decodeDurationValue`/`decodeIntValue`、键存在但 null 视为未配置）、`EngineConfig.validate`（前缀每项去空白非空；时长/容量拒负数；`send_retries` 的 0 合法=不重试、负数非法），`0`/未配置一律保持零值由引擎 `orInt`/`orDuration` 回落默认（配置层不造第二套默认值）；`KEI_ENGINE_*` 10 个环境变量覆盖（前缀逗号分隔、时长经 `time.ParseDuration`、非法值报错并点名变量、逐条 `recordEnv` 进 `EnvOverrides`）；`pkg/kei.Run` 原样透传 10 个字段。验收（`!manage ping` 同类路径）：`pkg/kei` 新增端到端 `TestRunEndToEndCommandPrefixes`——配置 `engine.command_prefixes: ["!"]` 下 `!hi` 收到回复、`/hi` 不再命中；`internal/config` 新增 `TestEngineSection`/`TestEngineValidateErrors`（14 例）/`TestEngineEnvOverride`/`TestEngineEnvBadValues`。顺手修正既有矛盾（本条目暴露）：`internal/engine.defaultSendRetries = 2` 全仓无引用（死常量）、`SendRetries` 实际默认 0（不重试），删除死常量并把 `Options` 注释与 `docs/engine.md` 7.1/7.7 改成实际语义。文档：`docs/configuration.md` 新增 12.6 并把原 12.6/12.7/12.8 重编号为 12.7/12.8/12.9（`docs/`、`README.md` 内交叉引用同步修正）、12.1 结构体与顶层键表（8→9）、`docs/engine.md` 7.1、`docs/plugins/manage.md` 第 2 章、`configs/config.yaml`、`README.md`、`docs/testing.md`。
   - 位置：`pkg/kei/kei.go:119-127`；`internal/engine/engine.go:76-95`；`docs/plugins/manage.md:59`（要求用户用 `CommandPrefixes` 覆盖前缀）
   - 问题：`CommandPrefixes`/`EventTimeout`/`RuleTimeout`/`ShutdownTimeout`/`BusWorkers`/`BusQueueSize`/`DedupTTL`/`DedupCapacity`/`SendRetries`/`SendBackoff` 全部取零值 = 只能吃默认；`cmd/bot` 更只能传 `ConfigFile`。
   - 修复：在 `kei.Options` 和/或配置 `engine:` 段暴露并透传；至少补 `CommandPrefixes`、`DedupTTL`、`SendRetries`。
   - 验收：`!manage ping` 可通过配置跑通；`docs/engine.md` 7.x 与 `docs/configuration.md` 同步。
 
-- [ ] **43. 适配器重复实现抽取到共享层** `[读码]`
+- [x] **43. 适配器重复实现抽取到共享层** `[读码]` — 完成 c4a60bf：`pkg/bot` 新增 `segment.go` 共享层——`SegmentData(seg,key)`（`Segment.Data` 的唯一取值约定：`Data` 为 nil/键缺失/值为 nil → 空串，string 原样，其余 `fmt.Sprint`，容器类型不属契约；`Message.PlainText` 保持严格类型断言并在注释与文档写明为唯一例外）、`FirstNonEmpty`、`Truncate`（超长按字节截断追加 `...`，用 `utf8.RuneStart` 回退保证不切开 UTF-8，`limit<=0` 或未超长原样返回）。旧实现全量删除并迁移调用方：`pkg/bot/degrade.go` 的 `str`/`firstNonEmpty`、`adapters/onebot` 的 `dataString`/`jsonString`/`firstNonEmpty`/`truncate`、`internal/engine/logging.go` 的 `dataString`（**只认 string**——修复目标：数字/布尔/`json.Number` 的 ID 此前在 INFO 日志里渲染为空串）与 `firstNonEmpty`、`examples/kei-adapter-myim` 的 `anyString`/`firstNonEmpty`/`truncate`（独立 module 同步 `gofmt`/`build`/`vet`/`test` 全绿）。回归测试：`pkg/bot/segment_test.go`（`SegmentData` 逐类型 + `Truncate` 多字节边界与 `limit<=0`）、`adapters/onebot` 与 `examples/kei-adapter-myim` 各新增 `TestSegmentScalarValues`（同一组 float64/`json.Number`/bool 段在两条真实发送路径上得到一致载荷）。取证：HEAD worktree 探针实测同一段数据三处取值不同（engine `describeSegment` 对 `json.Number("9001")`/bool 得到 `reply:`/`at:` 空值，onebot/myim 得到 `9001`/`true`；`truncate("你好世界",4)` 切出非法 UTF-8）。文档：`docs/domain-model.md` 5.6 约定 5/6、`docs/adapter.md` 6.4 辅助函数段、`docs/testing.md`。
   - 位置：`firstNonEmpty` ×4（`adapters/onebot/message.go:213`、`pkg/bot/degrade.go:87`、`internal/engine/logging.go:122`、`examples/kei-adapter-myim/myim.go:511`）；`dataString` ×3 语义不同（`adapters/onebot/message.go:183` 走 `jsonString`，`internal/engine/logging.go:116` 只认 `string`，`examples/kei-adapter-myim/myim.go` 又写一套）；`truncate` ×3
   - 问题：同一 `bot.Segment` 在不同适配器上取值行为不同；违反“禁止并存第二套约定”。
   - 修复：把 `Segment.Data` 取值约定收进 `pkg/bot`（紧邻 `Key*` 常量），适配器只保留平台特有逻辑。
   - 验收：新增测试断言两种取值在 onebot 与示例适配器上一致。
 
-- [ ] **44. 入站 HTTP 事件源的服务器超时未按需配置** `[读码]`
+- [x] **44. 入站 HTTP 事件源的服务器超时未按需配置** `[读码]` — 完成 c4a60bf：新增 `internal/adapterkit`（内置适配器共享件）：`NewServer` + 具名默认超时表（ReadHeaderTimeout 10s / ReadTimeout 30s / WriteTimeout 30s / IdleTimeout 60s）与 `DefaultMaxBodyBytes` = 1 MiB（每项都写了取值理由）、`EventSourceOptions.Handler`（固定顺序：非 POST → 405 且带 `Allow: POST`；鉴权钩子 false → 401；限长读体失败 → 400；解析失败 → 400；成功 → 先 204 且 Flush 再在请求 goroutine 内同步 `Emit`，`Emit` 失败只记 warn、不改已发出的 ACK）、`TokenAuthorizer`（`Authorization: Bearer` 或 `?access_token=`，常数时间比较，空 token 即不校验）、`Shutdown`（调用方 ctx 预算内关闭并把 `ErrServerClosed` 归一为 nil）。`adapters/onebot` 全量迁移并删除旧实现（`eventHandler`/`authorized`/`bearerToken`/`maxBodyBytes` 常量/裸 `http.Server`/`Stop` 的 http 阶段），**行为零变化**：onebot 既有 45 个测试未改一行全部通过（该文件另由 P2-43 新增 1 个段取值用例，现 46 个）。明确不抽「有界队列 + worker」：OneBot 在请求 goroutine 内同步 `Emit`（sink 契约要求快速返回），当前没有队列，抽空壳违反仓库「禁止无使用者的抽象」，理由写在包注释里。回归测试：`internal/adapterkit` 11 个（含 `TestHandlerAcknowledgesBeforeEmit` 断言响应写出时 sink 尚未被调用、`TestHandlerThroughServer` 经真实 `httptest.Server`、`TestTokenAuthorizer` 三条路径、`TestShutdownBoundedByContext`）。文档：`docs/adapter.md` 6.6 新增第 11 条（第三方适配器不能 import `internal/`，需按同一语义自行实现）+ 6.1/6.3 同步、`docs/architecture.md` 目录树、`docs/testing.md`（新增 `internal/adapterkit` 行）。
   - 位置：`adapters/onebot/onebot.go:414-420`（完整四项，但与事件源的实际风险面不一定匹配）
   - 问题：入站 HTTP 事件源目前只剩 OneBot 一处，但服务器超时默认值、body 上限与 ACK/丢弃/排空语义没有共享实现；后续新增 HTTP 回调型适配器（如企业内部 IM）时会再次各写一套。
   - 修复：抽 `internal/adapterkit`：body 上限读取、鉴权钩子、ACK 策略、有界队列 + worker、带 deadline 排空、服务器超时默认值；适配器只提供 auth/parse/convert。
   - 验收：OneBot 迁移到共享实现，现有行为测试保持通过；`docs/adapter.md` 同步。
 
-- [ ] **45. `docs/adapter.md` 与 `AdapterContext.Config` 注释过时** `[静态]`
+- [x] **45. `docs/adapter.md` 与 `AdapterContext.Config` 注释过时** `[静态]` — 完成 de48fcf：删除该括注（「`pkg/bot` 中 `AdapterContext.Config` 的注释仍写作「除 name/adapter/plugins 外」，`enabled` 是后加的实例级开关」）——实测 `pkg/bot/adapter_registry.go` 的注释已写作「除 name/adapter/enabled/plugins 外」，文档与实现一致，只需删掉过时说明。同批提交的 `docs/adapter.md` 还含本批其它条目的同步（mock 控制面安全边界、`bot.SegmentData`/`FirstNonEmpty`/`Truncate` 的唯一取值约定、6.6 第 8 条删去「投递失败无指标」的缺口、6.6 新增第 11 条 `internal/adapterkit`）与 `docs/testing.md` 全表刷新。
   - 位置：`docs/adapter.md:384` vs `pkg/bot/adapter_registry.go:29`
   - 修复：删除该括注（`enabled` 已在注释里）。
 
-- [ ] **46. 配置要求 `bots>=1`，与“只运行插件”能力矛盾** `[读码]`
+- [x] **46. 配置要求 `bots>=1`，与“只运行插件”能力矛盾** `[读码]` — 完成 91e83f7：删除 `Config.validate` 的「`config: bots: 至少需要一个 bot`」，`Config.Bots` 字段注释改为「可为空（只运行插件时）」；空 `bots` 的四种写法（不写、`bots: []`、`bots:`（null）、空 bots + 启用插件）都能加载成功，已有条目仍逐条校验（name 非空且唯一、adapter 非空且匹配 `[a-z0-9_-]`）。回归测试：`internal/config` 的 `TestEmptyBotsAllowed`（4 态）与 `pkg/kei` 的 `TestBuildConfigEmptyBotsAllowed`；`pkg/kei` 原「内联配置校验错误透出」用例改用 `bots[0].adapter: 不能为空` 承载同一意图（原来的「至少一个 bot」触发条件已不存在）。文档：`docs/configuration.md` 12.1 顶层键表（「无默认，至少一个」→「可为空」）与校验 bullet、`docs/testing.md`。
   - 位置：`internal/config/config.go:593-595` vs `pkg/kei/kei.go:106-108`
   - 问题：`kei.Run` 明确支持无适配器只跑插件，且 bot 可全部 `enabled: false`，但校验阶段强制至少一个 bot。
   - 修复：允许空 `bots`（或仅要求“存在 enabled 的 bot 时字段合法”），同步 `docs/configuration.md` 12.2/12.8。
 
-- [ ] **47. sqlstore 错误被吞且无日志器** `[静态]`
+- [x] **47. sqlstore 错误被吞且无日志器** `[静态]` — 完成 a257942：`sqlstore.New`/`NewWithClock` 增加 `log *slog.Logger`（nil → `slog.Default()`），`Get` 惰性删除失败记 **Debug**（读取路径高频、多为并发删除等预期噪声；`Get` 仍返回 `bot.ErrNotFound`，行为不变），`janitor` 后台清理失败记 **Warn**（权限/方言/连接问题会让过期行持续残留、表无界增长，必须有信号）；日志器来源打通：`storage.Opener` 改为 `func(cfg *bot.Config, logger *slog.Logger)`、`Open(kind, cfg, logger)`（nil → `slog.Default()`），`sqlite`/`mysql` 方言包透传，`pkg/kei.buildStorage(opts, cfg, logger)` 由 `Run` 传入自身 logger；旧签名全部迁移、无兼容垫片。回归测试：`TestGetLazyDeleteFailureLogged`（只读 `file:...?mode=ro` + 假时钟命中过期行 → 仍返回 `ErrNotFound` 且捕获含 key/error 的 Debug）、`TestJanitorFailureLogged`（只读库 + 10ms 清理间隔 → 2s 内捕获 Warn），用并发安全的 `slog.Handler` 捕获器。取证：HEAD worktree 探针实测只读库命中过期行后表内仍残留 1 行、且没有任何日志输出（失败真实发生且被静默吞掉）。文档：`docs/plugin.md` 11.2、`docs/configuration.md` 12.5、`docs/testing.md`（sqlstore 3→5）。
   - 位置：`internal/storage/sqlstore/sqlstore.go:86`（惰性删除 `_ =`）、`:137-139`（janitor `_ =`）
   - 问题：清理长期失败（权限/方言/连接）时表无限增长且无任何信号，`Get` 仍返回 `ErrNotFound` 无法区分原因。
   - 修复：注入可选 `*slog.Logger`（或从 `Close` 返回最后错误）并 Warn/Debug 记录。
   - 验收：单测失败删除路径有日志。
 
-- [ ] **48. 手写 YAML 段重复键静默后者胜** `[静态]`
+- [x] **48. 手写 YAML 段重复键静默后者胜** `[静态]` — 完成 91e83f7：新增统一映射遍历助手 `eachPair(node, path, kindErr, fn)`（校验映射形态、`seen` 去重，重复报 `<path>: 键 %q 重复`，`kindErr` 保留各段原有措辞），`decodeBot`/`decodeStorage`/`decodePlugins`/`decodePlugin`/`decodeAdapters`/`decodeAdapter`/`decodeEngine` 全部改用；手写段不再静默取最后值（struct 解码段 `log`/`metrics`/`limits`/`auth` 本来就由 yaml.v3 报同类错误，口径现已一致）。回归测试 `TestDuplicateKeys`（6 例：bots 条目重复保留键、bots 条目重复私有键、storage 重复 `type`、plugins 重复 `enabled`、adapters 重复 `enabled`、engine 重复键）断言错误含「重复」与字段路径。文档：`docs/configuration.md`（12.6 重复键报错文案）、`docs/testing.md`。
   - 位置：`internal/config/config.go:216-236`、`:276-336`、`:341-436`（`bots`/`plugins`/`adapters`/`storage` 手写遍历无重复键检查；struct 解码路径会报 `already set`）
   - 问题：合并冲突/复制粘贴的配置静默取最后值，无诊断。
   - 修复：统一的 pair 遍历助手，重复键报错并给字段路径。
 
-- [ ] **51. 注册错误审计路径 `Engine.RegistrationErrors()` 对外不可达，文档却指向它** `[读码]`
+- [x] **51. 注册错误审计路径 `Engine.RegistrationErrors()` 对外不可达，文档却指向它** `[读码]` — 完成 91e83f7：按本条倾向 (b) 修文档（不新增导出 API——没有真实的外部审计调用方）：`Engine.RegistrationErrors()` 挂在 `internal/engine.Engine` 上、仓库外无法取得，对外的真实信号是每条注册错误的 Warn 日志（`recordErr`）；`docs/plugin.md` 9.2 删去「需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取」的对外承诺，改为「注册失败逐条记 Warn 日志即对外信号；`RegistrationErrors()` 是仓库内只读视图」；`docs/engine.md` 10.3 的括注同步为仓库内视图；`internal/engine` 该方法注释补「供仓库内使用、非对外通道」（未改行为）。文档：`docs/plugin.md`、`docs/engine.md`、`docs/testing.md`。
   - 位置：`internal/engine/engine.go:492-496`（方法挂在 `internal/engine.Engine` 上）；`pkg/kei/kei.go:59`（`Run` 只返回 `error`，`pkg/kei` 中 `engine.` 只出现在构造点，无导出访问器）；`docs/plugin.md:138`（面向插件作者承诺「需要审计正则问题的调用方可经 `Engine.RegistrationErrors()` 读取」）
   - 问题：`engine.Engine` 是 `internal` 类型，仓库外的调用方（嵌入 `pkg/kei` 的集成方与插件作者）没有任何方式取得它；`cmd/bot`、插件与 `pkg/kei` 也都不消费该列表（`recordErr` 只写不读，除内部测试）→ 文档所述通道对其受众不存在，`RegistrationErrors` 实例上「有值无出口」。
   - 修复：二选一——(a) 给嵌入方一个真实出口（如 `kei.Options` 增加 `OnRegistrationErrors func([]error)`，或在启动时把非空列表汇总进日志）；(b) 文档改为「仓库内可读（引擎不对外开放）」，删去对插件作者的承诺。倾向 (b)，除非嵌入方有真实审计需求。
