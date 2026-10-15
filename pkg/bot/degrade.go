@@ -40,15 +40,15 @@ func Degrade(msg *Message, caps Capabilities) *Message {
 		}
 		switch seg.Type {
 		case SegMarkdown:
-			appendText(str(seg.Data[KeyText]))
+			appendText(SegmentData(seg, KeyText))
 		case SegImage:
-			appendText("[image] " + firstNonEmpty(str(seg.Data[KeyURL]), str(seg.Data[KeyFile])))
+			appendText("[image] " + FirstNonEmpty(SegmentData(seg, KeyURL), SegmentData(seg, KeyFile)))
 		case SegFile:
-			appendText("[file] " + joinNonEmpty(" ", str(seg.Data[KeyFileName]), firstNonEmpty(str(seg.Data[KeyURL]), str(seg.Data[KeyFile]))))
+			appendText("[file] " + joinNonEmpty(" ", SegmentData(seg, KeyFileName), FirstNonEmpty(SegmentData(seg, KeyURL), SegmentData(seg, KeyFile))))
 		case SegAt:
-			appendText("@" + firstNonEmpty(str(seg.Data[KeyUserName]), str(seg.Data[KeyUserID])))
+			appendText("@" + FirstNonEmpty(SegmentData(seg, KeyUserName), SegmentData(seg, KeyUserID)))
 		case SegFace:
-			appendText("[face] " + str(seg.Data[KeyFaceID]))
+			appendText("[face] " + SegmentData(seg, KeyFaceID))
 		case SegCard:
 			appendText("[card] " + jsonText(seg.Data[KeyCard]))
 		case SegReply:
@@ -58,16 +58,6 @@ func Degrade(msg *Message, caps Capabilities) *Message {
 		}
 	}
 	return out
-}
-
-func str(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return fmt.Sprint(v)
 }
 
 func jsonText(v any) string {
@@ -82,15 +72,6 @@ func jsonText(v any) string {
 		return fmt.Sprint(v)
 	}
 	return string(b)
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func joinNonEmpty(sep string, vals ...string) string {

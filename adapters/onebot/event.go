@@ -95,7 +95,7 @@ func (f *flexID) UnmarshalJSON(data []byte) error {
 	}
 	var num json.Number
 	if err := json.Unmarshal(trimmed, &num); err != nil {
-		return fmt.Errorf("ID 必须是数字或字符串，收到 %s", truncate(string(trimmed), errorBodyLimit))
+		return fmt.Errorf("ID 必须是数字或字符串，收到 %s", bot.Truncate(string(trimmed), errorBodyLimit))
 	}
 	*f = flexID(num.String())
 	return nil
@@ -175,8 +175,8 @@ func messageKind(p *onebotEvent) bot.MessageKind {
 //
 // OneBot 协议不提供发送者是否为机器人的信息，IsBot 恒为 false。
 func buildSender(p *onebotEvent) *bot.User {
-	id := firstNonEmpty(p.Sender.UserID.String(), p.UserID.String())
-	name := firstNonEmpty(p.Sender.Card, p.Sender.Nickname)
+	id := bot.FirstNonEmpty(p.Sender.UserID.String(), p.UserID.String())
+	name := bot.FirstNonEmpty(p.Sender.Card, p.Sender.Nickname)
 	if id == "" && name == "" {
 		return nil
 	}

@@ -2,10 +2,8 @@ package onebot
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 
 	"github.com/RandomLemon/kei/pkg/bot"
 )
@@ -67,44 +65,46 @@ func parseMessage(raw []byte, kind bot.MessageKind, log *slog.Logger) (*bot.Mess
 // false 时调用方应跳过该段。
 func convertSegment(in onebotSegment, log *slog.Logger) (bot.Segment, bool) {
 	data := in.Data
+	// 平台原始数据同样按统一取值约定读取：见 bot.SegmentData。
+	src := bot.Segment{Data: data}
 	switch in.Type {
 	case "text":
 		return bot.Segment{
 			Type: bot.SegText,
-			Data: map[string]any{bot.KeyText: jsonString(data["text"])},
+			Data: map[string]any{bot.KeyText: bot.SegmentData(src, "text")},
 		}, true
 
 	case "image":
 		d := map[string]any{}
-		setIfNotEmpty(d, bot.KeyURL, jsonString(data["url"]))
-		setIfNotEmpty(d, bot.KeyFile, jsonString(data["file"]))
+		setIfNotEmpty(d, bot.KeyURL, bot.SegmentData(src, "url"))
+		setIfNotEmpty(d, bot.KeyFile, bot.SegmentData(src, "file"))
 		return bot.Segment{Type: bot.SegImage, Data: d}, true
 
 	case "at":
 		// OneBot 标准键为 qq，部分实现使用 user_id，两者都接受。
 		d := map[string]any{
-			bot.KeyUserID: firstNonEmpty(jsonString(data["qq"]), jsonString(data["user_id"])),
+			bot.KeyUserID: bot.FirstNonEmpty(bot.SegmentData(src, "qq"), bot.SegmentData(src, "user_id")),
 		}
-		setIfNotEmpty(d, bot.KeyUserName, jsonString(data["name"]))
+		setIfNotEmpty(d, bot.KeyUserName, bot.SegmentData(src, "name"))
 		return bot.Segment{Type: bot.SegAt, Data: d}, true
 
 	case "face":
 		return bot.Segment{
 			Type: bot.SegFace,
-			Data: map[string]any{bot.KeyFaceID: jsonString(data["id"])},
+			Data: map[string]any{bot.KeyFaceID: bot.SegmentData(src, "id")},
 		}, true
 
 	case "reply":
 		return bot.Segment{
 			Type: bot.SegReply,
-			Data: map[string]any{bot.KeyMessageID: jsonString(data["id"])},
+			Data: map[string]any{bot.KeyMessageID: bot.SegmentData(src, "id")},
 		}, true
 
 	case "file":
 		d := map[string]any{}
-		setIfNotEmpty(d, bot.KeyFile, jsonString(data["file"]))
-		setIfNotEmpty(d, bot.KeyURL, jsonString(data["url"]))
-		setIfNotEmpty(d, bot.KeyFileName, firstNonEmpty(jsonString(data["name"]), jsonString(data["file_name"])))
+		setIfNotEmpty(d, bot.KeyFile, bot.SegmentData(src, "file"))
+		setIfNotEmpty(d, bot.KeyURL, bot.SegmentData(src, "url"))
+		setIfNotEmpty(d, bot.KeyFileName, bot.FirstNonEmpty(bot.SegmentData(src, "name"), bot.SegmentData(src, "file_name")))
 		return bot.Segment{Type: bot.SegFile, Data: d}, true
 
 	default:
@@ -128,28 +128,28 @@ func buildArray(msg *bot.Message, log *slog.Logger) []onebotSegment {
 		d := map[string]any{}
 		switch seg.Type {
 		case bot.SegText, bot.SegMarkdown:
-			out = append(out, onebotSegment{Type: "text", Data: map[string]any{"text": dataString(seg, bot.KeyText)}})
+			out = append(out, onebotSegment{Type: "text", Data: map[string]any{"text": bot.SegmentData(seg, bot.KeyText)}})
 			continue
 
 		case bot.SegImage:
-			url := dataString(seg, bot.KeyURL)
-			d["file"] = firstNonEmpty(dataString(seg, bot.KeyFile), url)
+			url := bot.SegmentData(seg, bot.KeyURL)
+			d["file"] = bot.FirstNonEmpty(bot.SegmentData(seg, bot.KeyFile), url)
 			setIfNotEmpty(d, "url", url)
 
 		case bot.SegAt:
-			d["qq"] = dataString(seg, bot.KeyUserID)
-			setIfNotEmpty(d, "name", dataString(seg, bot.KeyUserName))
+			d["qq"] = bot.SegmentData(seg, bot.KeyUserID)
+			setIfNotEmpty(d, "name", bot.SegmentData(seg, bot.KeyUserName))
 
 		case bot.SegFace:
-			d["id"] = dataString(seg, bot.KeyFaceID)
+			d["id"] = bot.SegmentData(seg, bot.KeyFaceID)
 
 		case bot.SegReply:
-			d["id"] = dataString(seg, bot.KeyMessageID)
+			d["id"] = bot.SegmentData(seg, bot.KeyMessageID)
 
 		case bot.SegFile:
-			file := dataString(seg, bot.KeyFile)
-			name := dataString(seg, bot.KeyFileName)
-			url := dataString(seg, bot.KeyURL)
+			file := bot.SegmentData(seg, bot.KeyFile)
+			name := bot.SegmentData(seg, bot.KeyFileName)
+			url := bot.SegmentData(seg, bot.KeyURL)
 			if file == "" {
 				// 没有可上传的文件引用：只有 URL 时降级为文本链接，两个键都为空时
 				// 视为不可发送（见 docs/domain-model.md 5.6 约定 3）。
@@ -205,46 +205,6 @@ func segTypeName(t bot.SegmentType) string {
 	default:
 		return "text"
 	}
-}
-
-// dataString 读取段数据中指定键的字符串值。
-func dataString(seg bot.Segment, key string) string {
-	if seg.Data == nil {
-		return ""
-	}
-	return jsonString(seg.Data[key])
-}
-
-// jsonString 把 JSON 反序列化得到的任意值转换为字符串。
-func jsonString(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case json.Number:
-		return t.String()
-	case float64:
-		return strconv.FormatFloat(t, 'f', -1, 64)
-	case int:
-		return strconv.Itoa(t)
-	case int64:
-		return strconv.FormatInt(t, 10)
-	case bool:
-		return strconv.FormatBool(t)
-	default:
-		return fmt.Sprint(t)
-	}
-}
-
-// firstNonEmpty 返回第一个非空字符串。
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // setIfNotEmpty 在值非空时写入 map，避免产生空字段。

@@ -1156,3 +1156,49 @@ func TestStartRejectsNilSink(t *testing.T) {
 		t.Error("nil EventSink 应返回错误")
 	}
 }
+
+// TestSegmentScalarValues 断言非字符串标量段数据在发送路径上按 bot.SegmentData
+// 的取值约定渲染，并与示例适配器（myim）对同一段的取值一致。
+func TestSegmentScalarValues(t *testing.T) {
+	api, call := newFakeAPI(t, `{"status":"ok","retcode":0,"data":{"message_id":1}}`, http.StatusOK)
+	h := startHarness(t, Options{Mode: modeForwardHTTP, APIURL: api.URL})
+
+	segs := []bot.Segment{
+		{Type: bot.SegText, Data: map[string]any{bot.KeyText: float64(1.5)}},
+		{Type: bot.SegReply, Data: map[string]any{bot.KeyMessageID: json.Number("9001")}},
+		{Type: bot.SegAt, Data: map[string]any{bot.KeyUserID: true}},
+	}
+	_, err := h.adapter.Send(context.Background(), &bot.SendRequest{
+		Target:  bot.Target{Kind: bot.MessageGroup, ChannelID: "30001"},
+		Message: &bot.Message{Kind: bot.MessageGroup, Segments: segs},
+	})
+	if err != nil {
+		t.Fatalf("Send 失败: %v", err)
+	}
+
+	got := messageParams(t, call)
+	want := []onebotSegment{
+		{Type: "text", Data: map[string]any{"text": "1.5"}},
+		{Type: "reply", Data: map[string]any{"id": "9001"}},
+		{Type: "at", Data: map[string]any{"qq": "true"}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("段数 = %d，期望 %d: %+v", len(got), len(want), got)
+	}
+	keys := []string{bot.KeyText, bot.KeyMessageID, bot.KeyUserID}
+	payloadKeys := []string{"text", "id", "qq"}
+	for i := range want {
+		if got[i].Type != want[i].Type {
+			t.Errorf("第 %d 段类型 = %q，期望 %q", i, got[i].Type, want[i].Type)
+		}
+		for k, v := range want[i].Data {
+			if got[i].Data[k] != v {
+				t.Errorf("第 %d 段 %s = %v，期望 %v", i, k, got[i].Data[k], v)
+			}
+		}
+		// 与共享取值约定一致（myim 侧对同样的段断言相同字面值）。
+		if v := bot.SegmentData(segs[i], keys[i]); got[i].Data[payloadKeys[i]] != v {
+			t.Errorf("第 %d 段取值 %v 与 bot.SegmentData = %q 不一致", i, got[i].Data[payloadKeys[i]], v)
+		}
+	}
+}

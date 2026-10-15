@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RandomLemon/kei/internal/adapterkit"
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
@@ -121,8 +121,6 @@ const (
 	httpShutdownTimeout = 2 * time.Second
 	// wsCloseGrace 是反向 WebSocket 收尾超时后，硬关底层连接、等待读循环退出的宽限。
 	wsCloseGrace = time.Second
-	// maxBodyBytes 限制单个请求/响应体大小，避免异常实现打爆内存。
-	maxBodyBytes = 1 << 20
 	// errorBodyLimit 是错误信息中回显响应体的字节上限。
 	errorBodyLimit = 256
 )
@@ -197,13 +195,16 @@ type Adapter struct {
 	listenAddr  string
 	path        string
 	wsPath      string
-	secret      string
 	accessToken string
 	selfID      string
 	client      *http.Client
 	log         *slog.Logger
 	caps        bot.Capabilities
 	hub         *wsHub
+
+	// authorize 校验入站上报/反向 WebSocket 请求的令牌，来自
+	// adapterkit.TokenAuthorizer（Options.Secret 为空时总是放行）。
+	authorize func(*http.Request) bool
 
 	mu        sync.Mutex
 	srv       *http.Server
@@ -309,7 +310,7 @@ func New(opts Options) (*Adapter, error) {
 		listenAddr:  listenAddr,
 		path:        path,
 		wsPath:      wsPath,
-		secret:      opts.Secret,
+		authorize:   adapterkit.TokenAuthorizer(opts.Secret),
 		accessToken: opts.AccessToken,
 		selfID:      opts.SelfID,
 		client:      client,
@@ -426,14 +427,10 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 		if err != nil {
 			return fmt.Errorf("onebot: 监听 %s 失败: %w", a.listenAddr, err)
 		}
-		server = &http.Server{
-			Handler:           a.routes(sink),
-			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      30 * time.Second,
-			IdleTimeout:       60 * time.Second,
-			ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelWarn),
-		}
+		server = adapterkit.NewServer(adapterkit.ServerOptions{
+			Handler: a.routes(sink),
+			Logger:  a.log,
+		})
 	}
 
 	a.mu.Lock()
@@ -487,11 +484,8 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		serveErr = server.Shutdown(shutdownCtx)
+		serveErr = adapterkit.Shutdown(shutdownCtx, server)
 		cancel()
-		if serveErr != nil && errors.Is(serveErr, http.ErrServerClosed) {
-			serveErr = nil
-		}
 		<-errCh
 	case serveErr = <-errCh:
 	}
@@ -531,11 +525,9 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	var httpErr error
 	if srv != nil {
 		httpCtx, cancelHTTP := context.WithTimeout(shutdownCtx, httpShutdownTimeout)
-		httpErr = srv.Shutdown(httpCtx)
+		httpErr = adapterkit.Shutdown(httpCtx, srv)
 		cancelHTTP()
-		if errors.Is(httpErr, http.ErrServerClosed) {
-			httpErr = nil
-		} else if httpErr != nil {
+		if httpErr != nil {
 			httpErr = fmt.Errorf("onebot: 关闭事件服务失败: %w", httpErr)
 		}
 	}
@@ -576,7 +568,12 @@ func (a *Adapter) routes(sink bot.EventSink) http.Handler {
 		})
 	}
 	if a.listensHTTP() {
-		exact(a.path, a.eventHandler(sink))
+		exact(a.path, adapterkit.EventSourceOptions{
+			Name:      platformName,
+			Authorize: a.authorize,
+			Parse:     a.parseEvent,
+			Logger:    a.log,
+		}.Handler(sink))
 	}
 	if a.listensWS() {
 		exact(a.wsPath, a.wsHandler())
@@ -584,75 +581,9 @@ func (a *Adapter) routes(sink bot.EventSink) http.Handler {
 	return mux
 }
 
-// eventHandler 返回事件上报的 HTTP 处理函数。
-//
-// 处理流程：校验方法与鉴权 → 读取并解析 JSON → 立即回 204 → 再投递事件。
-// 先响应后投递保证平台回调快速 ACK；Emit 在同 goroutine 内调用，因为
-// bot.EventSink 约定实现方必须快速返回。
-func (a *Adapter) eventHandler(sink bot.EventSink) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
-			return
-		}
-		if !a.authorized(r) {
-			a.log.Warn("onebot: 上报校验失败", "remote", r.RemoteAddr, "path", r.URL.Path)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-		if err != nil {
-			a.log.Warn("onebot: 读取上报请求体失败", "remote", r.RemoteAddr, "err", err)
-			http.Error(w, "read body failed", http.StatusBadRequest)
-			return
-		}
-
-		ev, err := convertEvent(body, a.name, a.selfID, a.log)
-		if err != nil {
-			a.log.Warn("onebot: 解析上报事件失败", "remote", r.RemoteAddr, "err", err)
-			http.Error(w, "invalid event", http.StatusBadRequest)
-			return
-		}
-
-		w.WriteHeader(http.StatusNoContent)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-
-		if err := sink.Emit(r.Context(), ev); err != nil {
-			a.log.Warn("onebot: 投递事件失败", "id", ev.ID, "err", err)
-		}
-	}
-}
-
-// authorized 校验上报请求的令牌。
-//
-// Secret 为空时不做校验；否则 Authorization: Bearer <secret> 与 query 参数
-// access_token=<secret> 任一匹配即通过，比较使用常数时间算法。
-func (a *Adapter) authorized(r *http.Request) bool {
-	if a.secret == "" {
-		return true
-	}
-	if token := bearerToken(r.Header.Get("Authorization")); token != "" &&
-		subtle.ConstantTimeCompare([]byte(token), []byte(a.secret)) == 1 {
-		return true
-	}
-	if token := r.URL.Query().Get("access_token"); token != "" &&
-		subtle.ConstantTimeCompare([]byte(token), []byte(a.secret)) == 1 {
-		return true
-	}
-	return false
-}
-
-// bearerToken 从 Authorization 头中提取 Bearer 令牌。
-func bearerToken(header string) string {
-	const prefix = "Bearer "
-	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
-		return ""
-	}
-	return strings.TrimSpace(header[len(prefix):])
+// parseEvent 把 OneBot 上报的请求体解析为统一事件。
+func (a *Adapter) parseEvent(_ context.Context, body []byte) (*bot.Event, error) {
+	return convertEvent(body, a.name, a.selfID, a.log)
 }
 
 // Send 把统一消息发送到目标会话。
@@ -772,12 +703,12 @@ func (a *Adapter) call(ctx context.Context, action string, params map[string]any
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, adapterkit.DefaultMaxBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("onebot: 读取 %s 响应失败: %w", action, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("onebot: %s 返回 HTTP %d: %s", action, resp.StatusCode, truncate(string(respBody), errorBodyLimit))
+		return nil, fmt.Errorf("onebot: %s 返回 HTTP %d: %s", action, resp.StatusCode, bot.Truncate(string(respBody), errorBodyLimit))
 	}
 
 	res, err := decodeAPIResponse(action, respBody)
@@ -800,7 +731,7 @@ func decodeAPIResponse(action string, respBody []byte) (*bot.SendResult, error) 
 	}
 	if out.Status != "ok" || out.RetCode != 0 {
 		return nil, fmt.Errorf("onebot: %s 失败: status=%s retcode=%d wording=%s",
-			action, out.Status, out.RetCode, firstNonEmpty(out.Wording, out.Msg))
+			action, out.Status, out.RetCode, bot.FirstNonEmpty(out.Wording, out.Msg))
 	}
 	return &bot.SendResult{MessageID: out.Data.MessageID.String(), Raw: json.RawMessage(respBody)}, nil
 }
@@ -825,12 +756,4 @@ func newEcho() (string, error) {
 	buf[23] = '-'
 	hex.Encode(buf[24:36], b[10:16])
 	return string(buf[:]), nil
-}
-
-// truncate 截断过长的响应体用于错误信息，避免日志被单条响应撑爆。
-func truncate(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit] + "..."
 }

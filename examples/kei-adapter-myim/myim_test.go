@@ -742,3 +742,63 @@ func textMessage(text string) *bot.Message {
 		{Type: bot.SegText, Data: map[string]any{bot.KeyText: text}},
 	}}
 }
+
+// TestSegmentScalarValues 断言非字符串标量段数据按 bot.SegmentData 的取值约定
+// 渲染，与内置 onebot 适配器对同一段的取值一致。
+func TestSegmentScalarValues(t *testing.T) {
+	t.Parallel()
+
+	got := make(chan sendPayloadFor, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		var payload sendPayloadFor
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Errorf("请求体不是合法 JSON: %v (%s)", err, data)
+		}
+		got <- payload
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message_id":"m-1"}`))
+	}))
+	defer srv.Close()
+
+	ad := newTestAdapter(t, Options{BotID: "scalar", APIBase: srv.URL, ListenAddr: "127.0.0.1:0", HTTPClient: srv.Client()})
+
+	segs := []bot.Segment{
+		{Type: bot.SegText, Data: map[string]any{bot.KeyText: float64(1.5)}},
+		{Type: bot.SegReply, Data: map[string]any{bot.KeyMessageID: json.Number("9001")}},
+		{Type: bot.SegAt, Data: map[string]any{bot.KeyUserID: true}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := ad.Send(ctx, &bot.SendRequest{
+		BotID:   "scalar",
+		Target:  bot.Target{Platform: "myim", BotID: "scalar", ChannelID: "g-1", Kind: bot.MessageGroup},
+		Message: &bot.Message{Kind: bot.MessageGroup, Segments: segs},
+	}); err != nil {
+		t.Fatalf("Send 返回错误: %v", err)
+	}
+
+	var payload sendPayloadFor
+	select {
+	case payload = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("平台未收到发送请求")
+	}
+
+	// 与内置 onebot 适配器的 TestSegmentScalarValues 使用同一组输入与期望字面值。
+	keys := []string{bot.KeyText, bot.KeyMessageID, bot.KeyUserID}
+	wantText := []string{"1.5", "9001", "true"}
+	gotSegs := payload.Message.Segments
+	if len(gotSegs) != len(wantText) {
+		t.Fatalf("段数 = %d，期望 %d: %+v", len(gotSegs), len(wantText), gotSegs)
+	}
+	gotValues := []string{gotSegs[0].Text, gotSegs[1].MessageID, gotSegs[2].UserID}
+	for i, want := range wantText {
+		if gotValues[i] != want {
+			t.Errorf("第 %d 段取值 = %q，期望 %q", i, gotValues[i], want)
+		}
+		if v := bot.SegmentData(segs[i], keys[i]); gotValues[i] != v {
+			t.Errorf("第 %d 段取值 %q 与 bot.SegmentData = %q 不一致", i, gotValues[i], v)
+		}
+	}
+}

@@ -31,6 +31,9 @@ const (
 	// maxBodyBytes 限制单次回调请求体与平台响应体的读取上限。
 	maxBodyBytes = 1 << 20
 
+	// maxErrorBody 是错误信息中回显平台响应体的字节上限。
+	maxErrorBody = 256
+
 	// emitTimeout 限制单次事件投递耗时。
 	emitTimeout = 5 * time.Second
 
@@ -316,7 +319,7 @@ func (a *Adapter) handleCallback(w http.ResponseWriter, r *http.Request) {
 // buildEvent 把平台回调转换为统一事件。
 func (a *Adapter) buildEvent(cb *callbackEvent, raw []byte) *bot.Event {
 	ev := &bot.Event{
-		ID:       firstNonEmpty(cb.ID, fmt.Sprintf("myim-%s-%d", a.selfID(), a.seq.Add(1))),
+		ID:       bot.FirstNonEmpty(cb.ID, fmt.Sprintf("myim-%s-%d", a.selfID(), a.seq.Add(1))),
 		Type:     eventType(cb.Type),
 		Platform: platformName,
 		BotID:    a.opts.BotID,
@@ -448,7 +451,7 @@ func (a *Adapter) Send(ctx context.Context, req *bot.SendRequest) (*bot.SendResu
 		return nil, fmt.Errorf("myim: 读取平台响应失败: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("myim: 发送失败，平台返回 %s: %s", resp.Status, truncate(data))
+		return nil, fmt.Errorf("myim: 发送失败，平台返回 %s: %s", resp.Status, bot.Truncate(string(data), maxErrorBody))
 	}
 	var out sendResponse
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -471,17 +474,17 @@ func platformMessageFrom(msg *bot.Message) platformMessage {
 		case bot.SegText:
 			out.Segments = append(out.Segments, platformSegment{
 				Type: string(bot.SegText),
-				Text: anyString(seg.Data[bot.KeyText]),
+				Text: bot.SegmentData(seg, bot.KeyText),
 			})
 		case bot.SegAt:
 			out.Segments = append(out.Segments, platformSegment{
 				Type:   string(bot.SegAt),
-				UserID: anyString(seg.Data[bot.KeyUserID]),
+				UserID: bot.SegmentData(seg, bot.KeyUserID),
 			})
 		case bot.SegReply:
 			out.Segments = append(out.Segments, platformSegment{
 				Type:      string(bot.SegReply),
-				MessageID: anyString(seg.Data[bot.KeyMessageID]),
+				MessageID: bot.SegmentData(seg, bot.KeyMessageID),
 			})
 		default:
 			// Send 前已按能力降级，这里只是兜底：未知段按文本转发而非丢弃。
@@ -492,34 +495,4 @@ func platformMessageFrom(msg *bot.Message) platformMessage {
 		}
 	}
 	return out
-}
-
-// anyString 把消息段的取值转换为字符串，nil 得到空串。
-func anyString(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return fmt.Sprint(v)
-}
-
-// firstNonEmpty 返回第一个非空字符串。
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// truncate 截断响应体，避免把大段内容写进错误信息。
-func truncate(data []byte) string {
-	const max = 256
-	if len(data) <= max {
-		return string(data)
-	}
-	return string(data[:max]) + "..."
 }

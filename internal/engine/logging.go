@@ -77,29 +77,32 @@ func describeMessage(m *bot.Message) string {
 }
 
 // describeSegment 渲染单个消息段。
+//
+// 段数据统一经 bot.SegmentData 取值，因此数字、布尔等标量也会渲染成文本，
+// 不再被当作缺失（此前只认 string，非字符串一律渲染为空）。
 func describeSegment(seg bot.Segment) string {
 	switch seg.Type {
 	case bot.SegText:
-		return "text:" + dataString(seg, bot.KeyText)
+		return "text:" + bot.SegmentData(seg, bot.KeyText)
 	case bot.SegMarkdown:
-		return "markdown:" + dataString(seg, bot.KeyText)
+		return "markdown:" + bot.SegmentData(seg, bot.KeyText)
 	case bot.SegAt:
-		id := dataString(seg, bot.KeyUserID)
-		if name := dataString(seg, bot.KeyUserName); name != "" {
+		id := bot.SegmentData(seg, bot.KeyUserID)
+		if name := bot.SegmentData(seg, bot.KeyUserName); name != "" {
 			return "at:" + id + "(" + name + ")"
 		}
 		return "at:" + id
 	case bot.SegImage:
-		return "image:" + firstNonEmpty(dataString(seg, bot.KeyURL), dataString(seg, bot.KeyFile))
+		return "image:" + bot.FirstNonEmpty(bot.SegmentData(seg, bot.KeyURL), bot.SegmentData(seg, bot.KeyFile))
 	case bot.SegFace:
-		return "face:" + dataString(seg, bot.KeyFaceID)
+		return "face:" + bot.SegmentData(seg, bot.KeyFaceID)
 	case bot.SegReply:
-		return "reply:" + dataString(seg, bot.KeyMessageID)
+		return "reply:" + bot.SegmentData(seg, bot.KeyMessageID)
 	case bot.SegFile:
-		return "file:" + firstNonEmpty(
-			dataString(seg, bot.KeyFileName),
-			dataString(seg, bot.KeyURL),
-			dataString(seg, bot.KeyFile),
+		return "file:" + bot.FirstNonEmpty(
+			bot.SegmentData(seg, bot.KeyFileName),
+			bot.SegmentData(seg, bot.KeyURL),
+			bot.SegmentData(seg, bot.KeyFile),
 		)
 	case bot.SegCard:
 		return "card"
@@ -107,20 +110,4 @@ func describeSegment(seg bot.Segment) string {
 		// 未知段类型只记类型名，不展开 Data，契约要求消费方忽略未知类型。
 		return "<" + string(seg.Type) + ">"
 	}
-}
-
-// dataString 读取段数据中的字符串值；键缺失或类型不符时返回空串。
-func dataString(seg bot.Segment, key string) string {
-	s, _ := seg.Data[key].(string)
-	return s
-}
-
-// firstNonEmpty 返回第一个非空字符串。
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

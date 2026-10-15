@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RandomLemon/kei/internal/adapterkit"
 )
 
 // 本文件是 WebSocket 的 RFC 6455 最小实现，同时覆盖服务端与客户端两个方向。
@@ -322,9 +324,9 @@ func (c *wsConn) readMessage(readTimeout time.Duration) (byte, []byte, error) {
 		}
 
 		buf = append(buf, payload...)
-		if len(buf) > maxBodyBytes {
+		if len(buf) > adapterkit.DefaultMaxBodyBytes {
 			c.closeWith(wsCloseTooLarge, nil)
-			return 0, nil, fmt.Errorf("消息超过 %d 字节上限", maxBodyBytes)
+			return 0, nil, fmt.Errorf("消息超过 %d 字节上限", adapterkit.DefaultMaxBodyBytes)
 		}
 		if fin && opcode != 0 {
 			return opcode, buf, nil
@@ -337,7 +339,7 @@ func (c *wsConn) readMessage(readTimeout time.Duration) (byte, []byte, error) {
 // readTimeout 为正值时按帧设置读超时。掩码方向由 wsConn.client 决定：对端是
 // 客户端时必须带掩码，对端是服务端时不得带掩码（RFC 6455 §5.1），违反一律视为
 // 协议错误；载荷长度按帧头上的 7/16/64 位三段解析，
-// 超过 maxBodyBytes 直接拒绝。
+// 超过 adapterkit.DefaultMaxBodyBytes 直接拒绝。
 func (c *wsConn) readFrame(readTimeout time.Duration) (fin bool, opcode byte, payload []byte, err error) {
 	if readTimeout > 0 {
 		if err = c.conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
@@ -377,8 +379,8 @@ func (c *wsConn) readFrame(readTimeout time.Duration) (fin bool, opcode byte, pa
 	if opcode >= wsOpClose && (!fin || length > wsMaxControlPayload) {
 		return false, 0, nil, errors.New("控制帧必须不可分片且载荷不超过 125 字节")
 	}
-	if length > maxBodyBytes {
-		return false, 0, nil, fmt.Errorf("帧载荷 %d 超过 %d 字节上限", length, maxBodyBytes)
+	if length > adapterkit.DefaultMaxBodyBytes {
+		return false, 0, nil, fmt.Errorf("帧载荷 %d 超过 %d 字节上限", length, adapterkit.DefaultMaxBodyBytes)
 	}
 	if c.client {
 		if head[1]&0x80 != 0 {

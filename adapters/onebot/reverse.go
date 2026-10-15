@@ -185,7 +185,7 @@ func (h *wsHub) handleMessage(ctx context.Context, s *wsSession, raw []byte) {
 		return
 	}
 
-	ev, err := convertEvent(raw, h.botID, firstNonEmpty(s.selfID, h.selfID), h.log)
+	ev, err := convertEvent(raw, h.botID, bot.FirstNonEmpty(s.selfID, h.selfID), h.log)
 	if err != nil {
 		h.log.Warn("onebot: 解析反向 WebSocket 事件失败", "name", h.botID, "err", err)
 		return
@@ -383,7 +383,7 @@ func (a *Adapter) wsHandler() http.HandlerFunc {
 			http.Error(w, "only GET is supported", http.StatusMethodNotAllowed)
 			return
 		}
-		if !a.authorized(r) {
+		if !a.authorize(r) {
 			a.log.Warn("onebot: 反向 WebSocket 鉴权失败", "name", a.name, "remote", r.RemoteAddr)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -414,7 +414,7 @@ func (a *Adapter) wsHandler() http.HandlerFunc {
 			return
 		}
 
-		session, err := a.hub.register(conn, firstNonEmpty(headerSelfID, a.selfID), role)
+		session, err := a.hub.register(conn, bot.FirstNonEmpty(headerSelfID, a.selfID), role)
 		if err != nil {
 			_ = conn.closeWith(wsCloseGoingAway, nil)
 			a.log.Warn("onebot: 拒绝反向 WebSocket 连接", "name", a.name, "remote", r.RemoteAddr, "err", err)
