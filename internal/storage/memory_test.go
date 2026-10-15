@@ -177,7 +177,7 @@ func TestMemoryCleanupInterval(t *testing.T) {
 	})
 
 	t.Run("注册表读取 cleanup_interval", func(t *testing.T) {
-		st, err := Open("memory", bot.NewConfig(map[string]any{"cleanup_interval": "20ms"}))
+		st, err := Open("memory", bot.NewConfig(map[string]any{"cleanup_interval": "20ms"}), nil)
 		if err != nil {
 			t.Fatalf("Open(memory): %v", err)
 		}
@@ -192,7 +192,7 @@ func TestMemoryCleanupInterval(t *testing.T) {
 		waitLen(t, m, 0)
 
 		// cleanup_interval: 0（或缺失时）关闭后台清理。
-		st, err = Open("memory", bot.NewConfig(map[string]any{"cleanup_interval": 0}))
+		st, err = Open("memory", bot.NewConfig(map[string]any{"cleanup_interval": 0}), nil)
 		if err != nil {
 			t.Fatalf("Open(memory): %v", err)
 		}

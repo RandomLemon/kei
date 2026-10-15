@@ -26,7 +26,7 @@ func dsn(t *testing.T) string {
 }
 
 func TestMySQLRoundTrip(t *testing.T) {
-	st, err := storage.Open("mysql", bot.NewConfig(map[string]any{"dsn": dsn(t)}))
+	st, err := storage.Open("mysql", bot.NewConfig(map[string]any{"dsn": dsn(t)}), nil)
 	if err != nil {
 		t.Fatalf("Open(mysql): %v", err)
 	}
@@ -57,7 +57,7 @@ func TestMySQLRoundTrip(t *testing.T) {
 }
 
 func TestMySQLTTL(t *testing.T) {
-	st, err := storage.Open("mysql", bot.NewConfig(map[string]any{"dsn": dsn(t)}))
+	st, err := storage.Open("mysql", bot.NewConfig(map[string]any{"dsn": dsn(t)}), nil)
 	if err != nil {
 		t.Fatalf("Open(mysql): %v", err)
 	}

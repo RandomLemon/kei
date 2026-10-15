@@ -7,6 +7,7 @@ package sqlite
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -22,8 +23,8 @@ func init() {
 	storage.Register("sqlite", open)
 }
 
-// open 依据配置构造 SQLite 存储。
-func open(cfg *bot.Config) (bot.Storage, error) {
+// open 依据配置构造 SQLite 存储；log 透传给 sqlstore 用于清理失败日志。
+func open(cfg *bot.Config, log *slog.Logger) (bot.Storage, error) {
 	dsn := cfg.String("dsn", "")
 	if dsn == "" {
 		return nil, errors.New("storage: sqlite: 缺少 dsn")
@@ -34,5 +35,5 @@ func open(cfg *bot.Config) (bot.Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage: sqlite: 打开数据库: %w", err)
 	}
-	return sqlstore.New(db, cfg.Duration("cleanup_interval", time.Minute))
+	return sqlstore.New(db, cfg.Duration("cleanup_interval", time.Minute), log)
 }

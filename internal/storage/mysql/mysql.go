@@ -7,6 +7,7 @@ package mysql
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -22,8 +23,8 @@ func init() {
 	storage.Register("mysql", open)
 }
 
-// open 依据配置构造 MySQL 存储。
-func open(cfg *bot.Config) (bot.Storage, error) {
+// open 依据配置构造 MySQL 存储；log 透传给 sqlstore 用于清理失败日志。
+func open(cfg *bot.Config, log *slog.Logger) (bot.Storage, error) {
 	dsn := cfg.String("dsn", "")
 	if dsn == "" {
 		return nil, errors.New("storage: mysql: 缺少 dsn")
@@ -38,5 +39,5 @@ func open(cfg *bot.Config) (bot.Storage, error) {
 		// 失败路径释放连接池：调用方拿到 error，无法再访问该 *sql.DB。
 		return nil, errors.Join(fmt.Errorf("storage: mysql: %w", err), sqlstore.CloseDB(db))
 	}
-	return sqlstore.New(db, cfg.Duration("cleanup_interval", time.Minute))
+	return sqlstore.New(db, cfg.Duration("cleanup_interval", time.Minute), log)
 }

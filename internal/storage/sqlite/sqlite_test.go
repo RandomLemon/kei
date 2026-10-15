@@ -33,7 +33,7 @@ func openDB(t *testing.T, path string) *gorm.DB {
 
 func TestSQLiteRoundTrip(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
-	st, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}))
+	st, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}), nil)
 	if err != nil {
 		t.Fatalf("Open(sqlite): %v", err)
 	}
@@ -80,7 +80,7 @@ func TestSQLiteRoundTrip(t *testing.T) {
 // MySQL 才报错，而是在任何后端都返回 storage.ErrKeyTooLong。
 func TestSQLiteKeyLengthLimit(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
-	st, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}))
+	st, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}), nil)
 	if err != nil {
 		t.Fatalf("Open(sqlite): %v", err)
 	}
@@ -109,7 +109,7 @@ func TestSQLiteKeyLengthLimit(t *testing.T) {
 
 func TestSQLiteCloseIsIdempotent(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
-	st, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}))
+	st, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}), nil)
 	if err != nil {
 		t.Fatalf("Open(sqlite): %v", err)
 	}
@@ -126,7 +126,7 @@ func TestSQLitePersistence(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
 	ctx := context.Background()
 
-	first, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}))
+	first, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}), nil)
 	if err != nil {
 		t.Fatalf("Open(sqlite): %v", err)
 	}
@@ -137,7 +137,7 @@ func TestSQLitePersistence(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	second, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}))
+	second, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}), nil)
 	if err != nil {
 		t.Fatalf("重新 Open(sqlite): %v", err)
 	}
@@ -155,7 +155,7 @@ func TestSQLiteTTLLazyExpiry(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
 	db := openDB(t, dsn)
 	now := time.Now()
-	st, err := sqlstore.NewWithClock(db, 0, func() time.Time { return now })
+	st, err := sqlstore.NewWithClock(db, 0, func() time.Time { return now }, nil)
 	if err != nil {
 		t.Fatalf("NewWithClock: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestSQLiteTTLLazyExpiry(t *testing.T) {
 func TestSQLiteBackgroundCleanup(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "k.db")
 	db := openDB(t, dsn)
-	st, err := sqlstore.NewWithClock(db, 20*time.Millisecond, time.Now)
+	st, err := sqlstore.NewWithClock(db, 20*time.Millisecond, time.Now, nil)
 	if err != nil {
 		t.Fatalf("NewWithClock: %v", err)
 	}

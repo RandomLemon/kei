@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -35,8 +36,9 @@ var _ bot.Storage = (*Memory)(nil)
 // init 把内存实现注册为存储类型 "memory"。
 //
 // cleanup_interval 与 SQL 后端语义一致：时长或秒数，0 关闭后台清理。
+// 内存实现的清理不会失败，忽略传入的 logger。
 func init() {
-	Register("memory", func(cfg *bot.Config) (bot.Storage, error) {
+	Register("memory", func(cfg *bot.Config, _ *slog.Logger) (bot.Storage, error) {
 		return NewMemoryWithCleanup(cfg.Duration("cleanup_interval", defaultCleanupInterval)), nil
 	})
 }

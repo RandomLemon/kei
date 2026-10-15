@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -38,6 +39,7 @@ type Store struct {
 	db      *gorm.DB
 	now     func() time.Time
 	cleanup time.Duration
+	log     *slog.Logger
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -51,26 +53,32 @@ var _ bot.Storage = (*Store)(nil)
 
 // New 在 db 上 AutoMigrate 并构造 Store；cleanup <= 0 时不启动后台清理。
 //
+// logger 用于清理失败（惰性删除失败记 Debug、后台清理失败记 Warn）；nil 时使用
+// slog.Default()。
+//
 // New 取得 db 的所有权：成功时由 Store.Close 关闭底层连接池，失败（AutoMigrate
 // 报错）时由本函数关闭，调用方不需要（也不应）再关闭同一个 db。
-func New(db *gorm.DB, cleanup time.Duration) (*Store, error) {
-	return NewWithClock(db, cleanup, time.Now)
+func New(db *gorm.DB, cleanup time.Duration, logger *slog.Logger) (*Store, error) {
+	return NewWithClock(db, cleanup, time.Now, logger)
 }
 
 // NewWithClock 同 New，但注入时钟（测试用，避免 sleep）。
-func NewWithClock(db *gorm.DB, cleanup time.Duration, now func() time.Time) (*Store, error) {
+func NewWithClock(db *gorm.DB, cleanup time.Duration, now func() time.Time, logger *slog.Logger) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("sqlstore: db 为 nil")
 	}
 	if now == nil {
 		now = time.Now
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if err := db.AutoMigrate(&Entry{}); err != nil {
 		// 失败路径必须释放连接池（SQLite 还会占住文件句柄）：调用方拿到的是
 		// error 而非 Store，没有任何 closer，不关闭就是永久泄漏。
 		return nil, errors.Join(fmt.Errorf("sqlstore: 建表: %w", err), CloseDB(db))
 	}
-	s := &Store{db: db, now: now, cleanup: cleanup}
+	s := &Store{db: db, now: now, cleanup: cleanup, log: logger}
 	if cleanup > 0 {
 		s.ctx, s.cancel = context.WithCancel(context.Background())
 		s.wg.Add(1)
@@ -101,8 +109,13 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	if e.ExpiresAt != nil && !e.ExpiresAt.After(s.now()) {
-		// 惰性清理：过期行 best-effort 删除，忽略错误。
-		_ = s.db.WithContext(ctx).Where(whereKey(key)).Delete(&Entry{}).Error
+		// 惰性清理：过期行 best-effort 删除，失败不改变返回值（调用方仍然只是
+		// 「键不存在」）。这里用 Debug 而非 janitor 的 Warn：读取路径高频，失败
+		// 通常只是「该行已被后台清理」或并发删除，属预期噪声；只有后台清理
+		// 长期失败才意味着表在无界增长，故那里用 Warn。
+		if err := s.db.WithContext(ctx).Where(whereKey(key)).Delete(&Entry{}).Error; err != nil {
+			s.log.Debug("sqlstore: 惰性清理过期键失败", "key", key, "error", err)
+		}
 		return nil, bot.ErrNotFound
 	}
 	return append([]byte(nil), e.Value...), nil
@@ -167,9 +180,14 @@ func (s *Store) janitor() {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			_ = s.db.WithContext(s.ctx).
+			// 后台清理失败用 Warn：这意味着过期行持续残留、表无界增长（权限、
+			// 方言或连接问题），必须有信号；与 Get 里高频的惰性删除失败（Debug）
+			// 区分开。
+			if err := s.db.WithContext(s.ctx).
 				Where("expires_at IS NOT NULL AND expires_at <= ?", s.now()).
-				Delete(&Entry{}).Error
+				Delete(&Entry{}).Error; err != nil {
+				s.log.Warn("sqlstore: 后台清理过期键失败", "error", err)
+			}
 		}
 	}
 }

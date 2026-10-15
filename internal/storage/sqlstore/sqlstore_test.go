@@ -2,15 +2,21 @@ package sqlstore
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/RandomLemon/kei/pkg/bot"
 )
 
 // openGorm 打开一个指向 dsn 的 SQLite GORM 连接，失败即终止测试。
@@ -56,7 +62,7 @@ func TestNewClosesPoolOnMigrateFailure(t *testing.T) {
 	}
 	db := openGorm(t, "file:"+path+"?mode=ro")
 
-	if _, err := New(db, 0); err == nil {
+	if _, err := New(db, 0, nil); err == nil {
 		t.Fatal("只读库上的 AutoMigrate 应报错")
 	} else {
 		t.Logf("AutoMigrate 失败（预期）: %v", err)
@@ -99,5 +105,142 @@ func TestKeyColumnQuotedForMySQL(t *testing.T) {
 		if !strings.Contains(sql, "WHERE `key` = 'k1'") {
 			t.Fatalf("key 列未被 dialector 引用: %s", sql)
 		}
+	}
+}
+
+// logCapture 是并发安全（后台 janitor 与测试 goroutine 并发写）的 slog.Handler，
+// 把日志记录收集到切片供断言。
+type logCapture struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+// Enabled 实现 slog.Handler（收集所有级别，含 Debug）。
+func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle 实现 slog.Handler。
+func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	c.records = append(c.records, r.Clone())
+	c.mu.Unlock()
+	return nil
+}
+
+// WithAttrs 实现 slog.Handler。
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+
+// WithGroup 实现 slog.Handler。
+func (c *logCapture) WithGroup(string) slog.Handler { return c }
+
+// find 返回第一条级别匹配且消息含 substr 的记录（副本），未找到返回 nil。
+func (c *logCapture) find(level slog.Level, substr string) *slog.Record {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.records {
+		if c.records[i].Level == level && strings.Contains(c.records[i].Message, substr) {
+			r := c.records[i]
+			return &r
+		}
+	}
+	return nil
+}
+
+// recordAttr 从记录中按键取属性值。
+func recordAttr(r slog.Record, key string) (slog.Value, bool) {
+	var (
+		value slog.Value
+		found bool
+	)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			value, found = a.Value, true
+			return false
+		}
+		return true
+	})
+	return value, found
+}
+
+// precreateStore 在 path 上建表（可写连接），随后释放连接池，供只读用例复用。
+func precreateStore(t *testing.T, path string) {
+	t.Helper()
+	db := openGorm(t, path)
+	st, err := NewWithClock(db, 0, time.Now, nil)
+	if err != nil {
+		t.Fatalf("预建表 NewWithClock: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("预建表 Close: %v", err)
+	}
+}
+
+// TestGetLazyDeleteFailureLogged 断言只读库上惰性删除过期行失败时不再静默：
+// Get 仍返回 bot.ErrNotFound（行为不变），同时记一条含键与错误的 Debug 日志。
+func TestGetLazyDeleteFailureLogged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ro.db")
+	ctx := context.Background()
+	now := time.Now()
+
+	// 可写连接写入一行短期键（过期时刻 = now+1min）。
+	wdb := openGorm(t, path)
+	wst, err := NewWithClock(wdb, 0, func() time.Time { return now }, nil)
+	if err != nil {
+		t.Fatalf("NewWithClock: %v", err)
+	}
+	if err := wst.Set(ctx, "k", []byte("v"), time.Minute); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := wst.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// 只读打开同一文件，把时钟拨到过期之后：Get 读到过期行，删除必然失败。
+	rdb := openGorm(t, "file:"+path+"?mode=ro")
+	capture := &logCapture{}
+	st, err := NewWithClock(rdb, 0, func() time.Time { return now.Add(2 * time.Minute) },
+		slog.New(capture))
+	if err != nil {
+		t.Fatalf("只读 NewWithClock: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	if _, err := st.Get(ctx, "k"); !errors.Is(err, bot.ErrNotFound) {
+		t.Fatalf("只读库上过期键 Get = %v, want bot.ErrNotFound", err)
+	}
+	rec := capture.find(slog.LevelDebug, "惰性清理")
+	if rec == nil {
+		t.Fatal("未捕获到惰性删除失败的 Debug 日志")
+	}
+	if v, ok := recordAttr(*rec, "key"); !ok || v.String() != "k" {
+		t.Fatalf("Debug 日志的 key = %v (ok=%v), want k", v, ok)
+	}
+	if v, ok := recordAttr(*rec, "error"); !ok || v.String() == "" {
+		t.Fatalf("Debug 日志缺少非空 error: %v (ok=%v)", v, ok)
+	}
+}
+
+// TestJanitorFailureLogged 断言只读库上后台清理失败记 Warn：表在无界增长必须有信号。
+func TestJanitorFailureLogged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ro.db")
+	precreateStore(t, path)
+
+	rdb := openGorm(t, "file:"+path+"?mode=ro")
+	capture := &logCapture{}
+	st, err := NewWithClock(rdb, 10*time.Millisecond, time.Now, slog.New(capture))
+	if err != nil {
+		t.Fatalf("只读 NewWithClock: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for capture.find(slog.LevelWarn, "后台清理") == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("2s 内未捕获到后台清理失败的 Warn 日志")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	rec := capture.find(slog.LevelWarn, "后台清理")
+	if v, ok := recordAttr(*rec, "error"); !ok || v.String() == "" {
+		t.Fatalf("Warn 日志缺少非空 error: %v (ok=%v)", v, ok)
 	}
 }

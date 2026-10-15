@@ -22,7 +22,7 @@ func TestKinds(t *testing.T) {
 }
 
 func TestOpenMemoryRoundTrip(t *testing.T) {
-	st, err := storage.Open("memory", bot.NewConfig(nil))
+	st, err := storage.Open("memory", bot.NewConfig(nil), nil)
 	if err != nil {
 		t.Fatalf("Open(memory): %v", err)
 	}
@@ -43,7 +43,7 @@ func TestOpenMemoryRoundTrip(t *testing.T) {
 }
 
 func TestOpenUnknownType(t *testing.T) {
-	_, err := storage.Open("nosuch", bot.NewConfig(nil))
+	_, err := storage.Open("nosuch", bot.NewConfig(nil), nil)
 	if err == nil {
 		t.Fatal("Open(nosuch) 应报错")
 	}

@@ -19,8 +19,11 @@ import (
 
 // buildStorage 解析存储：Options.Storage 显式注入优先；否则按 cfg.Storage 构造。
 //
+// logger 透传给存储实现（sqlstore 用它记录清理失败）；nil 时由 storage.Open 兜底为
+// slog.Default()。通常传 Run 的 logger。
+//
 // 第二返回值是关闭自有存储的清理函数（注入时为 no-op），总是非 nil。
-func buildStorage(opts Options, cfg *config.Config) (bot.Storage, func(), error) {
+func buildStorage(opts Options, cfg *config.Config, logger *slog.Logger) (bot.Storage, func(), error) {
 	if opts.Storage != nil {
 		return opts.Storage, func() {}, nil
 	}
@@ -31,7 +34,7 @@ func buildStorage(opts Options, cfg *config.Config) (bot.Storage, func(), error)
 	if cfg.Storage.DSN != "" {
 		params["dsn"] = cfg.Storage.DSN
 	}
-	store, err := storage.Open(cfg.Storage.Type, bot.NewConfig(params))
+	store, err := storage.Open(cfg.Storage.Type, bot.NewConfig(params), logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("kei: 初始化 storage: %w", err)
 	}
