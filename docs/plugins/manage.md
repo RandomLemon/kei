@@ -214,7 +214,7 @@ GPU：
 1. 注册期：`WithAdmin()` 置 `Rule.AdminOnly = true`（`pkg/bot/registrar.go:139`）。
 2. 匹配期：路由器为命中的规则构造 `bot.Route`，把 `Rule.AdminOnly` 抄进 `Route.AdminOnly` 并写入 ctx（`internal/router/router.go:212`）。
 3. 执行期：全局链中的 `middleware.Auth(e.isAdmin)`（`internal/engine/engine.go:263`，位于 Timeout 之后的第二个 Recover 与 RateLimit 之间）只在 `Route.AdminOnly` 为真时检查（`internal/middleware/middleware.go:246`）。
-4. 判定：`Engine.isAdmin` 用 `Event.Sender.ID` 与 `auth.admin_users` 逐一**精确比较**；`ev` 或 `ev.Sender` 为 nil 返回 false（`internal/engine/engine.go:270`）。
+4. 判定：`Engine.isAdmin` 用 `Event.Sender.ID` 与 `auth.admin_users` 逐一**精确比较**；多平台部署的条目必须写成 `platform:userID`（未限定条目只在单平台进程生效）；`ev` 或 `ev.Sender` 为 nil 返回 false（`internal/engine/engine.go`）。
 5. 拒绝：返回 `middleware: unauthorized: plugin=manage rule=manage:admin`（包 `ErrUnauthorized`，`internal/middleware/middleware.go:43`），**不调用 Handler**，因此不会发送任何消息；日志侧中间件记 warn `中间件: 事件被拒绝`（字段 `plugin`/`rule`/`platform`/`kind`/`user`/`event_id`/`duration_ms`/`error`/`decision=denied`），路由器再记 warn `event dispatch failed`（`router: 规则 manage:admin 执行失败: ...`）。
 
 实际运行的拒绝日志（配置 `plugins_admin_only: true`，非管理员访问 `/manage plugins`）：

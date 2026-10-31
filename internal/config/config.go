@@ -740,6 +740,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: adapters.%s: 适配器名只允许 [a-z0-9_-]", name)
 		}
 	}
+	if err := c.Auth.validate(); err != nil {
+		return err
+	}
 	if err := c.Storage.validate(); err != nil {
 		return err
 	}
@@ -866,6 +869,24 @@ func decodeIntValue(v any) (int, error) {
 	default:
 		return 0, fmt.Errorf("需要整数，实际为 %v", v)
 	}
+}
+
+// validate 校验管理员列表：条目不能为空；带平台限定的条目两侧都不能为空。
+//
+// 空条目会让 Sender.ID 为空的事件被误判为管理员；`platform:`/`:userID` 同样
+// 是无意义且可能意外命中的配置，在加载阶段直接拒绝。
+func (a AuthConfig) validate() error {
+	for i, entry := range a.AdminUsers {
+		if strings.TrimSpace(entry) == "" {
+			return fmt.Errorf("config: auth.admin_users[%d]: 不能为空", i)
+		}
+		if platform, userID, ok := strings.Cut(entry, ":"); ok {
+			if strings.TrimSpace(platform) == "" || strings.TrimSpace(userID) == "" {
+				return fmt.Errorf("config: auth.admin_users[%d]: %q 需要 platform:userID，且两侧都不能为空", i, entry)
+			}
+		}
+	}
+	return nil
 }
 
 // validate 校验日志配置：级别与格式都必须在允许集合内（大小写不敏感）。

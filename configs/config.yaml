@@ -48,7 +48,9 @@ limits:
   send_rate: 0       # 每个 bot 每秒允许发送的条数
   send_burst: 0
 
-# Auth 中间件的管理员名单（用户 ID），配合 bot.WithAdmin() 规则使用。
+# Auth 中间件的管理员名单，配合 bot.WithAdmin() 规则使用。
+# 单平台部署可直接写 user_id；多平台部署必须写 platform:user_id（例如 mock:mock-user），
+# 未限定平台的条目在多平台进程中被忽略（启动时记 warn）。
 auth:
   admin_users: []
 

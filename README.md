@@ -268,7 +268,7 @@ nix build                            # → result/bin/bot
 log:     { level: info, format: text }     # text | json
 metrics: { addr: 127.0.0.1:19090 }         # 空表示不暴露
 limits:  { handler_rate: 0, send_rate: 0 } # 0 表示不限流
-auth:    { admin_users: [] }               # 配合 bot.WithAdmin() 规则
+auth:    { admin_users: [] }               # 配合 bot.WithAdmin() 规则；多平台用 platform:userID
 adapters:                                # 可选：启用/禁用适配器（仅支持 enabled 键，如 onebot: { enabled: false }）
 bots:
   - name: mock-main

@@ -786,6 +786,31 @@ func TestAdaptersValidateErrors(t *testing.T) {
 	}
 }
 
+// TestAdminUsersValidate 验证管理员条目不能为空，平台限定条目两侧均非空。
+func TestAdminUsersValidate(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"空条目", "auth:\n  admin_users: [\"\"]\n", "auth.admin_users[0]: 不能为空"},
+		{"缺少平台", "auth:\n  admin_users: [\":123\"]\n", "需要 platform:userID"},
+		{"缺少用户", "auth:\n  admin_users: [\"mock:\"]\n", "需要 platform:userID"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadBytes([]byte(tc.yaml), nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误 = %v, 期望包含 %q", err, tc.want)
+			}
+		})
+	}
+
+	if _, err := LoadBytes([]byte("auth:\n  admin_users: [\"123\", \"mock:123\"]\n"), nil); err != nil {
+		t.Fatalf("合法管理员条目被拒绝: %v", err)
+	}
+}
+
 // TestBotEnabled 验证实例级 enabled 开关的解码、缺省值与语义。
 func TestBotEnabled(t *testing.T) {
 	t.Run("缺省启用且不进入 Settings", func(t *testing.T) {

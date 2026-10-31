@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,6 +208,14 @@ func New(opts Options) (*Engine, error) {
 	for _, ids := range e.platforms {
 		sort.Strings(ids)
 	}
+	if len(e.platforms) > 1 {
+		for _, entry := range opts.Config.Auth.AdminUsers {
+			if entry != "" && !strings.Contains(entry, ":") {
+				e.log.Warn("admin_users entry is not platform-qualified and will be ignored because multiple platforms are configured",
+					"entry", entry)
+			}
+		}
+	}
 	if rate := opts.Config.Limits.HandlerRate; rate > 0 {
 		e.handleLimit = ratelimit.New(rate, opts.Config.Limits.HandlerBurst, 0, 0)
 	}
@@ -292,12 +301,27 @@ func (e *Engine) globalMiddlewares() []bot.Middleware {
 }
 
 // isAdmin 判断事件发送者是否为管理员。
+//
+// 管理员条目支持 `platform:userID` 限定平台。未限定的条目只在进程只装配了一个
+// 平台时生效：多平台部署中不同平台可能使用相同的用户 ID（常见于纯数字 ID），
+// 不限定平台会让一个平台的用户获得另一个平台的管理员权限。多平台下的未限定
+// 条目在 New 中记 Warn 并被忽略（fail closed）。
 func (e *Engine) isAdmin(ev *bot.Event) bool {
 	if ev == nil || ev.Sender == nil {
 		return false
 	}
-	for _, id := range e.cfg.Auth.AdminUsers {
-		if id == ev.Sender.ID {
+	singlePlatform := len(e.platforms) <= 1
+	for _, entry := range e.cfg.Auth.AdminUsers {
+		if entry == "" {
+			continue
+		}
+		if platform, userID, ok := strings.Cut(entry, ":"); ok {
+			if platform == ev.Platform && userID == ev.Sender.ID {
+				return true
+			}
+			continue
+		}
+		if singlePlatform && entry == ev.Sender.ID {
 			return true
 		}
 	}

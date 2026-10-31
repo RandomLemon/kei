@@ -54,7 +54,7 @@ type Config struct {
 | `limits` | `handler_burst` | `LimitsConfig.HandlerBurst` | int | `0` | 处理侧突发容量；`<=0` 时取 `handler_rate`（`internal/ratelimit.New`，且下限为 1） |
 | `limits` | `send_rate` | `LimitsConfig.SendRate` | float64 | `0` | 每个 bot 每秒允许发送的条数；`0` 表示不限流 |
 | `limits` | `send_burst` | `LimitsConfig.SendBurst` | int | `0` | 发送侧突发容量；`<=0` 时取 `send_rate`（同上，`Engine.New` 只在 `send_rate > 0` 时建限流器） |
-| `auth` | `admin_users` | `AuthConfig.AdminUsers` | []string | 空 | 管理员用户 ID 列表，供 `middleware.Auth`（`Engine.isAdmin`，按 `Event.Sender.ID` 精确比较）判定 |
+| `auth` | `admin_users` | `AuthConfig.AdminUsers` | []string | 空 | 管理员列表：`platform:userID`（多平台部署必须）或 `userID`（仅单平台生效）；供 `middleware.Auth`（`Engine.isAdmin`）判定 |
 | `bots` | — | `[]BotConfig` | 序列 | 可为空（只运行插件时） | 见 12.2 |
 | `plugins` | — | `map[string]PluginConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.3 |
 | `adapters` | — | `map[string]AdapterConfig` | 映射 | `{}`（`applyDefaults` 保证非 nil） | 见 12.4 |
@@ -76,11 +76,12 @@ type Config struct {
 
 默认值由 `applyDefaults` 落地：`log.level`/`log.format` 为空时填 `info`/`text`；`storage.type` 为空时填 `memory`；`Plugins`/`Adapters` 为 nil 时填空映射。`limits`、`auth.admin_users`、`metrics.addr` 的默认值就是 Go 零值，`applyDefaults` 不做处理。`engine` 段同样保持零值：默认值由引擎侧（`internal/engine.Options` 的 `orInt`/`orDuration`）填充，`applyDefaults` 不替引擎填默认。
 
-校验逐段进行，错误都带字段路径（`Config.validate` 及其方法 `LogConfig.validate`、`StorageConfig.validate`、`EngineConfig.validate`、`LimitsConfig.validate`）：
+校验逐段进行，错误都带字段路径（`Config.validate` 及其方法 `AuthConfig.validate`、`LogConfig.validate`、`StorageConfig.validate`、`EngineConfig.validate`、`LimitsConfig.validate`）：
 
 - `bots` 可以为空（只运行插件时）；`bots[i].name` 非空且全局唯一；`bots[i].adapter` 非空且匹配 `^[a-z0-9_-]+$`；`bots[i].enabled` 必须是布尔（解码阶段报错，不参与此处校验）。
 - `log.level` 必须属于 `{debug, info, warn, error}`，`log.format` 属于 `{text, json}`（比较前转小写；空值留给 `applyDefaults`）。
 - `limits.*` 的速率与突发容量都不能为负。
+- `auth.admin_users` 条目不能为空；带平台限定的 `platform:userID` 两侧都不能为空。
 - 插件名不能为空；适配器名不能为空且匹配 `^[a-z0-9_-]+$`。
 - `storage.type` 非空且匹配 `^[a-z0-9_-]+$`；类型是否存在不在配置层校验（由装配期负责），`dsn` 是否必填也不在此校验（由各后端负责）。
 - `engine.command_prefixes` 每项去空白后非空；`engine.*` 的时长与容量类键不能为负（`0`/未配置表示用引擎默认值，`send_retries` 的 `0` 表示不重试）。

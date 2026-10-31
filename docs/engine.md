@@ -483,7 +483,7 @@ func Apply(h bot.Handler, mws ...bot.Middleware) bot.Handler
 
 引擎的处理侧限流：`limits.handler_rate > 0` 时建 `ratelimit.New(HandlerRate, HandlerBurst, 0, 0)` 并以 `ScopeUser` 作用于全部规则（即按发送者限流，发送者为空的事件回退 `SessionKey`，见上表）；`limits.handler_rate <= 0` 时该中间件透传（不限流）。该中间件位于 `Dedup` 之内，重投的重复事件不消耗配额（见 10.5）。中间件支持的其余作用域需调用方自行用 `Chain` 组合。
 
-`isAdmin` 判定：`ev` 或 `ev.Sender` 为 nil 返回 false，否则与 `auth.admin_users` 逐一比对 `ev.Sender.ID`。
+`isAdmin` 判定：`ev` 或 `ev.Sender` 为 nil 返回 false。`auth.admin_users` 条目支持 `platform:userID`（按 `Event.Platform` 与 `Event.Sender.ID` 同时比较）；未限定平台的条目只在进程仅装配一个平台时按 `Event.Sender.ID` 比较，多平台部署下会被忽略并在 `New` 中记 Warn——避免不同平台的同名/同数字用户 ID 互相获得管理员权限。
 
 ### 10.6 Dedup 中间件与 EventBus 去重的关系
 
