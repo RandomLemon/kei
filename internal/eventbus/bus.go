@@ -275,12 +275,15 @@ func (b *Bus) Subscribe(handler func(context.Context, *bot.Event)) error {
 	if handler == nil {
 		return errNilHandler
 	}
+
+	// 在 subMu 内检查 closed 并追加：Close 也在同一把锁内置位 closed，因此
+	// 「关闭后再注册返回 ErrClosed」在并发下同样成立，不会出现注册成功但永远
+	// 不会被调用的 handler。
+	b.subMu.Lock()
+	defer b.subMu.Unlock()
 	if b.closed.Load() {
 		return ErrClosed
 	}
-
-	b.subMu.Lock()
-	defer b.subMu.Unlock()
 
 	old := b.handlers.Load()
 	var next []handlerFunc
@@ -301,7 +304,10 @@ func (b *Bus) Subscribe(handler func(context.Context, *bot.Event)) error {
 // 已入队的事件；后续 Close 可以继续等待它们完成。
 func (b *Bus) Close(ctx context.Context) error {
 	b.closeOnce.Do(func() {
+		// 与 Subscribe 共用 subMu：置位后不会再出现「检查通过后追加」的窗口。
+		b.subMu.Lock()
 		b.closed.Store(true)
+		b.subMu.Unlock()
 		for _, sh := range b.shards {
 			sh.mu.Lock()
 			if !sh.closed {
