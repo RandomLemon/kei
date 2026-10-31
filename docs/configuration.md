@@ -43,7 +43,7 @@ type Config struct {
 }
 ```
 
-顶层只允许上面 9 个 YAML 键（`EnvOverrides` 不是键），其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins`/`storage`/`engine` 由自定义解码函数处理：`bots`/`plugins`/`storage` 条目上的未知键不会报错，而是收进各自的 `Settings`/`Params`（见 12.2–12.3、12.5），`engine` 的未知键报错（见 12.6）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。所有手写映射遍历都拒绝重复键（`eachPair`）：重复时报 `<段路径>: 键 %q 重复`，不再静默取最后一个值。
+顶层只允许上面 9 个 YAML 键（`EnvOverrides` 不是键），其余一律报错：`config: 未知顶层键 %q`（`decode`）。顶层必须是映射，否则 `config: 顶层必须是映射，实际为 <tag>`；空文档或 `null` 文档被当作空配置处理。`log`/`metrics`/`limits`/`auth` 直接由 yaml 解码进结构体，段内未声明的键被 yaml 静默忽略；`bots`/`plugins`/`storage`/`engine` 由自定义解码函数处理：`bots`/`plugins`/`storage` 条目上的未知键不会报错，而是收进各自的 `Settings`/`Params`（见 12.2–12.3、12.5），`engine` 的未知键报错（见 12.6）；`adapters` 只接受 `enabled`，其余键报错（见 12.4）。顶层段与所有手写映射遍历都拒绝重复键：顶层重复报 `config: 顶层键 %q 重复`，段内重复由 `eachPair` 报 `<段路径>: 键 %q 重复`，不再静默取最后一个值。
 
 | 段 | 键 | 结构体字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- | --- |

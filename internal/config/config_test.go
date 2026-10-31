@@ -1176,6 +1176,16 @@ func TestDuplicateKeys(t *testing.T) {
 			yaml: storageBaseYAML + "engine:\n  dedup_ttl: 1m\n  dedup_ttl: 2m\n",
 			want: `engine: 键 "dedup_ttl" 重复`,
 		},
+		{
+			name: "顶层 storage 段重复",
+			yaml: "storage:\n  type: sqlite\nstorage:\n  type: memory\n",
+			want: `顶层键 "storage" 重复`,
+		},
+		{
+			name: "顶层 bots 段重复",
+			yaml: "bots:\n  - name: a\n    adapter: mock\nbots: []\n",
+			want: `顶层键 "bots" 重复`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

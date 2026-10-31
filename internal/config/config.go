@@ -241,8 +241,13 @@ func decode(data []byte) (*Config, error) {
 	if root.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("config: 顶层必须是映射，实际为 %s", root.Tag)
 	}
+	seen := make(map[string]struct{}, len(root.Content)/2)
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, val := root.Content[i].Value, root.Content[i+1]
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("config: 顶层键 %q 重复", key)
+		}
+		seen[key] = struct{}{}
 		var err error
 		switch key {
 		case "log":
