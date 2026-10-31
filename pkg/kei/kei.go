@@ -65,9 +65,11 @@ func Run(ctx context.Context, opts Options) error {
 
 	logger := opts.Logger
 	if logger == nil {
+		// 只有门面自己创建的 logger 才接管进程级默认；调用方显式注入的 logger
+		// 不应改变宿主程序其它代码通过 slog.Default() 看到的值。
 		logger = newLogger(cfg.Log)
+		slog.SetDefault(logger)
 	}
-	slog.SetDefault(logger)
 
 	logEnvOverrides(logger, cfg)
 

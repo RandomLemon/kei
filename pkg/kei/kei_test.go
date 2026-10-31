@@ -2,11 +2,30 @@ package kei
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/RandomLemon/kei/pkg/bot"
 )
+
+// TestRunKeepsCallerGlobalLogger 验证显式注入 Logger 时不会改写进程级 slog 默认值。
+func TestRunKeepsCallerGlobalLogger(t *testing.T) {
+	before := slog.Default()
+	defer slog.SetDefault(before)
+
+	custom := slog.New(slog.DiscardHandler)
+	err := Run(context.Background(), Options{
+		Config: []byte("bots:\n  - name: a\n    adapter: missing\n"),
+		Logger: custom,
+	})
+	if err == nil {
+		t.Fatal("未知适配器应让 Run 失败")
+	}
+	if slog.Default() != before {
+		t.Fatal("显式注入 Logger 不应替换 slog.Default()")
+	}
+}
 
 // embedAdapter 是门面端到端测试用的最小适配器：只依赖 pkg/bot。
 type embedAdapter struct {

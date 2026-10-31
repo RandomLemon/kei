@@ -220,7 +220,9 @@ func (c *Config) Get(key string) (any, bool) {
 	return cur, true
 }
 
-// String 读取字符串配置，键缺失或类型无法转换时返回 def。
+// String 读取字符串配置：键缺失或值为 nil 时返回 def；string 原样返回，
+// fmt.Stringer 调用 String()，其余类型走 fmt.Sprint（容器因此得到格式化文本，
+// 需要结构化取值时请用 Get/Unmarshal）。
 func (c *Config) String(key, def string) string {
 	v, ok := c.Get(key)
 	if !ok || v == nil {

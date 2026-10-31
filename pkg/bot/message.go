@@ -81,7 +81,7 @@ type Segment struct {
 	Data map[string]any
 }
 
-// Text 返回消息中所有文本段的拼接结果。
+// PlainText 返回消息中所有文本段的拼接结果。
 //
 // Markdown 段按纯文本对待；其它类型忽略。用于路由的命令与关键词匹配。
 func (m *Message) PlainText() string {
