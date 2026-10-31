@@ -67,7 +67,7 @@ const (
 	PermReceiveEvent Permission = "receive_event"
 	// PermAdmin 允许执行管理员命令（配合 Auth 中间件）。
 	PermAdmin Permission = "admin"
-	// PermAll 表示全部权限，仅内置插件可用；适配器不得声明。
+	// PermAll 表示全部权限。插件与适配器都不得在元信息中声明。
 	PermAll Permission = "*"
 )
 ```

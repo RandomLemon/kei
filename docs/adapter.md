@@ -292,7 +292,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 
 各条的落地位置：
 
-- 注册表校验：`internal/adaptermgr.ValidateRegistry` = `validateRegistryOf` + `validateRegistrationRejects`。报错条件为「存在被拒绝的注册（空注册名或 nil 工厂）」「注册名重复」「元信息缺 `Platforms`」「声明了 `PermAll`」，文案分别是 `适配器注册被拒绝: <名字或<空名>>（<原因>）…`、`适配器注册名重复: …`、`适配器 %s 未声明 Platforms`、`适配器 %s 不得声明 * 权限（仅插件可用）`。插件侧的对应门是 `pluginmgr.Add`：插件名（`[a-z0-9_-]`）、重名、`PermAll` 与 `Options` 未知键告警，见 [plugin.md](plugin.md) 9.1。
+- 注册表校验：`internal/adaptermgr.ValidateRegistry` = `validateRegistryOf` + `validateRegistrationRejects`。报错条件为「存在被拒绝的注册（空注册名或 nil 工厂）」「注册名重复」「元信息缺 `Platforms`」「声明了 `PermAll`」，文案分别是 `适配器注册被拒绝: <名字或<空名>>（<原因>）…`、`适配器注册名重复: …`、`适配器 %s 未声明 Platforms`、`适配器 %s 不得声明 * 权限（插件与适配器都需逐项声明）`。插件侧的对应门是 `pluginmgr.Add`：插件名（`[a-z0-9_-]`）、重名、`PermAll` 与 `Options` 未知键告警，见 [plugin.md](plugin.md) 9.1。
 - 依赖裁剪：`PermStorage` 且 `Deps.Storage != nil` 时注入真实存储（`storage.AdapterScoped` 包一层，底层键带 `adapter:<botID>:` 前缀，同平台多实例因此互不可见；键长上限与内存/SQL 后端一致，见 6.7 与 [plugin.md](plugin.md) 11.2），否则一律注入 `storage.Denied()`（未授予、或授予了但核心没有可用存储，结果相同）；只有声明了 `PermNetwork` 才注入 `Deps.HTTPClient`，未声明时该字段保持 nil。`PermSendMessage` 不参与任何裁剪。
 - 保留键校验：`checkReservedOptions(botID, settings, adapter, perms)` 在 `adaptermgr.Validate` 执行；`listen_addr` 值为 nil 或去空白后为空时视为未配置。报错文案：`配置了保留键 listen_addr，但适配器 %s 未声明 net_listen 权限`。
 - `net_listen` 的校验只覆盖保留键 `listen_addr`：适配器是否真的监听、监听在哪个地址，核心不检查也不拦截；换用别的配置键做入站监听则完全不受该权限约束。

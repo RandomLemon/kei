@@ -83,7 +83,7 @@ func Validate(cfg *config.Config) error {
 // ValidateRegistry 校验进程内适配器注册表。
 //
 // 报错条件：存在被拒绝的注册（空注册名或 nil 工厂）、注册名重复、
-// 元信息缺 Platforms、声明了仅插件可用的 PermAll。
+// 元信息缺 Platforms、声明了插件与适配器都不允许的 PermAll。
 func ValidateRegistry() error {
 	if err := validateRegistryOf(bot.RegisteredAdapters()); err != nil {
 		return err
@@ -117,7 +117,7 @@ func validateRegistryOf(metas []bot.AdapterMetadata) error {
 			return fmt.Errorf("adaptermgr: 适配器 %s 未声明 Platforms", m.Name)
 		}
 		if m.HasPermission(bot.PermAll) {
-			return fmt.Errorf("adaptermgr: 适配器 %s 不得声明 %s 权限（仅插件可用）", m.Name, bot.PermAll)
+			return fmt.Errorf("adaptermgr: 适配器 %s 不得声明 %s 权限（插件与适配器都需逐项声明）", m.Name, bot.PermAll)
 		}
 	}
 
