@@ -54,22 +54,22 @@ func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.Se
 		Message: degraded,
 	}
 
-	if lim, ok := e.sendLimits[botID]; ok && lim != nil {
-		if err := lim.Wait(ctx, botID); err != nil {
-			return nil, fmt.Errorf("engine: send rate limited: %w", err)
-		}
-	}
-
 	attempts := e.opts.SendRetries + 1
+	backoff := e.opts.SendBackoff
 	var lastErr error
 	for attempt := range attempts {
 		if attempt > 0 {
-			timer := time.NewTimer(e.opts.SendBackoff << (attempt - 1))
 			select {
 			case <-ctx.Done():
-				timer.Stop()
 				return nil, fmt.Errorf("engine: send canceled: %w", ctx.Err())
-			case <-timer.C:
+			case <-time.After(backoff):
+			}
+			backoff = nextSendBackoff(backoff)
+		}
+		// 限流必须逐次执行：重试也是一次对平台的真实调用，不能只消耗一次令牌。
+		if lim, ok := e.sendLimits[botID]; ok && lim != nil {
+			if err := lim.Wait(ctx, botID); err != nil {
+				return nil, fmt.Errorf("engine: send rate limited: %w", err)
 			}
 		}
 		start := time.Now()
@@ -96,6 +96,23 @@ func (e *Engine) SendRequest(ctx context.Context, req *bot.SendRequest) (*bot.Se
 		)
 	}
 	return nil, fmt.Errorf("engine: send via %s: %w", ad.Name(), lastErr)
+}
+
+// maxSendBackoff 是发送重试退避的上限，避免大 SendRetries 下位移溢出或等待数小时。
+const maxSendBackoff = 30 * time.Second
+
+// nextSendBackoff 返回下一次重试的退避，最大不超过 maxSendBackoff。
+//
+// 用倍增与封顶代替 `base << (attempt-1)`：后者在大 attempt 下会溢出成 0 或负数。
+func nextSendBackoff(current time.Duration) time.Duration {
+	if current >= maxSendBackoff {
+		return maxSendBackoff
+	}
+	doubled := current * 2
+	if doubled < current || doubled > maxSendBackoff {
+		return maxSendBackoff
+	}
+	return doubled
 }
 
 // Reply 实现 bot.BotAPI：回复事件所在会话。

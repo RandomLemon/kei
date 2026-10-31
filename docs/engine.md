@@ -68,8 +68,8 @@ type AdapterBinding struct {
 | `BusQueueSize` | 每个分片队列容量 | 256 |
 | `DedupTTL` | 事件去重时间窗 | 5m |
 | `DedupCapacity` | 去重集合容量上限（总线按分片均分，规则去重集合独占） | 4096 |
-| `SendRetries` | 发送失败重试次数（不含首次），负数按 0 | 0（不重试） |
-| `SendBackoff` | 发送重试初始退避 | 100ms |
+| `SendRetries` | 发送失败重试次数（不含首次），负数按 0；配置层上限 100 | 0（不重试） |
+| `SendBackoff` | 发送重试初始退避；每次翻倍并封顶 30s | 100ms |
 | `HTTPClient` | 插件 HTTP 客户端，nil 时使用 `Timeout: 15s` 的默认客户端 | 15s |
 | `CommandPrefixes` | 命令前缀 | `["/"]` |
 
@@ -234,7 +234,7 @@ func (e *Engine) Reply(ctx context.Context, ev *bot.Event, msg *bot.Message) (*b
 1. 解析目标适配器（`resolve`）：`target.BotID` 非空时必须已注册且其平台名与 `target.Platform` 一致（`engine: bot %q is on platform %q, not %q`）；为空时仅当该平台只有一个 bot 才自动选择，否则报错要求显式指定（`engine: platform %q has %d bots, target.BotID is required`）；平台无 bot 时报 `engine: no adapter for platform %q`。
 2. `bot.Degrade(req.Message, ad.Capabilities())` 按平台能力降级消息段；降级后没有可发送的段则直接报错，绝不静默发送空消息。
 3. 发送前限流：配置了 `limits.send_rate > 0` 时为每个 bot 建一个令牌桶 `ratelimit.New(SendRate, SendBurst, 0, 0)`，发送前 `lim.Wait(ctx, botID)` 阻塞到拿到令牌或 ctx 结束（发送链路不允许丢消息）。
-4. 重试：`attempts = SendRetries + 1`（未配置 `send_retries` 时为 1 次尝试，即不重试；配置段见 [configuration.md](configuration.md) 12.6）；第 n 次重试（n ≥ 1）前先等待 `SendBackoff << (attempt-1)`（默认 100ms、200ms），等待期间响应 ctx 取消。每次尝试都记 `MessageSent(platform, 耗时, err)` 指标。ctx 已取消或某次尝试返回错误且 `ctx.Err() != nil` 时停止重试；错误以 `engine: send via %s: %w` 包装返回。重试是 at-least-once 语义：对端已收到但响应失败时会重复投递。
+4. 重试：`attempts = SendRetries + 1`（未配置 `send_retries` 时为 1 次尝试，即不重试；配置段见 [configuration.md](configuration.md) 12.6）；第 n 次重试（n ≥ 1）前先等待当前退避（默认 100ms、200ms，每次翻倍并封顶 `maxSendBackoff` = 30s；不会因位移溢出变成 0），等待期间响应 ctx 取消。每次尝试（含重试）都重新经过发送限流取令牌，因此重试同样受 `limits.send_rate` 约束。每次尝试都记 `MessageSent(platform, 耗时, err)` 指标。ctx 已取消或某次尝试返回错误且 `ctx.Err() != nil` 时停止重试；错误以 `engine: send via %s: %w` 包装返回。重试是 at-least-once 语义：对端已收到但响应失败时会重复投递。
 
 令牌桶实现（`internal/ratelimit`）：`rate` 为每秒补充令牌数，`burst` 为桶容量（`<= 0` 时取 `max(1, rate)`），`rate <= 0` 表示不限流（`Allow` 恒为 true）。`Allow(key)`/`AllowN(key, n)` 放行时才扣令牌；`Buckets()`/`GC()` 暴露活跃桶数与空闲回收，空闲阈值默认 10 分钟。桶表容量有上限 `maxKeys`（`New` 的第 4 个参数，`<= 0` 时默认 10000）：活跃桶数达到上限后，插入新 key 时按「最久未使用」淘汰一个桶（`order` 为 `container/list` 维护的 LRU，淘汰 O(1)；任何访问——包括被拒绝的调用——都会刷新位置），被淘汰的 key 下次出现时重建为满桶。因此 key 空间不可枚举（例如伪造的用户 ID）时内存仍有界。`Wait` 在无法放行时按 `retryAfter` 计算需要等待的时长后重试，`retryAfter` 为 0 时睡 1ms 避免忙等；`retryAfter` 是只读估算——先按当前时间把令牌补到 `now` 再算 `max(0, (1-tokens)/rate)`，不修改桶状态，也不依赖调用方刚刚调用过 `Allow`（陈旧快照会把等待算长，例如桶已空了半个周期仍按整整一个令牌计）。
 

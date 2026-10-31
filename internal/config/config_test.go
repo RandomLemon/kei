@@ -1309,6 +1309,7 @@ func TestEngineValidateErrors(t *testing.T) {
 		{"bus_queue_size 负数", storageBaseYAML + "engine:\n  bus_queue_size: -1\n", "engine.bus_queue_size: 不能为负数"},
 		{"dedup_capacity 负数", storageBaseYAML + "engine:\n  dedup_capacity: -1\n", "engine.dedup_capacity: 不能为负数"},
 		{"send_retries 负数", storageBaseYAML + "engine:\n  send_retries: -1\n", "engine.send_retries: 不能为负数"},
+		{"send_retries 过大", storageBaseYAML + "engine:\n  send_retries: 101\n", "engine.send_retries: 不能超过 100"},
 		{"event_timeout 非时长", storageBaseYAML + "engine:\n  event_timeout: abc\n", "engine.event_timeout: 需要时长"},
 		{"bus_workers 非整数", storageBaseYAML + "engine:\n  bus_workers: 1.5\n", "engine.bus_workers: 需要整数"},
 		{"未知键", storageBaseYAML + "engine:\n  unknown_key: 1\n", `engine: 未知键 "unknown_key"`},

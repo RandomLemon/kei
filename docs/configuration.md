@@ -69,8 +69,8 @@ type Config struct {
 | `engine` | `bus_queue_size` | `EngineConfig.BusQueueSize` | int | `0`（引擎 256） | 每个分片队列容量 |
 | `engine` | `dedup_ttl` | `EngineConfig.DedupTTL` | 时长或秒数 | `0`（引擎 5m） | 事件去重时间窗 |
 | `engine` | `dedup_capacity` | `EngineConfig.DedupCapacity` | int | `0`（引擎 4096） | 去重集合容量上限（总线按分片均分） |
-| `engine` | `send_retries` | `EngineConfig.SendRetries` | int | `0` | 发送失败重试次数（不含首次）；`0` 表示不重试，负数非法 |
-| `engine` | `send_backoff` | `EngineConfig.SendBackoff` | 时长或秒数 | `0`（引擎 100ms） | 发送重试初始退避 |
+| `engine` | `send_retries` | `EngineConfig.SendRetries` | int | `0` | 发送失败重试次数（不含首次）；`0` 表示不重试，负数与超过 100 非法 |
+| `engine` | `send_backoff` | `EngineConfig.SendBackoff` | 时长或秒数 | `0`（引擎 100ms） | 发送重试初始退避；每次翻倍，封顶 30s |
 
 `engine` 段的完整语义、取值规则与到 `internal/engine.Options` 的字段对应见 12.6。
 
@@ -214,7 +214,7 @@ engine:
 
 - **取值规则**：时长写时长字符串（`10s`）或秒数（`30`，数字按秒），整数不得为小数；规则与 `storage.params` 一致（`decodeDurationValue`/`decodeIntValue`）。`command_prefixes` 是字符串序列，每项去空白后必须非空。键存在但无值（`event_timeout:`）视为未配置。未知键报 `config: engine 段: engine: 未知键 "<key>"`；重复键报 `config: engine 段: engine: 键 "<key>" 重复`。
 - **`0`/未配置 = 引擎默认值**：`applyDefaults` 不替引擎填默认，`engine` 段保持零值并原样透传；由 `internal/engine.Options` 的 `orInt`/`orDuration` 回落到默认（30s/10s/10s/4/256/5m/4096，见 [engine.md](engine.md) 7.1），命令行前缀为空列表时用 `["/"]`。**例外是 `send_retries`**：`0` 是有意义的取值（不重试），负数非法。
-- **校验**（`EngineConfig.validate`，错误路径 `engine.<key>`）：`command_prefixes` 每项去空白后非空；时长与容量类不能为负；`send_retries` 允许 `0`、负数报错。因此 `send_retries: -1` 会在配置层被拦住，不会与显式 `0` 相混。
+- **校验**（`EngineConfig.validate`，错误路径 `engine.<key>`）：`command_prefixes` 每项去空白后非空；时长与容量类不能为负；`send_retries` 允许 `0`，负数与大于 100 报错。因此 `send_retries: -1` 会在配置层被拦住，不会与显式 `0` 相混。
 - **环境变量覆盖**：`KEI_ENGINE_COMMAND_PREFIXES`（逗号分隔）与其余 9 个键的 `KEI_ENGINE_*`，规则见 12.7。
 - **字段对应**：配置键 `command_prefixes`/`event_timeout`/`rule_timeout`/`shutdown_timeout`/`bus_workers`/`bus_queue_size`/`dedup_ttl`/`dedup_capacity`/`send_retries`/`send_backoff` 依次对应 `Options.CommandPrefixes`/`EventTimeout`/`RuleTimeout`/`ShutdownTimeout`/`BusWorkers`/`BusQueueSize`/`DedupTTL`/`DedupCapacity`/`SendRetries`/`SendBackoff`。
 

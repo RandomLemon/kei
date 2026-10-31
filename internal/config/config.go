@@ -29,6 +29,10 @@ const (
 	defaultLogFormat = "text"
 )
 
+// maxSendRetries 是 send_retries 的上限：重试退避已封顶 30s，但没有上限的重试
+// 次数仍可能让一次发送占用调用方数小时；100 次已远超正常运维需要。
+const maxSendRetries = 100
+
 // namePattern 限制名字类配置的字符集：适配器名、插件名与存储类型名共用。
 var namePattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
@@ -973,6 +977,9 @@ func (e EngineConfig) validate() error {
 	for _, n := range ints {
 		if n.value < 0 {
 			return fmt.Errorf("config: %s: 不能为负数", n.path)
+		}
+		if n.path == "engine.send_retries" && n.value > maxSendRetries {
+			return fmt.Errorf("config: %s: 不能超过 %d", n.path, maxSendRetries)
 		}
 	}
 	return nil
