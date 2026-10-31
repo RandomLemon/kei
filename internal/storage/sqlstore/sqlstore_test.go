@@ -220,6 +220,28 @@ func TestGetLazyDeleteFailureLogged(t *testing.T) {
 	}
 }
 
+// TestSetNilValue 验证 nil value 在 SQL 后端按空值写入，与内存后端一致。
+func TestSetNilValue(t *testing.T) {
+	db := openGorm(t, filepath.Join(t.TempDir(), "k.db"))
+	st, err := New(db, 0, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	if err := st.Set(ctx, "nil-value", nil, 0); err != nil {
+		t.Fatalf("Set(nil): %v", err)
+	}
+	got, err := st.Get(ctx, "nil-value")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Get = %q, want empty", got)
+	}
+}
+
 // TestGetLazyDeleteKeepsConcurrentlyRefreshedValue 验证惰性删除带过期谓词：
 // Get 读到过期行后、DELETE 执行前，另一写入方把该键刷新为新值，DELETE 不得
 // 把这条活数据删掉。用 GORM 删除回调模拟这个交错。

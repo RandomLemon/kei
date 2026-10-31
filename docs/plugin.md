@@ -428,7 +428,7 @@ type Storage interface {
 
 键空间与键长：插件拿到的 `Storage` 是**按插件名隔离的视图**——`internal/pluginmgr` 在组装 `PluginContext` 时与 `internal/engine.pluginAPI`（`BotAPI.Storage()`）都用 `storage.PluginScoped` 包一层，底层键统一带 `plugin:<插件名>:` 前缀。两个插件的同名键因此互不覆盖，插件也不需要自己拼前缀（键按原样传入，前缀由框架加；同一插件经 `PluginContext.Storage` 与 `BotAPI.Storage()` 看到的是同一批键）。键长上限 191 字节（`storage.MaxKeyBytes`，取自 SQL 列的 `size:191`）：内存、SQLite、MySQL 三个后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（`errors.Is(err, storage.ErrKeyTooLong)` 可判定），而不是只有 MySQL 报错；上限按字节计算，比 MySQL 的字符数约束更保守。
 
-SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参，`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。清理失败不再静默：后台清理失败记 **Warn**（表在无界增长，必须告警），`Get` 惰性删除失败记 **Debug**（读取路径高频、多为并发删除等预期噪声，`Get` 仍照常返回 `bot.ErrNotFound`）；日志器经装配链传入（`storage.Open(kind, cfg, logger)` / `sqlstore.New(db, cleanup, logger)`，nil 时为 `slog.Default()`）。
+SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参（`nil` 值归一为空 BLOB，避免 `NOT NULL` 与内存后端行为不一致），`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。清理失败不再静默：后台清理失败记 **Warn**（表在无界增长，必须告警），`Get` 惰性删除失败记 **Debug**（读取路径高频、多为并发删除等预期噪声，`Get` 仍照常返回 `bot.ErrNotFound`）；日志器经装配链传入（`storage.Open(kind, cfg, logger)` / `sqlstore.New(db, cleanup, logger)`，nil 时为 `slog.Default()`）。
 
 ### 11.3 PluginContext
 

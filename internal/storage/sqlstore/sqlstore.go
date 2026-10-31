@@ -131,7 +131,16 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 	if err := storage.CheckKey(key); err != nil {
 		return err
 	}
-	e := Entry{Key: key, Value: append([]byte(nil), value...)}
+	// value 列是 NOT NULL；nil []byte 会被驱动绑定为 SQL NULL。内存后端把 nil
+	// 当作空值接受，这里统一归一为空切片，避免同一调用因后端不同而失败。
+	if value == nil {
+		value = []byte{}
+	}
+	// 用 make 而不是 append(nil, value...)：后者对空切片会返回 nil，仍会被绑定
+	// 成 SQL NULL。Entry.Value 必须是长度 0、非 nil 的空 BLOB。
+	stored := make([]byte, len(value))
+	copy(stored, value)
+	e := Entry{Key: key, Value: stored}
 	if ttl > 0 {
 		t := s.now().Add(ttl)
 		e.ExpiresAt = &t
