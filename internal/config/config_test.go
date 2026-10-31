@@ -1335,6 +1335,7 @@ func TestEngineValidateErrors(t *testing.T) {
 		{"event_timeout 非时长", storageBaseYAML + "engine:\n  event_timeout: abc\n", "engine.event_timeout: 需要时长"},
 		{"bus_workers 非整数", storageBaseYAML + "engine:\n  bus_workers: 1.5\n", "engine.bus_workers: 需要整数"},
 		{"未知键", storageBaseYAML + "engine:\n  unknown_key: 1\n", `engine: 未知键 "unknown_key"`},
+		{"未知键空值", storageBaseYAML + "engine:\n  bus_worker:\n", `engine: 未知键 "bus_worker"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

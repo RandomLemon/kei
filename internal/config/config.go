@@ -575,6 +575,15 @@ func decodeEngine(node *yaml.Node) (EngineConfig, error) {
 		"send_retries":   &e.SendRetries,
 	}
 	err := eachPair(node, "engine", "engine: 必须是映射", func(key string, val *yaml.Node) error {
+		// 未知键必须先于 null 短路报错：`bus_worker:`（拼错 + 空值）不能因为
+		// 「空值视为未配置」而静默通过。
+		if key != "command_prefixes" {
+			_, isDuration := durations[key]
+			_, isInt := ints[key]
+			if !isDuration && !isInt {
+				return fmt.Errorf("engine: 未知键 %q", key)
+			}
+		}
 		if isNull(val) {
 			return nil
 		}
