@@ -169,6 +169,19 @@ func New(opts Options) (*Engine, error) {
 		sendLimits: make(map[string]*ratelimit.Limiter),
 	}
 
+	// New 可能启动总线 worker 与自有存储的 janitor；任何后续错误都必须回收它们，
+	// 否则会泄漏 goroutine 并让整张 Engine 图无法释放（Engine 没有 Close）。
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		if e.bus != nil {
+			_ = e.bus.Close(context.Background())
+		}
+		e.closeOwnStorage()
+	}()
+
 	for _, b := range opts.Adapters {
 		if b.Adapter == nil {
 			return nil, fmt.Errorf("engine: adapter binding %q has nil adapter", b.BotID)
@@ -214,18 +227,6 @@ func New(opts Options) (*Engine, error) {
 		Logger:  e.log,
 		Metrics: e.met,
 	})
-	e.bus = eventbus.New(eventbus.Options{
-		Workers:       orInt(opts.BusWorkers, defaultBusWorkers),
-		QueueSize:     orInt(opts.BusQueueSize, defaultBusQueueSize),
-		DedupTTL:      orDuration(opts.DedupTTL, defaultDedupTTL),
-		DedupCapacity: orInt(opts.DedupCapacity, defaultDedupCapacity),
-		Logger:        e.log,
-	})
-	e.sink = &eventSink{eng: e}
-	if err := e.bus.Subscribe(e.handle); err != nil {
-		return nil, fmt.Errorf("engine: subscribe event handler: %w", err)
-	}
-
 	pluginConfigs := make(map[string]*bot.Config, len(opts.Config.Plugins))
 	for name, pc := range opts.Config.Plugins {
 		pluginConfigs[name] = bot.NewConfig(pc.Settings)
@@ -247,6 +248,20 @@ func New(opts Options) (*Engine, error) {
 			return nil, err
 		}
 	}
+
+	// 总线 worker 在全部静态校验通过后才启动：失败路径无需再回收它们。
+	e.bus = eventbus.New(eventbus.Options{
+		Workers:       orInt(opts.BusWorkers, defaultBusWorkers),
+		QueueSize:     orInt(opts.BusQueueSize, defaultBusQueueSize),
+		DedupTTL:      orDuration(opts.DedupTTL, defaultDedupTTL),
+		DedupCapacity: orInt(opts.DedupCapacity, defaultDedupCapacity),
+		Logger:        e.log,
+	})
+	e.sink = &eventSink{eng: e}
+	if err := e.bus.Subscribe(e.handle); err != nil {
+		return nil, fmt.Errorf("engine: subscribe event handler: %w", err)
+	}
+	success = true
 	return e, nil
 }
 
@@ -309,14 +324,14 @@ func (e *Engine) Run(ctx context.Context) error {
 	defer cancel()
 
 	if err := e.plugins.Setup(runCtx, e.router.Registrar); err != nil {
-		return err
+		return e.abortRun(err)
 	}
 	if err := e.applyBotPluginFilter(); err != nil {
-		return err
+		return e.abortRun(err)
 	}
 
 	if err := e.plugins.Start(runCtx); err != nil {
-		return err
+		return e.abortRun(err)
 	}
 	e.log.Info("plugins started", "count", e.plugins.Len())
 
@@ -365,6 +380,37 @@ func (e *Engine) Run(ctx context.Context) error {
 	return runErr
 }
 
+// abortRun 回收启动阶段失败时已经创建的资源。
+//
+// 此时适配器还没有启动，也没有外部事件进入总线；只需要关闭总线 worker、停止
+// 插件管理器记录为 started 的插件（Start 失败时管理器已自行回滚）并释放自有的
+// 存储。返回原始错误，不改变调用方的失败语义。
+func (e *Engine) abortRun(cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), orDuration(e.opts.ShutdownTimeout, defaultShutdownTimeout))
+	defer cancel()
+
+	if err := e.bus.Close(ctx); err != nil {
+		e.log.Warn("event bus close incomplete after startup failure", "error", err)
+	}
+	if err := e.plugins.Stop(ctx); err != nil {
+		e.log.Warn("plugin stop failed after startup failure", "error", err)
+	}
+	e.closeOwnStorage()
+	return cause
+}
+
+// closeOwnStorage 关闭引擎自己创建的内存存储；调用方注入的存储不归引擎所有。
+func (e *Engine) closeOwnStorage() {
+	if !e.ownStorage {
+		return
+	}
+	if c, ok := e.store.(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			e.log.Warn("storage close failed", "error", err)
+		}
+	}
+}
+
 // drainErrors 非阻塞地取空 channel 中已写入的错误。
 func drainErrors(ch <-chan error) []error {
 	var errs []error
@@ -409,13 +455,7 @@ func (e *Engine) shutdown(wg *sync.WaitGroup) {
 	if err := e.plugins.Stop(ctx); err != nil {
 		e.log.Warn("plugin stop failed", "error", err)
 	}
-	if e.ownStorage {
-		if c, ok := e.store.(interface{ Close() error }); ok {
-			if err := c.Close(); err != nil {
-				e.log.Warn("storage close failed", "error", err)
-			}
-		}
-	}
+	e.closeOwnStorage()
 	e.log.Info("engine stopped",
 		"published", e.bus.Stats().Published,
 		"handled", e.bus.Stats().Handled,

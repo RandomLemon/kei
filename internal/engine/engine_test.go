@@ -14,6 +14,7 @@ import (
 	"github.com/RandomLemon/kei/adapters/mock"
 	"github.com/RandomLemon/kei/internal/config"
 	"github.com/RandomLemon/kei/internal/engine"
+	"github.com/RandomLemon/kei/internal/eventbus"
 	"github.com/RandomLemon/kei/pkg/bot"
 	"github.com/RandomLemon/kei/plugins/echo"
 )
@@ -590,6 +591,54 @@ func TestMultiBotSamePlatformNeedsExplicitBotID(t *testing.T) {
 	}
 	if got := len(ads["mock-b"].Sent()); got != 1 {
 		t.Fatalf("mock-b 发送记录数 = %d, want 1", got)
+	}
+}
+
+// lifecycleFailPlugin 在指定生命周期阶段返回错误。
+type lifecycleFailPlugin struct {
+	setupErr error
+	startErr error
+}
+
+func (p *lifecycleFailPlugin) Metadata() bot.Metadata {
+	return bot.Metadata{Name: "lifecycle-fail"}
+}
+func (p *lifecycleFailPlugin) Setup(context.Context, bot.Registrar) error { return p.setupErr }
+func (p *lifecycleFailPlugin) Start(context.Context) error                { return p.startErr }
+func (p *lifecycleFailPlugin) Stop(context.Context) error                 { return nil }
+
+// TestRunStartupFailureClosesBus 验证 Setup/Start 失败返回后总线已关闭：
+// 启动失败不得留下仍在接收事件的 worker 或无法释放的 Engine 图。
+func TestRunStartupFailureClosesBus(t *testing.T) {
+	cases := []struct {
+		name string
+		p    *lifecycleFailPlugin
+	}{
+		{"setup", &lifecycleFailPlugin{setupErr: errors.New("setup failed")}},
+		{"start", &lifecycleFailPlugin{startErr: errors.New("start failed")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng, err := engine.New(engine.Options{
+				Config:  &config.Config{},
+				Logger:  slog.New(slog.DiscardHandler),
+				Plugins: []bot.Plugin{tc.p},
+			})
+			if err != nil {
+				t.Fatalf("engine.New: %v", err)
+			}
+			runErr := eng.Run(context.Background())
+			if runErr == nil {
+				t.Fatal("Run 应返回启动错误")
+			}
+			_, perr := eng.Bus().Publish(context.Background(), &bot.Event{
+				ID: "after-failure", Platform: "p", BotID: "b",
+				Sender: &bot.User{ID: "u"},
+			})
+			if !errors.Is(perr, eventbus.ErrClosed) {
+				t.Fatalf("启动失败后总线仍可接收事件: err=%v", perr)
+			}
+		})
 	}
 }
 

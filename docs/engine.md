@@ -98,7 +98,7 @@ type AdapterBinding struct {
 
 ### 7.3 关闭顺序与优雅退出
 
-`Run` 返回前必定调用 `engine.shutdown`，其顺序固定：
+`Run` 返回前必定完成资源回收：正常退出与适配器错误走 `engine.shutdown`，`plugins.Setup`/`applyBotPluginFilter`/`plugins.Start` 失败走 `engine.abortRun`（关闭总线 worker、停止已启动插件并释放自有存储）。`shutdown` 的顺序固定：
 
 1. 逐个调用 `Adapter.Stop(ctx)` 停止接收新事件，错误只记日志（`adapter stop failed`）。
 2. `bus.Close(ctx)`：停止接收新事件并**消费完所有已入队事件**，等待全部分片 worker 退出。
