@@ -452,11 +452,14 @@ func (c *wsConn) writeFrame(opcode byte, payload []byte, deadline time.Time) err
 	frame = append(frame, head...)
 	frame = append(frame, payload...)
 
+	// 连接上只有一个写 deadline：必须在持有 writeMu 后才设置，否则并发调用会
+	// 改写正在写入方的 deadline（把别人的帧写提前打断），并让等待锁的调用越过
+	// 自己的 ctx 期限。锁内设置也保证 deadline 属于本次实际写入。
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if err := c.conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
 	_, err := c.conn.Write(frame)
 	return err
 }
