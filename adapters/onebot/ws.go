@@ -183,14 +183,18 @@ func dialWebSocket(ctx context.Context, rawURL string, header http.Header) (*wsC
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
+	// 建连与 TLS 握手也必须受 defaultTimeout 兜底约束：调用方的 runCtx 通常没有
+	// deadline，只把 deadline 用在后面的握手读写会让黑洞地址拖到 OS TCP 超时。
+	dialCtx, dialCancel := context.WithDeadline(ctx, deadline)
+	defer dialCancel()
 
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return nil, fmt.Errorf("onebot: 连接 %s 失败: %w", net.JoinHostPort(host, port), err)
 	}
 	if u.Scheme == "wss" {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: host})
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
+		if err := tlsConn.HandshakeContext(dialCtx); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("onebot: TLS 握手失败: %w", err)
 		}
