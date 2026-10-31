@@ -84,8 +84,14 @@ func NewServer(opts ServerOptions) *http.Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// 文档承诺 nil Handler 对任何请求回 404；直接赋 nil 会让 http.Server 使用
+	// http.DefaultServeMux，可能意外暴露宿主注册的 handler。
+	handler := opts.Handler
+	if handler == nil {
+		handler = http.NotFoundHandler()
+	}
 	return &http.Server{
-		Handler:           opts.Handler,
+		Handler:           handler,
 		ReadHeaderTimeout: orDefault(opts.ReadHeaderTimeout, DefaultReadHeaderTimeout),
 		ReadTimeout:       orDefault(opts.ReadTimeout, DefaultReadTimeout),
 		WriteTimeout:      orDefault(opts.WriteTimeout, DefaultWriteTimeout),

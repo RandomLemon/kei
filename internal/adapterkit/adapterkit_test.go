@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,19 @@ func TestNewServerFillsDefaults(t *testing.T) {
 	}
 	if srv.ErrorLog == nil {
 		t.Error("ErrorLog 必须非 nil：net/http 内部错误要有结构化日志出口")
+	}
+}
+
+// TestNewServerNilHandlerIs404 验证 nil Handler 不会退回 http.DefaultServeMux。
+func TestNewServerNilHandlerIs404(t *testing.T) {
+	srv := NewServer(ServerOptions{Logger: newQuietLogger()})
+	if srv.Handler == nil {
+		t.Fatal("Handler 不应为 nil")
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("nil Handler 状态码 = %d, want 404", rec.Code)
 	}
 }
 
