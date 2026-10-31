@@ -9,6 +9,9 @@ import (
 
 // 键空间前缀：插件与适配器共用同一个 Store，若不隔离，同名键会静默互相覆盖。
 // 前缀由框架在分发存储时注入，插件/适配器只看到自己的逻辑键。
+//
+// 前缀计入 storage.MaxKeyBytes：底层键（前缀 + 逻辑键）总长不能超过 191 字节，
+// 因此插件/适配器可用的逻辑键上限是 191 - len(prefix)。
 const (
 	pluginKeyPrefix  = "plugin:"
 	adapterKeyPrefix = "adapter:"
