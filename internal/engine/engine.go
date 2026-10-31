@@ -42,6 +42,12 @@ const (
 	defaultHTTPTimeout     = 15 * time.Second
 )
 
+// ErrShutdownIncomplete 表示关闭时事件总线未能在预算内排空。
+//
+// 此时仍有 handler 在运行，继续停止插件或关闭存储会与它们竞态；引擎会跳过这些
+// 步骤并返回该错误（可用 errors.Is 判定），由装配层决定是否保留存储不关闭。
+var ErrShutdownIncomplete = errors.New("engine: shutdown incomplete")
+
 // AdapterBinding 把一个适配器实例绑定到配置中的 bot 名称。
 //
 // 同一平台可以有多个 bot（例如两个 Telegram bot），因此适配器必须显式绑定 BotID。
@@ -388,7 +394,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 	cancel()
 
-	e.shutdown(&wg)
+	shutdownErr := e.shutdown(&wg)
 
 	// 适配器先写 adapterErr（带缓冲，必然成功）再 cancel，因此 runCtx.Done() 与
 	// adapterErr 可能同时就绪，select 会随机选中前者；shutdown 已等待适配器
@@ -398,11 +404,14 @@ func (e *Engine) Run(ctx context.Context) error {
 	if runErr != nil {
 		errs = append([]error{runErr}, errs...)
 	}
-	runErr = errors.Join(errs...)
-	if runErr != nil {
-		e.log.Error("engine aborted by adapter failure", "error", runErr)
+	adapterRunErr := errors.Join(errs...)
+	if adapterRunErr != nil {
+		e.log.Error("engine aborted by adapter failure", "error", adapterRunErr)
 	}
-	return runErr
+	if shutdownErr != nil {
+		e.log.Error("engine shutdown incomplete", "error", shutdownErr)
+	}
+	return errors.Join(adapterRunErr, shutdownErr)
 }
 
 // abortRun 回收启动阶段失败时已经创建的资源。
@@ -454,7 +463,10 @@ func drainErrors(ch <-chan error) []error {
 // 每个阶段（每个适配器、总线排空、等待适配器 goroutine、插件停止）各自使用一份
 // ShutdownTimeout 预算，而不是共享同一个 ctx：某个适配器的 Stop 吃掉整个预算时，
 // 后续插件仍能拿到未取消的 ctx 完成清理。代价是最坏总耗时按阶段数增长。
-func (e *Engine) shutdown(wg *sync.WaitGroup) {
+//
+// 总线未能排空时跳过插件停止与存储关闭并返回 ErrShutdownIncomplete：此时仍有
+// handler 在运行，拆掉插件状态或关闭存储会与它们竞态。
+func (e *Engine) shutdown(wg *sync.WaitGroup) error {
 	e.log.Info("engine shutting down")
 
 	// 1. 停止接收：适配器停止接收新事件。
@@ -473,9 +485,7 @@ func (e *Engine) shutdown(wg *sync.WaitGroup) {
 
 	// 2. 等待已入队事件处理完毕。
 	busCtx, busCancel := e.shutdownStageContext()
-	if err := e.bus.Close(busCtx); err != nil {
-		e.log.Warn("event bus close incomplete", "error", err)
-	}
+	busErr := e.bus.Close(busCtx)
 	busCancel()
 	// 3. 等待适配器 goroutine 退出。
 	waitCtx, waitCancel := e.shutdownStageContext()
@@ -483,6 +493,11 @@ func (e *Engine) shutdown(wg *sync.WaitGroup) {
 		e.log.Warn("adapter start goroutines did not exit before timeout")
 	}
 	waitCancel()
+	if busErr != nil {
+		// 仍有 handler 在跑：停止插件或关闭存储会与它们竞态（插件状态被拆掉、
+		// 存储句柄被关闭）。保留资源并让调用方通过 ErrShutdownIncomplete 感知。
+		return fmt.Errorf("%w: event bus: %v", ErrShutdownIncomplete, busErr)
+	}
 	// 4. 停止插件（逆序）。
 	pluginCtx, pluginCancel := e.shutdownStageContext()
 	if err := e.plugins.Stop(pluginCtx); err != nil {
@@ -494,6 +509,7 @@ func (e *Engine) shutdown(wg *sync.WaitGroup) {
 		"published", e.bus.Stats().Published,
 		"handled", e.bus.Stats().Handled,
 	)
+	return nil
 }
 
 // shutdownStageContext 返回一个关闭阶段专用的超时 ctx。

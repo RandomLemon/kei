@@ -23,6 +23,7 @@ package kei
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -51,12 +52,15 @@ type Options struct {
 	// HTTPClient 是适配器与插件共用的 HTTP 客户端；nil 时为 15s 超时的客户端。
 	HTTPClient *http.Client
 	// Storage 是插件存储；非 nil 时优先使用（由调用方拥有，Run 不关闭）。
-	// 为 nil 时按配置 storage.type 构造（默认 memory），并在 Run 返回前关闭。
+	// 为 nil 时按配置 storage.type 构造（默认 memory），并在 Run 返回前关闭；
+	// 若关闭时总线未排空（ErrShutdownIncomplete），自有存储会保留不关闭。
 	Storage bot.Storage
 }
 
 // Run 装配并运行 chatbot，阻塞直到 ctx 结束或适配器发生不可恢复错误。
-// 返回前完成优雅关闭（停止接收 → 排空已入队事件 → 停止适配器 → 停止插件）。
+// 返回前完成优雅关闭（停止接收 → 排空已入队事件 → 停止适配器 → 停止插件）；
+// 若事件总线未在关闭预算内排空，Run 返回非 nil 错误并保留自有的存储不关闭，
+// 避免仍在运行的 handler 访问已关闭的存储。
 func Run(ctx context.Context, opts Options) error {
 	cfg, err := buildConfig(opts)
 	if err != nil {
@@ -77,7 +81,12 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer closeStore()
+	closeStorage := true
+	defer func() {
+		if closeStorage {
+			closeStore()
+		}
+	}()
 
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
@@ -156,5 +165,12 @@ func Run(ctx context.Context, opts Options) error {
 		"bots", len(adapters),
 		"plugins", len(plugins),
 	)
-	return eng.Run(ctx)
+	runErr := eng.Run(ctx)
+	if errors.Is(runErr, engine.ErrShutdownIncomplete) {
+		// 仍有 handler 在跑：关闭存储会让它们访问已关闭的连接/文件。保留存储
+		// 交给进程退出回收，并用 warn 明确这是未完成的关闭。
+		closeStorage = false
+		logger.Warn("事件总线未在关闭预算内排空，自有存储保持打开", "error", runErr)
+	}
+	return runErr
 }

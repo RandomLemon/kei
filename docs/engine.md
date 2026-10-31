@@ -107,7 +107,7 @@ type AdapterBinding struct {
 5. 引擎自有的内存存储（`ownStorage`，即 `Options.Storage` 为 nil 时内部创建）关闭。
 6. 记录 `engine stopped` 日志，携带总线的 `published`/`handled` 计数。
 
-关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；每个阶段各自使用一份 `ShutdownTimeout`（默认 10s）预算，某个适配器 Stop 耗尽自己的预算不会让后续总线排空/插件 Stop 拿到已取消的 ctx。`Run` 的返回值是收敛后的适配器错误（多个失败用 `errors.Join` 合并），并同时以 `engine aborted by adapter failure` 记为 `Error` 日志；仅 ctx 取消且无任何适配器错误时才返回 nil。
+关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；每个阶段各自使用一份 `ShutdownTimeout`（默认 10s）预算，某个适配器 Stop 耗尽自己的预算不会让后续总线排空/插件 Stop 拿到已取消的 ctx。若 `bus.Close` 仍超时（仍有 handler 在运行），`shutdown` 跳过插件 Stop 与自有存储关闭并返回 `ErrShutdownIncomplete`（`errors.Is` 可判定）；`pkg/kei.Run` 检测到该错误后同样保留自有的 `buildStorage` 实例不关闭，避免在途 handler 访问已关闭的存储。`Run` 的返回值是收敛后的适配器错误（多个失败用 `errors.Join` 合并），并同时以 `engine aborted by adapter failure` 记为 `Error` 日志；仅 ctx 取消且无任何适配器错误时才返回 nil。
 
 优雅退出的触发点是 `cmd/bot/main.go` 的 `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`（门面本身只消费传入的 ctx）；取消后 `Run` 走上述关闭路径，因此已入队事件不会丢失（`internal/engine` 的 `TestGracefulShutdownDrainsQueuedEvents` 覆盖该行为）。
 
@@ -339,7 +339,7 @@ type Stats struct {
 
 1. 置位关闭标志，在分片锁内关闭每个分片队列（此后 `Publish` 返回 `ErrClosed`）。
 2. 后台等待全部 worker 退出，然后关闭 `done`。
-3. 已排空则直接返回 nil（即使传入的 ctx 已过期——关闭已是既成事实）；否则等待 `done` 或 ctx 结束，ctx 超时返回 `ctx.Err()`。超时后后台仍会继续处理已入队事件，后续 `Close` 可以继续等待它们完成。
+3. 已排空则直接返回 nil（即使传入的 ctx 已过期——关闭已是既成事实）；否则等待 `done` 或 ctx 结束，ctx 超时返回 `ctx.Err()`。超时后后台仍会继续处理已入队事件，后续 `Close` 可以继续等待它们完成；引擎的 `shutdown` 把这种超时视为关闭未完成（`ErrShutdownIncomplete`），不再停止插件或关闭存储。
 
 `Stats()` 在读路径上无锁，返回各计数器的快照（自总线创建以来的累计值）。
 
