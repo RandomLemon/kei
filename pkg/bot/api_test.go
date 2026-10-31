@@ -206,6 +206,14 @@ func TestNoopReply(t *testing.T) {
 	if len(empty.Segments()) != 0 {
 		t.Fatalf("空参数不应追加段: %+v", empty.Segments())
 	}
+
+	var nilReply *NoopReply
+	if got := nilReply.SetKind(MessageGroup); got != nil {
+		t.Fatalf("nil NoopReply.SetKind = %v, want nil", got)
+	}
+	if nilReply.Message() != nil || nilReply.PlainText() != "" || nilReply.Segments() != nil {
+		t.Fatal("nil NoopReply 的读取方法应返回零值")
+	}
 }
 
 // TestNoopReplyExtendedReply 验证 NoopReply 实现可选接口 ExtendedReply：

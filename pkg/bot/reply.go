@@ -202,6 +202,9 @@ func (r *NoopReply) PlainText() string {
 
 // SetKind 设置消息的会话类型，仅影响 Message 的返回值。
 func (r *NoopReply) SetKind(k MessageKind) *NoopReply {
+	if r == nil {
+		return nil
+	}
 	r.kind = k
 	return r
 }
