@@ -451,7 +451,8 @@ func TestEventUplink(t *testing.T) {
 	}
 }
 
-// TestEventIDFallback 验证平台未提供事件 ID 时生成稳定的兜底 ID。
+// TestEventIDFallback 验证平台未提供事件 ID 时按回调内容生成确定性兜底 ID：
+// 同一回调重试得到相同 ID，内容不同则得到不同 ID。
 func TestEventIDFallback(t *testing.T) {
 	t.Parallel()
 
@@ -463,25 +464,33 @@ func TestEventIDFallback(t *testing.T) {
 	})
 	r := startRunning(t, ad)
 
-	// 同样的输出（去掉 id/time）连续两条也必须能区分。
 	const body = `{"type":"message","user_id":"u-1","text":"hi"}`
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if status, _ := postCallback(t, ad.Addr(), "/", body); status != http.StatusAccepted {
 			t.Fatalf("第 %d 条回调状态码 = %d", i+1, status)
 		}
 	}
-	events := r.sink.wait(t, 2)
-	if events[0].ID == "" || events[1].ID == "" {
-		t.Fatalf("兜底 ID 不能为空: %q, %q", events[0].ID, events[1].ID)
+	retried := r.sink.wait(t, 2)
+	if retried[0].ID == "" || retried[1].ID == "" {
+		t.Fatalf("兜底 ID 不能为空: %q, %q", retried[0].ID, retried[1].ID)
 	}
-	if !strings.HasPrefix(events[0].ID, "myim-10001-") || !strings.HasPrefix(events[1].ID, "myim-10001-") {
-		t.Errorf("兜底 ID 前缀不正确: %q, %q", events[0].ID, events[1].ID)
+	if !strings.HasPrefix(retried[0].ID, "myim-10001-") {
+		t.Errorf("兜底 ID 前缀不正确: %q", retried[0].ID)
 	}
-	if events[0].ID == events[1].ID {
-		t.Errorf("兜底 ID 必须唯一，实际都是 %q", events[0].ID)
+	if retried[0].ID != retried[1].ID {
+		t.Errorf("同一回调重试应得到相同 ID: %q, %q", retried[0].ID, retried[1].ID)
 	}
-	if events[0].Time.IsZero() {
+	if retried[0].Time.IsZero() {
 		t.Error("平台未给时间时 Event.Time 应填当前时间")
+	}
+
+	const other = `{"type":"message","user_id":"u-1","text":"bye"}`
+	if status, _ := postCallback(t, ad.Addr(), "/", other); status != http.StatusAccepted {
+		t.Fatalf("不同内容回调状态码 = %d", status)
+	}
+	changed := r.sink.wait(t, 1)
+	if changed[0].ID == retried[0].ID {
+		t.Errorf("内容不同的回调不应得到相同 ID: %q", changed[0].ID)
 	}
 }
 

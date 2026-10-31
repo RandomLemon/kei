@@ -108,10 +108,11 @@ bots:
   随后阻塞到 `ctx.Done()`。
 - 平台回调先收到 `202 {"code":0}`，事件再经带缓冲队列交给独立 goroutine 的
   `sink.Emit`，回调线程不会因业务处理而阻塞；队列满时记 warn 日志。
-- 事件 ID 优先取平台事件自带的 `id`，缺失时用 `myim-<self_id>-<seq>` 兜底，
-  保证同实例内稳定唯一；`Event.Platform` 恒为 `myim`，`Event.BotID` 恒为构造时的 BotID。
+- 事件 ID 优先取平台事件自带的 `id`，缺失时用 `myim-<self_id>-<sha256(raw)[:8]>`
+  兜底：同一回调被平台重试时报文不变、ID 不变（核心可去重），内容不同则 ID 不同；
+  `Event.Platform` 恒为 `myim`，`Event.BotID` 恒为构造时的 BotID。
 - `Stop` 幂等：`srv.Shutdown(ctx)` + 关闭队列 + 等待投递 goroutine 退出，重复调用都返回 `nil`。
-- 实例状态（监听器、队列、序号）全部挂在 `Adapter` 上，包级没有可变状态，因此多实例互不影响。
+- 实例状态（监听器、队列）全部挂在 `Adapter` 上，包级没有可变状态，因此多实例互不影响。
 
 ## 运行测试
 

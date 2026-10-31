@@ -3,6 +3,7 @@ package myim
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/RandomLemon/kei/pkg/bot"
@@ -83,7 +83,6 @@ type Adapter struct {
 	stopped bool
 
 	stopOnce sync.Once
-	seq      atomic.Uint64
 }
 
 // 确保 Adapter 满足 bot.Adapter。
@@ -138,6 +137,15 @@ func (a *Adapter) callbackPath() string {
 		return "/"
 	}
 	return a.opts.Path
+}
+
+// fallbackEventID 在平台未提供事件 ID 时按回调原始报文生成确定性 ID。
+//
+// 同一回调被平台重试时报文不变，必须得到同一个 ID 供核心去重；用原子序号会让
+// 每次重试都变成新事件。内容不同的回调（哪怕字段相同、仅时间不同）得到不同 ID。
+func fallbackEventID(selfID string, raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("myim-%s-%x", selfID, sum[:8])
 }
 
 // selfID 返回用于生成兜底事件 ID 的机器人账号。
@@ -327,7 +335,7 @@ func (a *Adapter) handleCallback(w http.ResponseWriter, r *http.Request) {
 // buildEvent 把平台回调转换为统一事件。
 func (a *Adapter) buildEvent(cb *callbackEvent, raw []byte) *bot.Event {
 	ev := &bot.Event{
-		ID:       bot.FirstNonEmpty(cb.ID, fmt.Sprintf("myim-%s-%d", a.selfID(), a.seq.Add(1))),
+		ID:       bot.FirstNonEmpty(cb.ID, fallbackEventID(a.selfID(), raw)),
 		Type:     eventType(cb.Type),
 		Platform: platformName,
 		BotID:    a.opts.BotID,
