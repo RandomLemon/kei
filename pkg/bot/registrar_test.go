@@ -174,6 +174,16 @@ func TestRecordingRegistrarRejectsEmptyTriggers(t *testing.T) {
 	}
 }
 
+// TestRecordingRegistrarZeroValue 验证零值可直接使用，不会因 nil map panic。
+func TestRecordingRegistrarZeroValue(t *testing.T) {
+	var reg RecordingRegistrar
+	reg.OnCommand("x", func(context.Context, *Event, Reply) error { return nil })
+	rules := reg.Rules()
+	if len(rules) != 1 || rules[0].Command != "x" {
+		t.Fatalf("零值注册器未记录规则: %+v", rules)
+	}
+}
+
 // TestRecordingRegistrarCopiesKeywords 验证关键词切片在注册时被复制，
 // 注册后修改入参不影响已记录的规则。
 func TestRecordingRegistrarCopiesKeywords(t *testing.T) {

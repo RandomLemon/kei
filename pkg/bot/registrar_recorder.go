@@ -142,6 +142,10 @@ func (r *RecordingRegistrar) add(kind string, rule *Rule, opts []Option) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// 零值也可以直接使用（与 NewRecordingRegistrar 等价），避免 nil map 赋值 panic。
+	if r.counters == nil {
+		r.counters = make(map[string]int)
+	}
 	index := r.counters[kind]
 	r.counters[kind] = index + 1
 	if rule.ID == "" {
