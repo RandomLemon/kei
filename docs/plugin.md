@@ -164,7 +164,7 @@ func WithEventType(t EventType) Option
 func WithMatch(fn func(*Event) bool) Option
 ```
 
-`Rule.Platforms`/`Rule.BotIDs` 的 nil/空切片语义（nil 表示不过滤，非 nil 空切片表示任何平台/机器人都命中不了）、`WithBotIDs` 与每 bot 插件白名单的配合（引擎启动时经 `Router.UpdateRules` 收窄 `BotIDs`）以及 `WithPlatforms`/`WithKind`/`WithMatch` 的取「与」关系见 [engine.md](engine.md) 第 7、10 章。
+`Rule.Platforms`/`Rule.BotIDs` 的 nil/空切片语义（nil 表示不过滤，非 nil 空切片表示任何平台/机器人都命中不了）、`WithBotIDs` 与每 bot 插件白名单的配合（引擎启动时经 `Router.UpdateRules` 收窄 `BotIDs`；规则已有的非 nil 白名单与配置允许列表取交集，配置只能收窄不能放宽）以及 `WithPlatforms`/`WithKind`/`WithMatch` 的取「与」关系见 [engine.md](engine.md) 第 7、10 章。
 
 `WithMatch` 的断言在路由匹配阶段调用：它 panic 时只跳过该条规则（其余规则照常命中），框架记 `Error` 日志（带 `plugin`/`rule`/`event_id`/堆栈）并计入 `kei_rule_match_panics_total{plugin,rule}`；`Dispatch` 的聚合错误会包装 `ErrMatchPanic`。因此断言里仍应避免 panic，但一次 panic 不会波及同事件的其它插件。
 

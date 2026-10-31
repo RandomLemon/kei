@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -775,6 +776,55 @@ func TestDisabledBotExcludedFromPluginWhitelist(t *testing.T) {
 	}
 	if got := plugin.handledTexts(); len(got) != 1 || got[0] != "from-a" {
 		t.Fatalf("Handler 处理日志 = %v", got)
+	}
+}
+
+// TestPluginBotIDsNotWidenedByConfigWhitelist 验证配置白名单只能收窄、不能放宽
+// 插件自己用 WithBotIDs 声明的适用范围。
+func TestPluginBotIDsNotWidenedByConfigWhitelist(t *testing.T) {
+	ads := map[string]*mock.Adapter{"mock-a": newMock("mock-a"), "mock-b": newMock("mock-b")}
+	cfg := mockConfig(
+		config.BotConfig{Name: "mock-a", Adapter: "mock"},
+		config.BotConfig{Name: "mock-b", Adapter: "mock", Plugins: []string{"p"}},
+	)
+	var handled atomic.Int32
+	plugin := &bot.FuncPlugin{
+		Meta: bot.Metadata{Name: "p"},
+		OnSetup: func(_ context.Context, reg bot.Registrar) error {
+			reg.OnAll(func(context.Context, *bot.Event, bot.Reply) error {
+				handled.Add(1)
+				return nil
+			}, bot.WithBotIDs("mock-a"))
+			return nil
+		},
+	}
+	h := startEngine(t, cfg, []bot.Plugin{plugin}, ads)
+
+	for _, rule := range h.eng.Rules() {
+		if rule.Plugin != "p" {
+			continue
+		}
+		if len(rule.BotIDs) != 1 || rule.BotIDs[0] != "mock-a" {
+			t.Fatalf("配置白名单放宽了插件声明的 BotIDs: %v", rule.BotIDs)
+		}
+	}
+
+	if _, err := ads["mock-b"].InjectText(context.Background(), "from-b"); err != nil {
+		t.Fatalf("InjectText(mock-b): %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := handled.Load(); got != 0 {
+		t.Fatalf("规则不应在 mock-b 上执行, handled=%d", got)
+	}
+	if _, err := ads["mock-a"].InjectText(context.Background(), "from-a"); err != nil {
+		t.Fatalf("InjectText(mock-a): %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for handled.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("规则未在声明的 mock-a 上执行")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

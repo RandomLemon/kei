@@ -495,6 +495,12 @@ func (e *Engine) applyBotPluginFilter() error {
 				ids = append(ids, b.Name)
 			}
 		}
+		// 配置白名单只能收窄插件自己声明的 BotIDs，不能覆盖它：插件用
+		// WithBotIDs 限定只在其声明过的实例上生效时，配置不得把规则放宽到
+		// 其它 bot。nil 表示插件未限制，此时使用配置允许列表。
+		if rule.BotIDs != nil {
+			ids = intersect(ids, rule.BotIDs)
+		}
 		sort.Strings(ids)
 		rule.BotIDs = ids
 	})
@@ -650,6 +656,18 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// intersect 返回 a 与 b 的交集；结果总是非 nil，保持“空白名单匹配不到任何
+// bot”的语义（nil 才表示不过滤）。
+func intersect(a, b []string) []string {
+	out := make([]string, 0, min(len(a), len(b)))
+	for _, x := range a {
+		if contains(b, x) {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // waitGroup 等待 wg 结束，超时返回 false。

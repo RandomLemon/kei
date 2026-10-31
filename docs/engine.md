@@ -202,7 +202,7 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
 
 ### 7.6 规则适用范围与权限裁剪
 
-`applyBotPluginFilter` 在插件 `Setup` 完成、适配器启动之前运行，仅当**启用实例**中存在非空 `bots[].plugins` 白名单时才生效：对每条规则计算允许它的 bot 名列表（该 bot 白名单为空视为允许全部）并排序写入 `Rule.BotIDs`；任何 bot 都不允许的规则得到空切片，从而匹配不到任何事件。`Rule.BotIDs` 为 nil 表示不做 bot 过滤。
+`applyBotPluginFilter` 在插件 `Setup` 完成、适配器启动之前运行，仅当**启用实例**中存在非空 `bots[].plugins` 白名单时才生效：对每条规则计算允许它的 bot 名列表（该 bot 白名单为空视为允许全部）并排序写入 `Rule.BotIDs`；若规则自身已经用 `WithBotIDs` 设置非 nil 白名单，则取两者交集——配置只能收窄、不能放宽插件声明的适用范围。任何 bot 都不允许的规则得到空切片，从而匹配不到任何事件。`Rule.BotIDs` 为 nil 表示不做 bot 过滤。
 
 被 `bots[].enabled: false` 停用的实例（`config.BotConfig.IsEnabled()` 为 false，见 [configuration.md](configuration.md)）被完全排除在收窄之外：既不参与「是否存在非空白名单」的判断，也不写入 `Rule.BotIDs`。理由是停用实例根本收不到事件（`internal/adaptermgr` 的 `Build` 也不会为它装配适配器），若把它计入白名单，停用唯一配置了白名单的实例会把 `Rule.BotIDs` 收窄成空列表、连带误伤其他实例。相关日志字段 `bots` 记录的是启用实例数，而非 `cfg.Bots` 长度。
 
