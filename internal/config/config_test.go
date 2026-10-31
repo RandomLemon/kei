@@ -527,6 +527,11 @@ func TestValidateErrors(t *testing.T) {
 			substr: "bots[1].name",
 		},
 		{
+			name:   "bot 名非法字符",
+			yaml:   "bots:\n  - name: \"a:b\"\n    adapter: mock\n",
+			substr: "bots[0].name: \"a:b\" 只允许 [a-z0-9_-]",
+		},
+		{
 			name:   "未知顶层键",
 			yaml:   "bots:\n  - name: a\n    adapter: mock\nunknown: 1\n",
 			substr: "未知顶层键",

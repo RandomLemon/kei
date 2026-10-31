@@ -286,7 +286,7 @@ plugins:
 
 要点：
 
-- `bots[].adapter` 决定使用哪个适配器，其余键按适配器要求传入（拼错会打 warn 日志）。
+- `bots[].name` 是实例标识，只允许 `[a-z0-9_-]` 且全局唯一；`bots[].adapter` 决定使用哪个适配器，其余键按适配器要求传入（拼错会打 warn 日志）。
 - `bots[].enabled` 是实例级开关，**缺省 true**：写 `enabled: false` 只跳过该实例
   （不装配、不监听、不接收事件），可用于临时停用某个账号；也可用
   `KEI_BOTS_<BOTNAME>_ENABLED=false` 覆盖（bot 名规范化后比较，`qq-main` 即

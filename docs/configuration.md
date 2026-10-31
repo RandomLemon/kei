@@ -78,7 +78,7 @@ type Config struct {
 
 校验逐段进行，错误都带字段路径（`Config.validate` 及其方法 `AuthConfig.validate`、`LogConfig.validate`、`StorageConfig.validate`、`EngineConfig.validate`、`LimitsConfig.validate`）：
 
-- `bots` 可以为空（只运行插件时）；`bots[i].name` 非空且全局唯一；`bots[i].adapter` 非空且匹配 `^[a-z0-9_-]+$`；`bots[i].enabled` 必须是布尔（解码阶段报错，不参与此处校验）。
+- `bots` 可以为空（只运行插件时）；`bots[i].name` 非空、全局唯一且匹配 `^[a-z0-9_-]+$`；`bots[i].adapter` 非空且匹配 `^[a-z0-9_-]+$`；`bots[i].enabled` 必须是布尔（解码阶段报错，不参与此处校验）。
 - `log.level` 必须属于 `{debug, info, warn, error}`，`log.format` 属于 `{text, json}`（比较前转小写；空值留给 `applyDefaults`）。
 - `limits.*` 的速率与突发容量都不能为负；速率还必须是有限数值（`NaN`/`Inf` 报错，避免静默变成不限流）。
 - `auth.admin_users` 条目不能为空；带平台限定的 `platform:userID` 两侧都不能为空。
@@ -102,7 +102,7 @@ type BotConfig struct {
 }
 ```
 
-- `name`：实例名，即 `Event.BotID`、`SendRequest.BotID`、`Target.BotID` 使用的值；非空、全局唯一（重复时报 `config: bots[i].name: bot 名 %q 重复`）。
+- `name`：实例标识，即 `Event.BotID`、`SendRequest.BotID`、`Target.BotID` 与存储命名空间 `adapter:<botID>:` 使用的值；非空、全局唯一且只允许 `[a-z0-9_-]`（重复时报 `config: bots[i].name: bot 名 %q 重复`，非法字符报 `config: bots[i].name: %q 只允许 [a-z0-9_-]`）。限制字符集是为了避免 `:` 等字符让存储前缀与 `Event.SessionKey()` 产生歧义，并保证 `KEI_BOTS_*` 路径可稳定映射。
 - `adapter`：引用的适配器名。必须能解析为已注册的适配器，否则启动失败并列出已注册名（`internal/adaptermgr.Validate`）；被 `enabled: false` 禁用的实例或适配器都跳过该检查。
 - `enabled`：实例级开关，缺省启用（见下）；`enabled:`（键存在但无值）等同未配置，不是 `false`。
 - `plugins`：该实例的插件**白名单**。`Engine.applyBotPluginFilter` 只在存在非空白名单时收窄规则适用范围：每条规则只对「白名单为空（允许全部）或白名单包含该规则所属插件」的 bot 生效；任何 bot 都不允许的规则被置为匹配不到任何事件（`Rule.BotIDs` 为空切片）。被 `enabled: false` 停用的实例不参与「是否存在非空白名单」的判断，也不进 `Rule.BotIDs`，因此停用唯一配置了白名单的实例不会误伤其他实例。白名单里的名字不要求是已加载插件。

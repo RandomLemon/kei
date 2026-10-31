@@ -730,6 +730,12 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: bots[%d].name: bot 名 %q 重复", i, b.Name)
 		}
 		seen[b.Name] = struct{}{}
+		// bot 名是实例标识：会进入 Event.BotID、SessionKey、存储命名空间前缀与
+		// KEI_BOTS_* 环境变量路径，必须与插件/适配器名使用同一字符集，否则带
+		// ":" 的名字会与其它实例的存储前缀发生歧义。
+		if !namePattern.MatchString(b.Name) {
+			return fmt.Errorf("config: bots[%d].name: %q 只允许 [a-z0-9_-]", i, b.Name)
+		}
 		if b.Adapter == "" {
 			return fmt.Errorf("config: bots[%d].adapter: 不能为空", i)
 		}
