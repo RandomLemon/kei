@@ -53,6 +53,9 @@ func TestParseCommand(t *testing.T) {
 		{name: "无前缀", text: "echo hi", prefixes: []string{"/"}, want: nil},
 		{name: "只有前缀", text: "/", prefixes: []string{"/"}, want: nil},
 		{name: "前缀后只有空白", text: "/   ", prefixes: []string{"/"}, want: nil},
+		{name: "换行分隔命令与参数", text: "/echo\nhi", prefixes: []string{"/"}, want: &Command{Name: "echo", Args: []string{"hi"}, Raw: "hi"}},
+		{name: "回车与制表符分隔", text: "/echo\r\n\thi", prefixes: []string{"/"}, want: &Command{Name: "echo", Args: []string{"hi"}, Raw: "hi"}},
+		{name: "Unicode 空白分隔", text: "/echo\u00a0hi", prefixes: []string{"/"}, want: &Command{Name: "echo", Args: []string{"hi"}, Raw: "hi"}},
 		{name: "空文本", text: "   ", prefixes: []string{"/"}, want: nil},
 		{name: "无前缀列表", text: "/echo", prefixes: nil, want: nil},
 	}

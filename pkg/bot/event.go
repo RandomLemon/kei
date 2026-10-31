@@ -3,6 +3,7 @@ package bot
 import (
 	"strings"
 	"time"
+	"unicode"
 )
 
 // EventType 是事件的分类，适配器负责把平台事件映射到这些类型。
@@ -120,13 +121,13 @@ func ParseCommand(text string, prefixes []string) *Command {
 	if body == "" {
 		return nil
 	}
-	body = strings.TrimLeft(body, " \t")
+	body = strings.TrimLeftFunc(body, unicode.IsSpace)
 	if body == "" {
 		return nil
 	}
 	name, rest := body, ""
-	if i := strings.IndexAny(body, " \t"); i >= 0 {
-		name, rest = body[:i], strings.TrimLeft(body[i+1:], " \t")
+	if i := strings.IndexFunc(body, unicode.IsSpace); i >= 0 {
+		name, rest = body[:i], strings.TrimLeftFunc(body[i:], unicode.IsSpace)
 	}
 	if name == "" {
 		return nil
