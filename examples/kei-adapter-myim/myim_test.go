@@ -365,6 +365,29 @@ func TestCallbackAcksBeforeEmit(t *testing.T) {
 	sink.unblock()
 }
 
+// TestCallbackPathWithServeMuxMetaCharacters 验证路径按字面量精确匹配：
+// 含 "{" 等 ServeMux 元字符的配置不会在 Start 中 panic。
+func TestCallbackPathWithServeMuxMetaCharacters(t *testing.T) {
+	t.Parallel()
+
+	const path = "/hook/{token"
+	ad := newTestAdapter(t, Options{
+		BotID:      "meta",
+		ListenAddr: "127.0.0.1:0",
+		Path:       path,
+		HTTPClient: &http.Client{Timeout: time.Second},
+	})
+	r := startRunning(t, ad)
+
+	status, body := postCallback(t, ad.Addr(), path, sampleEvent)
+	if status != http.StatusAccepted {
+		t.Fatalf("回调状态码 = %d，期望 %d（body=%s）", status, http.StatusAccepted, body)
+	}
+	if events := r.sink.wait(t, 1); len(events) != 1 || events[0].ID != "evt-1" {
+		t.Fatalf("事件未按预期上行: %+v", events)
+	}
+}
+
 // TestEventUplink 验证回调上行事件的平台、BotID 与 ID 稳定性。
 func TestEventUplink(t *testing.T) {
 	t.Parallel()

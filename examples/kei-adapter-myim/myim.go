@@ -172,9 +172,17 @@ func (a *Adapter) Start(ctx context.Context, sink bot.EventSink) error {
 		a.mu.Unlock()
 		return fmt.Errorf("myim: 监听 %s 失败: %w", a.opts.ListenAddr, err)
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc(a.callbackPath(), a.handleCallback)
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
+	// 直接按路径精确分派，不经过 http.ServeMux：配置里的路径只校验了 "/" 前缀，
+	// 含 ServeMux 元字符（如 "{"）时注册 pattern 会 panic。
+	callbackPath := a.callbackPath()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != callbackPath {
+			http.NotFound(w, r)
+			return
+		}
+		a.handleCallback(w, r)
+	})
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	queue := make(chan *bot.Event, queueSize)
 	stop := make(chan struct{})
 	done := make(chan struct{})

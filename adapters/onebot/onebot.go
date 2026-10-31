@@ -557,28 +557,32 @@ func (a *Adapter) shutdownWS(ctx context.Context) error {
 // 按拓扑只注册实际启用的入口，其它路径返回 404，避免把任意请求都当作事件处理。
 // 路径模式匹配到子路径时（例如 /onebot/event/extra）回 404，而不是被宽松匹配吞掉。
 func (a *Adapter) routes(sink bot.EventSink) http.Handler {
-	mux := http.NewServeMux()
-	exact := func(pattern string, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != pattern {
-				http.NotFound(w, r)
-				return
-			}
-			h(w, r)
-		})
-	}
+	var httpHandler, wsHandler http.Handler
 	if a.listensHTTP() {
-		exact(a.path, adapterkit.EventSourceOptions{
+		httpHandler = adapterkit.EventSourceOptions{
 			Name:      platformName,
 			Authorize: a.authorize,
 			Parse:     a.parseEvent,
 			Logger:    a.log,
-		}.Handler(sink))
+		}.Handler(sink)
 	}
 	if a.listensWS() {
-		exact(a.wsPath, a.wsHandler())
+		wsHandler = a.wsHandler()
 	}
-	return mux
+	// 直接按 r.URL.Path 精确分派，不经过 http.ServeMux：配置中的 path/ws_path
+	// 只保证以 "/" 开头，而 ServeMux 的 pattern 语法会把 "{"、空白等视为非法并
+	// panic；panic 发生在 Start 的适配器 goroutine 中会直接带崩进程。
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if httpHandler != nil && r.URL.Path == a.path {
+			httpHandler.ServeHTTP(w, r)
+			return
+		}
+		if wsHandler != nil && r.URL.Path == a.wsPath {
+			wsHandler.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
 }
 
 // parseEvent 把 OneBot 上报的请求体解析为统一事件。
