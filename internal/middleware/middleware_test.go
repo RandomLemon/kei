@@ -558,6 +558,36 @@ func TestDedupColdAndHot(t *testing.T) {
 	}
 }
 
+// TestDedupScopedByPlatformAndBot 验证去重按平台与 bot 实例隔离：
+// 不同 bot/平台的相同事件 ID 不互相拦截，同一作用域内仍拦截。
+func TestDedupScopedByPlatformAndBot(t *testing.T) {
+	set := dedup.New(64, time.Minute)
+	sink := &countingHandler{}
+	chain := Chain(Dedup(set))
+	ctx := bot.WithRoute(context.Background(), &bot.Route{Plugin: "p", RuleID: "rule-a"})
+
+	first := newEvent()
+	if err := chain(sink.handle)(ctx, first, nil); err != nil {
+		t.Fatalf("首个事件被拦截: %v", err)
+	}
+	second := newEvent()
+	second.BotID = "bot-2"
+	if err := chain(sink.handle)(ctx, second, nil); err != nil {
+		t.Fatalf("不同 bot 的事件被误判重复: %v", err)
+	}
+	third := newEvent()
+	third.Platform = "other"
+	if err := chain(sink.handle)(ctx, third, nil); err != nil {
+		t.Fatalf("不同平台的事件被误判重复: %v", err)
+	}
+	if err := chain(sink.handle)(ctx, first, nil); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("同一作用域重复事件未被拦截: %v", err)
+	}
+	if sink.calls != 3 {
+		t.Fatalf("handler 调用次数不符: got %d, want 3", sink.calls)
+	}
+}
+
 // TestDedupNoRoute 验证无路由信息时退化为事件 ID 去重。
 func TestDedupNoRoute(t *testing.T) {
 	set := dedup.New(64, time.Minute)

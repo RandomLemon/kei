@@ -466,7 +466,7 @@ type Adapter interface {
 - 平台回调要在平台超时前返回，业务事件经 `sink.Emit` 异步投递。
 - 用 `bot.Key*` 常量读写 `Segment.Data`，不要写字面量键。
 - 发送前调用 `bot.Degrade(msg, a.Capabilities())`，平台不支持的消息段会自动降级为文本。
-- `Event.ID` 用于去重，必须稳定且平台内唯一（例如 OneBot 用 `message_id`）。
+- `Event.ID` 用于去重，必须稳定且在同一 bot 实例内唯一（例如 OneBot 用 `message_id`）；总线按 `Platform + BotID + Event.ID` 判定重复，多实例/多平台上的相同 ID 不会互相影响。
 
 已内置的适配器与能力：
 

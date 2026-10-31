@@ -184,17 +184,18 @@ func (b *Bus) Publish(_ context.Context, ev *bot.Event) (enqueued bool, err erro
 	}
 	key := ev.SessionKey()
 	sh := b.shards[shardIndex(key, len(b.shards))]
-	set := b.dedups[shardIndex(ev.ID, len(b.dedups))]
+	id := dedupID(ev)
+	set := b.dedups[shardIndex(id, len(b.dedups))]
 
 	// 所有入队与去重操作都在 sh.mu 内完成，因此下面的容量检查与发送之间不存在
-	// 并发写入，容量足够时发送一定不会阻塞；去重锁也在 sh.mu 之内，但按事件 ID
+	// 并发写入，容量足够时发送一定不会阻塞；去重锁也在 sh.mu 之内，但按去重键
 	// 分散到多个集合，投递方之间不会在同一把锁上串行。
 	sh.mu.Lock()
 	if sh.closed {
 		sh.mu.Unlock()
 		return false, ErrClosed
 	}
-	if set.Seen(ev.ID) {
+	if set.Seen(id) {
 		sh.mu.Unlock()
 		b.stats.duplicated.Add(1)
 		return false, nil
@@ -206,8 +207,8 @@ func (b *Bus) Publish(_ context.Context, ev *bot.Event) (enqueued bool, err erro
 		b.logDrop(sh, ev, key)
 		return false, fmt.Errorf("eventbus: publish %q: %w", ev.ID, ErrQueueFull)
 	}
-	if !set.Add(ev.ID) {
-		// 同一 ID 但不同会话的并发投递（各自持有不同分片锁）兜底去重。
+	if !set.Add(id) {
+		// 同一去重键但不同会话的并发投递（各自持有不同分片锁）兜底去重。
 		sh.mu.Unlock()
 		b.stats.duplicated.Add(1)
 		return false, nil
@@ -219,6 +220,18 @@ func (b *Bus) Publish(_ context.Context, ev *bot.Event) (enqueued bool, err erro
 	sh.mu.Unlock()
 	b.stats.published.Add(1)
 	return true, nil
+}
+
+// dedupID 返回事件在总线去重集合中的键。
+//
+// 平台与 bot 实例是去重作用域的一部分：不同平台或同一平台的不同 bot 可能产生
+// 相同的平台事件 ID（例如两个 OneBot 账号的 message_id 都从 1 开始），它们不是
+// 重复事件，必须分别处理。空 ID 无法去重，返回空串保持原有「空 ID 一律放行」语义。
+func dedupID(ev *bot.Event) string {
+	if ev == nil || ev.ID == "" {
+		return ""
+	}
+	return ev.Platform + "\x00" + ev.BotID + "\x00" + ev.ID
 }
 
 // dropLogInterval 是同一分片「队列已满」告警的最小间隔。

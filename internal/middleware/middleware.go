@@ -277,9 +277,10 @@ func observeOverrun(ctx context.Context, e *bot.Event, results <-chan error, gra
 // 全局中间件链是按规则包裹执行的：同一事件可能命中多条规则，每条规则都会
 // 走一遍链。因此去重键必须带规则标识，否则第二条命中规则会被误判为重复。
 //
-// 键的构造顺序：有路由信息时以 route.RuleID + "|" 为前缀；基础键优先取 e.ID，
-// 为空时退化为 SessionKey + "|" + 消息 ID（无消息时只用 SessionKey）。基础键
-// 为空（拿不到任何标识）时放行，不做去重。set 为 nil 时透传。
+// 键的构造顺序：有路由信息时以 route.RuleID + "|" 为前缀；基础键优先取
+// Platform + BotID + e.ID（平台与实例是去重作用域，避免不同 bot/平台的事件 ID
+// 碰撞互伤），e.ID 为空时退化为 SessionKey + "|" + 消息 ID（无消息时只用
+// SessionKey）。基础键为空（拿不到任何标识）时放行，不做去重。set 为 nil 时透传。
 func Dedup(set *dedup.Set) bot.Middleware {
 	if set == nil {
 		return passthrough
@@ -364,8 +365,10 @@ func dedupKey(ctx context.Context, e *bot.Event) string {
 	if e == nil {
 		return ""
 	}
-	base := e.ID
-	if base == "" {
+	base := ""
+	if e.ID != "" {
+		base = e.Platform + "\x00" + e.BotID + "\x00" + e.ID
+	} else {
 		base = sessionKey(e)
 		if e.Message != nil && e.Message.ID != "" {
 			base += "|" + e.Message.ID

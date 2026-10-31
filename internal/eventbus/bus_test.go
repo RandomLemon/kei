@@ -370,6 +370,34 @@ func TestDedupAcrossShardsByEventID(t *testing.T) {
 	}
 }
 
+// TestDedupScopedByPlatformAndBot 验证去重键包含平台与 bot 实例：
+// 不同 bot/平台产生相同事件 ID 时必须各处理一次，不能互相判重。
+func TestDedupScopedByPlatformAndBot(t *testing.T) {
+	b := New(Options{Workers: 2, QueueSize: 16, Logger: testLogger()})
+	defer closeBus(t, b)
+
+	rec := &recorder{}
+	mustSubscribe(t, b, rec.handler)
+
+	first := newEvent("s", "same-id")
+	second := newEvent("s", "same-id")
+	second.BotID = "bot-2"
+	third := newEvent("s", "same-id")
+	third.Platform = "other"
+	mustPublish(t, b, first)
+	mustPublish(t, b, second)
+	mustPublish(t, b, third)
+	// 同一作用域内的重复仍被拦截。
+	mustPublish(t, b, first)
+	closeBus(t, b)
+
+	assertIDs(t, rec.snapshot(), []string{"same-id", "same-id", "same-id"})
+	stats := b.Stats()
+	if stats.Published != 3 || stats.Duplicated != 1 || stats.Handled != 3 {
+		t.Fatalf("Stats = %+v, 期望 Published=3 Duplicated=1 Handled=3", stats)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 队列满
 // ---------------------------------------------------------------------------
