@@ -643,6 +643,96 @@ func TestRunStartupFailureClosesBus(t *testing.T) {
 	}
 }
 
+// stageBudgetAdapter 的 Start/Stop 都阻塞到 ctx 结束，用于耗尽单个关闭阶段的预算。
+type stageBudgetAdapter struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (a *stageBudgetAdapter) Name() string { return "stage-budget" }
+
+func (a *stageBudgetAdapter) Start(ctx context.Context, _ bot.EventSink) error {
+	a.once.Do(func() { close(a.started) })
+	<-ctx.Done()
+	return nil
+}
+
+func (a *stageBudgetAdapter) Stop(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (a *stageBudgetAdapter) Send(context.Context, *bot.SendRequest) (*bot.SendResult, error) {
+	return nil, errors.New("unsupported")
+}
+
+func (a *stageBudgetAdapter) Capabilities() bot.Capabilities { return bot.Capabilities{} }
+
+// stopCtxPlugin 记录 Stop 收到的 ctx 状态。
+type stopCtxPlugin struct {
+	stopErr chan error
+}
+
+func (p *stopCtxPlugin) Metadata() bot.Metadata { return bot.Metadata{Name: "stop-ctx"} }
+func (p *stopCtxPlugin) Setup(context.Context, bot.Registrar) error {
+	return nil
+}
+func (p *stopCtxPlugin) Start(context.Context) error { return nil }
+func (p *stopCtxPlugin) Stop(ctx context.Context) error {
+	p.stopErr <- ctx.Err()
+	return nil
+}
+
+// TestShutdownStagesGetIndependentBudgets 验证一个适配器耗尽 Stop 预算后，
+// 总线排空与插件停止仍拿到未取消的 ctx，且总线最终关闭。
+func TestShutdownStagesGetIndependentBudgets(t *testing.T) {
+	ad := &stageBudgetAdapter{started: make(chan struct{})}
+	plugin := &stopCtxPlugin{stopErr: make(chan error, 1)}
+	eng, err := engine.New(engine.Options{
+		Config:          &config.Config{},
+		Logger:          slog.New(slog.DiscardHandler),
+		Adapters:        []engine.AdapterBinding{{BotID: "stage", Adapter: ad}},
+		Plugins:         []bot.Plugin{plugin},
+		ShutdownTimeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- eng.Run(ctx) }()
+	select {
+	case <-ad.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("适配器未启动")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run 未在超时内退出")
+	}
+
+	select {
+	case err := <-plugin.stopErr:
+		if err != nil {
+			t.Fatalf("插件 Stop 收到已取消的 ctx: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("插件 Stop 未被调用")
+	}
+	_, perr := eng.Bus().Publish(context.Background(), &bot.Event{
+		ID: "after-shutdown", Platform: "p", BotID: "b", Sender: &bot.User{ID: "u"},
+	})
+	if !errors.Is(perr, eventbus.ErrClosed) {
+		t.Fatalf("关闭后总线仍可接收事件: err=%v", perr)
+	}
+}
+
 func TestRunRejectsSecondCall(t *testing.T) {
 	ad := newMock("mock-main")
 	h := startEngine(t, mockConfig(config.BotConfig{Name: "mock-main", Adapter: "mock"}), nil, map[string]*mock.Adapter{"mock-main": ad})

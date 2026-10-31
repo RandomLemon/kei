@@ -76,7 +76,8 @@ type Options struct {
 	EventTimeout time.Duration
 	// RuleTimeout 是单条规则 Handler 的超时，默认 10s。
 	RuleTimeout time.Duration
-	// ShutdownTimeout 是优雅关闭的总超时，默认 10s。
+	// ShutdownTimeout 是每个优雅关闭阶段的超时（每个适配器、总线排空、等待
+	// 适配器 goroutine、插件停止各自一份），默认 10s。
 	ShutdownTimeout time.Duration
 
 	// BusWorkers 是事件总线分片 worker 数，默认 4。
@@ -425,17 +426,20 @@ func drainErrors(ch <-chan error) []error {
 }
 
 // shutdown 按规范顺序完成优雅关闭。
+//
+// 每个阶段（每个适配器、总线排空、等待适配器 goroutine、插件停止）各自使用一份
+// ShutdownTimeout 预算，而不是共享同一个 ctx：某个适配器的 Stop 吃掉整个预算时，
+// 后续插件仍能拿到未取消的 ctx 完成清理。代价是最坏总耗时按阶段数增长。
 func (e *Engine) shutdown(wg *sync.WaitGroup) {
-	timeout := orDuration(e.opts.ShutdownTimeout, defaultShutdownTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
 	e.log.Info("engine shutting down")
 
 	// 1. 停止接收：适配器停止接收新事件。
 	var stopErrs []error
 	for _, b := range e.opts.Adapters {
-		if err := b.Adapter.Stop(ctx); err != nil {
+		ctx, cancel := e.shutdownStageContext()
+		err := b.Adapter.Stop(ctx)
+		cancel()
+		if err != nil {
 			stopErrs = append(stopErrs, fmt.Errorf("adapter %s: %w", b.BotID, err))
 		}
 	}
@@ -444,22 +448,33 @@ func (e *Engine) shutdown(wg *sync.WaitGroup) {
 	}
 
 	// 2. 等待已入队事件处理完毕。
-	if err := e.bus.Close(ctx); err != nil {
+	busCtx, busCancel := e.shutdownStageContext()
+	if err := e.bus.Close(busCtx); err != nil {
 		e.log.Warn("event bus close incomplete", "error", err)
 	}
+	busCancel()
 	// 3. 等待适配器 goroutine 退出。
-	if !waitGroup(wg, ctx) {
+	waitCtx, waitCancel := e.shutdownStageContext()
+	if !waitGroup(wg, waitCtx) {
 		e.log.Warn("adapter start goroutines did not exit before timeout")
 	}
+	waitCancel()
 	// 4. 停止插件（逆序）。
-	if err := e.plugins.Stop(ctx); err != nil {
+	pluginCtx, pluginCancel := e.shutdownStageContext()
+	if err := e.plugins.Stop(pluginCtx); err != nil {
 		e.log.Warn("plugin stop failed", "error", err)
 	}
+	pluginCancel()
 	e.closeOwnStorage()
 	e.log.Info("engine stopped",
 		"published", e.bus.Stats().Published,
 		"handled", e.bus.Stats().Handled,
 	)
+}
+
+// shutdownStageContext 返回一个关闭阶段专用的超时 ctx。
+func (e *Engine) shutdownStageContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), orDuration(e.opts.ShutdownTimeout, defaultShutdownTimeout))
 }
 
 // applyBotPluginFilter 依据每个 bot 的插件白名单裁剪规则适用范围。

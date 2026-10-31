@@ -128,7 +128,7 @@ type EngineConfig struct {
 	EventTimeout time.Duration `yaml:"event_timeout"`
 	// RuleTimeout 是单条规则 Handler 的执行超时，默认 10s。
 	RuleTimeout time.Duration `yaml:"rule_timeout"`
-	// ShutdownTimeout 是优雅关闭总超时，默认 10s。
+	// ShutdownTimeout 是每个优雅关闭阶段的超时，默认 10s。
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 	// BusWorkers 是事件总线分片 worker 数，默认 4。
 	BusWorkers int `yaml:"bus_workers"`

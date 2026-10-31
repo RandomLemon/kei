@@ -33,7 +33,7 @@ metrics:
 #   command_prefixes: ["/"]     # 命令前缀；改为 ["!"] 即 !manage ping
 #   event_timeout: 30s          # 单条事件整体处理超时
 #   rule_timeout: 10s           # 单条规则 Handler 执行超时
-#   shutdown_timeout: 10s       # 优雅关闭总超时
+#   shutdown_timeout: 10s       # 每个优雅关闭阶段的超时
 #   bus_workers: 4              # 事件总线分片 worker 数
 #   bus_queue_size: 256         # 每个分片队列容量
 #   dedup_ttl: 5m               # 事件去重时间窗

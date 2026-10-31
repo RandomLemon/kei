@@ -466,12 +466,20 @@ func (c *wsConn) writeFrame(opcode byte, payload []byte, deadline time.Time) err
 
 // closeWith 发送关闭帧后关闭底层连接；可重复调用，只有第一次生效。
 func (c *wsConn) closeWith(code uint16, reason []byte) error {
+	return c.closeWithDeadline(code, reason, time.Now().Add(wsWriteTimeout))
+}
+
+// closeWithDeadline 同 closeWith，但关闭帧的写入使用调用方给的 deadline。
+//
+// shutdown 路径用它把关闭帧写入限制在自己的预算内；超时后连接仍会被关闭，
+// 只是对端可能收不到关闭帧。
+func (c *wsConn) closeWithDeadline(code uint16, reason []byte, deadline time.Time) error {
 	var err error
 	c.closeOnce.Do(func() {
 		payload := make([]byte, 2, 2+len(reason))
 		binary.BigEndian.PutUint16(payload, code)
 		payload = append(payload, reason...)
-		_ = c.writeFrame(wsOpClose, payload, time.Now().Add(wsWriteTimeout))
+		_ = c.writeFrame(wsOpClose, payload, deadline)
 		err = c.conn.Close()
 	})
 	return err

@@ -64,7 +64,7 @@ type Config struct {
 | `engine` | `command_prefixes` | `EngineConfig.CommandPrefixes` | []string | 空（引擎用 `["/"]`） | 命令前缀列表；每项去空白后必须非空 |
 | `engine` | `event_timeout` | `EngineConfig.EventTimeout` | 时长或秒数 | `0`（引擎 30s） | 单条事件整体处理超时 |
 | `engine` | `rule_timeout` | `EngineConfig.RuleTimeout` | 时长或秒数 | `0`（引擎 10s） | 单条规则 Handler 执行超时 |
-| `engine` | `shutdown_timeout` | `EngineConfig.ShutdownTimeout` | 时长或秒数 | `0`（引擎 10s） | 优雅关闭总超时 |
+| `engine` | `shutdown_timeout` | `EngineConfig.ShutdownTimeout` | 时长或秒数 | `0`（引擎 10s） | 每个优雅关闭阶段的超时 |
 | `engine` | `bus_workers` | `EngineConfig.BusWorkers` | int | `0`（引擎 4） | 事件总线分片 worker 数 |
 | `engine` | `bus_queue_size` | `EngineConfig.BusQueueSize` | int | `0`（引擎 256） | 每个分片队列容量 |
 | `engine` | `dedup_ttl` | `EngineConfig.DedupTTL` | 时长或秒数 | `0`（引擎 5m） | 事件去重时间窗 |
@@ -202,7 +202,7 @@ engine:
   command_prefixes: ["!", "/"]   # 命令前缀；缺省 ["/"]，改为 ["!"] 后命令变成 !manage ping
   event_timeout: 30s             # 单条事件整体处理超时
   rule_timeout: 10s              # 单条规则 Handler 执行超时
-  shutdown_timeout: 10s          # 优雅关闭总超时
+  shutdown_timeout: 10s          # 每个优雅关闭阶段的超时
   bus_workers: 4                 # 事件总线分片 worker 数
   bus_queue_size: 256            # 每个分片队列容量
   dedup_ttl: 5m                  # 事件去重时间窗

@@ -211,7 +211,18 @@ func (h *wsHub) shutdown(ctx context.Context) error {
 	h.mu.Unlock()
 
 	for _, s := range sessions {
-		_ = s.conn.closeWith(wsCloseGoingAway, nil)
+		if ctx.Err() != nil {
+			break
+		}
+		// 关闭帧写入也受 shutdown 预算约束；预算耗尽后由下面硬关连接。
+		deadline := time.Now().Add(wsWriteTimeout)
+		if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+			deadline = d
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		_ = s.conn.closeWithDeadline(wsCloseGoingAway, nil, deadline)
 	}
 
 	done := make(chan struct{})

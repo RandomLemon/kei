@@ -63,7 +63,7 @@ type AdapterBinding struct {
 | --- | --- | --- |
 | `EventTimeout` | 单条事件整体处理超时 | 30s |
 | `RuleTimeout` | 单条规则中插件中间件与 Handler 的执行超时（Timeout 中间件，框架自身判定在其之外，见 10.5） | 10s |
-| `ShutdownTimeout` | 优雅关闭总超时 | 10s |
+| `ShutdownTimeout` | 每个优雅关闭阶段的超时（适配器 Stop、总线排空、等待适配器 goroutine、插件 Stop 各自一份） | 10s |
 | `BusWorkers` | 事件总线分片 worker 数 | 4 |
 | `BusQueueSize` | 每个分片队列容量 | 256 |
 | `DedupTTL` | 事件去重时间窗 | 5m |
@@ -107,7 +107,7 @@ type AdapterBinding struct {
 5. 引擎自有的内存存储（`ownStorage`，即 `Options.Storage` 为 nil 时内部创建）关闭。
 6. 记录 `engine stopped` 日志，携带总线的 `published`/`handled` 计数。
 
-关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；总超时由 `ShutdownTimeout`（默认 10s）约束。`Run` 的返回值是收敛后的适配器错误（多个失败用 `errors.Join` 合并），并同时以 `engine aborted by adapter failure` 记为 `Error` 日志；仅 ctx 取消且无任何适配器错误时才返回 nil。
+关闭阶段的所有错误都不阻止退出流程，只写 `Warn`/`Error` 日志；每个阶段各自使用一份 `ShutdownTimeout`（默认 10s）预算，某个适配器 Stop 耗尽自己的预算不会让后续总线排空/插件 Stop 拿到已取消的 ctx。`Run` 的返回值是收敛后的适配器错误（多个失败用 `errors.Join` 合并），并同时以 `engine aborted by adapter failure` 记为 `Error` 日志；仅 ctx 取消且无任何适配器错误时才返回 nil。
 
 优雅退出的触发点是 `cmd/bot/main.go` 的 `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`（门面本身只消费传入的 ctx）；取消后 `Run` 走上述关闭路径，因此已入队事件不会丢失（`internal/engine` 的 `TestGracefulShutdownDrainsQueuedEvents` 覆盖该行为）。
 
