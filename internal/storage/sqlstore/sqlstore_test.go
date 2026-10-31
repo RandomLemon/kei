@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,6 +217,51 @@ func TestGetLazyDeleteFailureLogged(t *testing.T) {
 	}
 	if v, ok := recordAttr(*rec, "error"); !ok || v.String() == "" {
 		t.Fatalf("Debug 日志缺少非空 error: %v (ok=%v)", v, ok)
+	}
+}
+
+// TestGetLazyDeleteKeepsConcurrentlyRefreshedValue 验证惰性删除带过期谓词：
+// Get 读到过期行后、DELETE 执行前，另一写入方把该键刷新为新值，DELETE 不得
+// 把这条活数据删掉。用 GORM 删除回调模拟这个交错。
+func TestGetLazyDeleteKeepsConcurrentlyRefreshedValue(t *testing.T) {
+	db := openGorm(t, filepath.Join(t.TempDir(), "k.db"))
+	now := time.Now()
+	st, err := NewWithClock(db, 0, func() time.Time { return now.Add(2 * time.Minute) }, nil)
+	if err != nil {
+		t.Fatalf("NewWithClock: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	// 以过去的时钟写入短期键，使当前时钟下已过期。
+	expiry := now.Add(time.Minute)
+	expired := Entry{Key: "k", Value: []byte("old"), ExpiresAt: &expiry}
+	if err := db.Create(&expired).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var refreshed atomic.Bool
+	if err := db.Callback().Delete().Before("gorm:delete").Register("test:refresh_before_delete", func(tx *gorm.DB) {
+		if refreshed.Swap(true) {
+			return
+		}
+		if err := tx.Exec("UPDATE kei_storage SET value = ?, expires_at = ? WHERE key = ?",
+			[]byte("fresh"), now.Add(10*time.Minute), "k").Error; err != nil {
+			t.Errorf("刷新行失败: %v", err)
+		}
+	}); err != nil {
+		t.Fatalf("注册删除回调: %v", err)
+	}
+
+	if _, err := st.Get(ctx, "k"); !errors.Is(err, bot.ErrNotFound) {
+		t.Fatalf("过期键 Get = %v, want bot.ErrNotFound", err)
+	}
+	var count int64
+	if err := db.Model(&Entry{}).Where(whereKey("k")).Count(&count).Error; err != nil {
+		t.Fatalf("统计行: %v", err)
+	}
+	if count != 1 {
+		t.Fatal("惰性删除误删了并发刷新后的新值")
 	}
 }
 

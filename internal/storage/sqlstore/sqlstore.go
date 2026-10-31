@@ -108,12 +108,17 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if e.ExpiresAt != nil && !e.ExpiresAt.After(s.now()) {
+	if now := s.now(); e.ExpiresAt != nil && !e.ExpiresAt.After(now) {
 		// 惰性清理：过期行 best-effort 删除，失败不改变返回值（调用方仍然只是
-		// 「键不存在」）。这里用 Debug 而非 janitor 的 Warn：读取路径高频，失败
-		// 通常只是「该行已被后台清理」或并发删除，属预期噪声；只有后台清理
-		// 长期失败才意味着表在无界增长，故那里用 Warn。
-		if err := s.db.WithContext(ctx).Where(whereKey(key)).Delete(&Entry{}).Error; err != nil {
+		// 「键不存在」）。删除必须带过期谓词：读到过期行与执行 DELETE 之间，
+		// 并发 Set 可能已写入新值；只按 key 删除会误删这条刚写入的活数据。
+		// 这里用 Debug 而非 janitor 的 Warn：读取路径高频，失败通常只是「该行
+		// 已被后台清理」或并发删除，属预期噪声；只有后台清理长期失败才意味着
+		// 表在无界增长，故那里用 Warn。
+		if err := s.db.WithContext(ctx).
+			Where(whereKey(key)).
+			Where("expires_at IS NOT NULL AND expires_at <= ?", now).
+			Delete(&Entry{}).Error; err != nil {
 			s.log.Debug("sqlstore: 惰性清理过期键失败", "key", key, "error", err)
 		}
 		return nil, bot.ErrNotFound
