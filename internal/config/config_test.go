@@ -552,6 +552,16 @@ func TestValidateErrors(t *testing.T) {
 			substr: "limits.send_burst",
 		},
 		{
+			name:   "limits NaN 速率",
+			yaml:   "bots:\n  - name: a\n    adapter: mock\nlimits:\n  handler_rate: .nan\n",
+			substr: "limits.handler_rate: 需要有限数值",
+		},
+		{
+			name:   "limits Inf 速率",
+			yaml:   "bots:\n  - name: a\n    adapter: mock\nlimits:\n  send_rate: .inf\n",
+			substr: "limits.send_rate: 需要有限数值",
+		},
+		{
 			name:   "非法 log.level",
 			yaml:   "log:\n  level: infoo\nbots:\n  - name: a\n    adapter: mock\n",
 			substr: "log.level",
@@ -610,6 +620,18 @@ func TestLogValuesAccepted(t *testing.T) {
 	if _, err := LoadBytes([]byte("bots:\n  - name: a\n    adapter: mock\n"),
 		[]string{"KEI_LOG_FORMAT=logfmt"}); err == nil || !strings.Contains(err.Error(), "log.format") {
 		t.Fatalf("非法 KEI_LOG_FORMAT 应报 log.format 错误: %v", err)
+	}
+}
+
+// TestNonFiniteRateEnvRejected 验证环境变量注入的 NaN/Inf 同样被校验拦截。
+func TestNonFiniteRateEnvRejected(t *testing.T) {
+	for _, env := range []string{"KEI_LIMITS_HANDLER_RATE=NaN", "KEI_LIMITS_SEND_RATE=+Inf"} {
+		t.Run(env, func(t *testing.T) {
+			_, err := LoadBytes([]byte(storageBaseYAML), []string{env})
+			if err == nil || !strings.Contains(err.Error(), "需要有限数值") {
+				t.Fatalf("错误 = %v, 期望拒绝非有限速率", err)
+			}
+		})
 	}
 }
 

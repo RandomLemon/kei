@@ -80,7 +80,7 @@ type Config struct {
 
 - `bots` 可以为空（只运行插件时）；`bots[i].name` 非空且全局唯一；`bots[i].adapter` 非空且匹配 `^[a-z0-9_-]+$`；`bots[i].enabled` 必须是布尔（解码阶段报错，不参与此处校验）。
 - `log.level` 必须属于 `{debug, info, warn, error}`，`log.format` 属于 `{text, json}`（比较前转小写；空值留给 `applyDefaults`）。
-- `limits.*` 的速率与突发容量都不能为负。
+- `limits.*` 的速率与突发容量都不能为负；速率还必须是有限数值（`NaN`/`Inf` 报错，避免静默变成不限流）。
 - `auth.admin_users` 条目不能为空；带平台限定的 `platform:userID` 两侧都不能为空。
 - 插件名不能为空；适配器名不能为空且匹配 `^[a-z0-9_-]+$`。
 - `storage.type` 非空且匹配 `^[a-z0-9_-]+$`；类型是否存在不在配置层校验（由装配期负责），`dsn` 是否必填也不在此校验（由各后端负责）。

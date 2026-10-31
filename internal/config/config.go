@@ -920,6 +920,9 @@ func (l LimitsConfig) validate() error {
 		{"limits.send_rate", l.SendRate},
 	}
 	for _, r := range rates {
+		if math.IsNaN(r.value) || math.IsInf(r.value, 0) {
+			return fmt.Errorf("config: %s: 需要有限数值", r.path)
+		}
 		if r.value < 0 {
 			return fmt.Errorf("config: %s: 不能为负数", r.path)
 		}
