@@ -83,6 +83,8 @@ func TestConfigIsolatedFromCaller(t *testing.T) {
 		"list":   []any{"x"},
 		"names":  []string{"n1"},
 		"m":      map[string]string{"mk": "mv"},
+		"ports":  []int{80},
+		"flags":  map[string]bool{"a": true},
 	}
 	cfg := NewConfig(src)
 
@@ -92,6 +94,8 @@ func TestConfigIsolatedFromCaller(t *testing.T) {
 	src["list"].([]any)[0] = "changed"
 	src["names"].([]string)[0] = "changed"
 	src["m"].(map[string]string)["mk"] = "changed"
+	src["ports"].([]int)[0] = 8080
+	src["flags"].(map[string]bool)["a"] = false
 
 	if got := cfg.String("k", ""); got != "v" {
 		t.Fatalf("改源 map 后 String = %q, want v", got)
@@ -110,6 +114,8 @@ func TestConfigIsolatedFromCaller(t *testing.T) {
 	raw["list"].([]any)[0] = "hacked"
 	raw["names"].([]string)[0] = "hacked"
 	raw["m"].(map[string]string)["mk"] = "hacked"
+	raw["ports"].([]int)[0] = 1
+	raw["flags"].(map[string]bool)["a"] = false
 
 	if got := cfg.String("k", ""); got != "v" {
 		t.Fatalf("改 Raw() 副本后 String = %q, want v", got)
@@ -132,6 +138,12 @@ func TestConfigIsolatedFromCaller(t *testing.T) {
 	}
 	if got := again["m"].(map[string]string)["mk"]; got != "mv" {
 		t.Fatalf("二次 Raw() m.mk = %v, want mv", got)
+	}
+	if got := again["ports"].([]int)[0]; got != 80 {
+		t.Fatalf("二次 Raw() ports = %v, want [80]", got)
+	}
+	if got := again["flags"].(map[string]bool)["a"]; !got {
+		t.Fatalf("二次 Raw() flags = %v, want {a:true}", got)
 	}
 
 	// 同一份来源构造的两个配置互不影响。

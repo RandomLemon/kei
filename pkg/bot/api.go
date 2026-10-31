@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -147,7 +148,56 @@ func cloneConfigValue(v any) any {
 		maps.Copy(out, t)
 		return out
 	default:
-		return v
+		// 其它 JSON 可表达的容器（[]int、map[string]bool、[]map[string]any 等）
+		// 也递归复制；标量与指针按值返回（配置取值域不含指针）。
+		return cloneReflectValue(v)
+	}
+}
+
+// cloneReflectValue 用反射复制任意 map/slice 容器；nil 与标量原样返回。
+func cloneReflectValue(v any) any {
+	if v == nil {
+		return nil
+	}
+	cloned := cloneReflect(reflect.ValueOf(v))
+	if !cloned.IsValid() {
+		return nil
+	}
+	return cloned.Interface()
+}
+
+// cloneReflect 递归复制 map/slice/interface；其它 Kind 直接返回原值。
+func cloneReflect(rv reflect.Value) reflect.Value {
+	switch rv.Kind() {
+	case reflect.Interface:
+		if rv.IsNil() {
+			return reflect.Zero(rv.Type())
+		}
+		inner := cloneReflect(rv.Elem())
+		out := reflect.New(rv.Type()).Elem()
+		out.Set(inner)
+		return out
+	case reflect.Map:
+		if rv.IsNil() {
+			return reflect.Zero(rv.Type())
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), cloneReflect(iter.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if rv.IsNil() {
+			return reflect.Zero(rv.Type())
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := range rv.Len() {
+			out.Index(i).Set(cloneReflect(rv.Index(i)))
+		}
+		return out
+	default:
+		return rv
 	}
 }
 

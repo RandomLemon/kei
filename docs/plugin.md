@@ -499,7 +499,7 @@ func (c *Config) Strings(key string) []string      // []string 拷贝 / []any �
 func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json.Unmarshal 到 v
 ```
 
-深拷贝的边界：`NewConfig` 复制入参中的映射与切片（`map[string]any`/`[]any`/`[]string`/`[]byte`/`map[string]string`，递归），`Raw()` 每次返回新的深层副本，因此插件、引擎与 `config.Config` 之间没有共享的可变配置值——插件改 `Raw()` 的返回值不会回到引擎持有的 `config.Config`（此前 `Raw()` 返回活引用，插件改写会与引擎的并发读取构成数据竞争）。`Get` 对嵌套路径返回的是配置内部的值，同一 `Config` 内修改它只影响该配置自身。
+深拷贝的边界：`NewConfig` 递归复制入参中的映射与切片（常见类型 `map[string]any`/`[]any`/`[]string`/`[]byte`/`map[string]string` 走快速路径，其它 JSON 可表达的容器如 `[]int`、`map[string]bool`、`[]map[string]any` 由反射递归复制），`Raw()` 每次返回新的深层副本，因此插件、引擎与 `config.Config` 之间没有共享的可变配置值——插件改 `Raw()` 的返回值不会回到引擎持有的 `config.Config`（此前 `Raw()` 返回活引用，插件改写会与引擎的并发读取构成数据竞争）。指针/函数等非配置取值域的值按原值返回；`Get` 对嵌套路径返回的是配置内部的值，同一 `Config` 内修改它只影响该配置自身。
 
 ### 11.4 权限与降级
 
