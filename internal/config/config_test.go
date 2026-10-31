@@ -844,6 +844,30 @@ bots:
 		}
 	})
 
+	t.Run("null 视为未配置", func(t *testing.T) {
+		cfg := mustLoadBytes(t, `
+bots:
+  - name: mock-main
+    adapter: mock
+    enabled:
+plugins:
+  echo:
+    enabled:
+adapters:
+  onebot:
+    enabled:
+`)
+		if !cfg.Bots[0].IsEnabled() {
+			t.Fatal("enabled: 空值不应停用 bot")
+		}
+		if cfg.Plugins["echo"].Enabled {
+			t.Fatal("enabled: 空值不应启用插件（插件默认不启用）")
+		}
+		if !cfg.Adapters["onebot"].IsEnabled() {
+			t.Fatal("enabled: 空值不应禁用适配器")
+		}
+	})
+
 	t.Run("enabled 非布尔报错", func(t *testing.T) {
 		_, err := LoadBytes([]byte(`
 bots:

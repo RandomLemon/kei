@@ -337,6 +337,10 @@ func decodeBot(index int, node *yaml.Node) (BotConfig, error) {
 				}
 				bot.Plugins = list
 			case "enabled":
+				if isNull(val) {
+					// 键存在但无值等同未配置；不能解码成 false 把实例停用。
+					return nil
+				}
 				var enabled bool
 				if err := val.Decode(&enabled); err != nil {
 					return fmt.Errorf("bots[%d].enabled: %w", index, err)
@@ -431,6 +435,10 @@ func decodePlugin(name string, node *yaml.Node) (PluginConfig, error) {
 		err := eachPair(node, "plugins."+name, fmt.Sprintf("plugins.%s: 需要布尔值或映射", name),
 			func(key string, val *yaml.Node) error {
 				if key == "enabled" {
+					if isNull(val) {
+						// 键存在但无值等同未配置（插件默认不启用）。
+						return nil
+					}
 					enabled, ok := decodeBool(val)
 					if !ok {
 						return fmt.Errorf("plugins.%s.enabled: 需要布尔值", name)
@@ -515,6 +523,10 @@ func decodeAdapter(name string, node *yaml.Node) (AdapterConfig, error) {
 		func(key string, val *yaml.Node) error {
 			switch key {
 			case "enabled":
+				if isNull(val) {
+					// 键存在但无值等同未配置；不能解码成 false 禁用整个适配器。
+					return nil
+				}
 				enabled, ok := decodeBool(val)
 				if !ok {
 					return fmt.Errorf("adapters.%s.enabled: 需要布尔值", name)

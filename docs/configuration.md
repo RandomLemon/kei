@@ -103,7 +103,7 @@ type BotConfig struct {
 
 - `name`：实例名，即 `Event.BotID`、`SendRequest.BotID`、`Target.BotID` 使用的值；非空、全局唯一（重复时报 `config: bots[i].name: bot 名 %q 重复`）。
 - `adapter`：引用的适配器名。必须能解析为已注册的适配器，否则启动失败并列出已注册名（`internal/adaptermgr.Validate`）；被 `enabled: false` 禁用的实例或适配器都跳过该检查。
-- `enabled`：实例级开关，缺省启用（见下）。
+- `enabled`：实例级开关，缺省启用（见下）；`enabled:`（键存在但无值）等同未配置，不是 `false`。
 - `plugins`：该实例的插件**白名单**。`Engine.applyBotPluginFilter` 只在存在非空白名单时收窄规则适用范围：每条规则只对「白名单为空（允许全部）或白名单包含该规则所属插件」的 bot 生效；任何 bot 都不允许的规则被置为匹配不到任何事件（`Rule.BotIDs` 为空切片）。被 `enabled: false` 停用的实例不参与「是否存在非空白名单」的判断，也不进 `Rule.BotIDs`，因此停用唯一配置了白名单的实例不会误伤其他实例。白名单里的名字不要求是已加载插件。
 - 其余键（适配器私有配置）：例如 `app_id`、`listen_addr`、`api_url` 等，逐键存入 `Settings`，取值保证可被 `encoding/json` 编解码（`normalizeValue` 递归把映射键规范化为字符串）。无额外键时 `Settings` 保持 `nil`。适配器通过 `AdapterContext.Config`（即 `bot.NewConfig(Settings)`）读取。
 
@@ -128,7 +128,7 @@ type PluginConfig struct {
 ```
 
 - **未列出即不启用**：`PluginConfig.Enabled` 是普通 `bool`，零值 `false`；`Config.Plugin(name)` 对缺失插件返回零值。想启用必须写 `enabled: true`，或使用布尔标量简写 `echo: true`。
-- `enabled`：布尔标量或带引号的布尔文本（`enabled: "false"` 也得到 `false`，见 `decodeBool`）；非布尔（如 `enabled: 也许`）报 `plugins.<name>.enabled: 需要布尔值`。`enabled` 不会进入 `Settings`。
+- `enabled`：布尔标量或带引号的布尔文本（`enabled: "false"` 也得到 `false`，见 `decodeBool`）；`enabled:`（键存在但无值）等同未配置（插件默认不启用）；非布尔（如 `enabled: 也许`）报 `plugins.<name>.enabled: 需要布尔值`。`enabled` 不会进入 `Settings`。
 - 私有配置：其余键进入 `Settings`，由引擎在构造插件管理器时转换为 `bot.Config`（`engine.New` → `pluginmgr.Deps.Configs`），插件经 `PluginContext.Config` 读取；插件未配置时是空配置（`bot.NewConfig(nil)`）。
 - 读取方式（`pkg/bot/api.go`，`Config` 对 nil 接收者与缺失键都返回默认值）：`Raw() map[string]any`（每次返回深层副本）、`Get(key) (any, bool)`（支持 `"a.b.c"` 多级路径）、`String(key, def)`、`Bool(key, def)`、`Int(key, def)`、`Duration(key, def)`（字符串按 `time.ParseDuration`，数字按秒）、`Strings(key)`（缺失返回 nil）、`Unmarshal(v)`（依赖 `encoding/json` 标签）。`bot.NewConfig` 深拷贝传入的映射与切片，因此插件/适配器改配置不会回到 `Config` 对象。
 - 「`enabled: true` 但没有任何已注册插件对应」只会得到 warn（`pkg/kei/assemble.go` 的 `selectPlugins`：`enabled plugin is not registered`）。
@@ -145,7 +145,7 @@ type AdapterConfig struct {
 
 声明是**可选**的：进程内适配器只靠 `bots[].adapter` 引用即可工作，`adapters` 段只用于显式启用/禁用。该段只支持 `enabled` 键，其余键一律报错（见下）。
 
-- **`enabled` 缺省 `true`**（与插件相反）：`AdapterConfig.IsEnabled()` 返回 `Enabled == nil || *Enabled`，`Config.AdapterEnabled(name)` 对未声明的适配器也返回 `true`。只有显式 `enabled: false` 才禁用。非布尔报 `adapters.<name>.enabled: 需要布尔值`。
+- **`enabled` 缺省 `true`**（与插件相反）：`AdapterConfig.IsEnabled()` 返回 `Enabled == nil || *Enabled`，`Config.AdapterEnabled(name)` 对未声明的适配器也返回 `true`。只有显式 `enabled: false` 才禁用；`enabled:`（键存在但无值）等同未配置。非布尔报 `adapters.<name>.enabled: 需要布尔值`。
 - **只允许 `enabled` 键**：写了任何其他键（如 `platform`/`timeout`/`permissions`）都在解码阶段报 `config: adapters.<name>: 未知键 "<key>"（只支持 enabled）`（`decodeAdapter`），与 `enabled` 取值无关（禁用的条目也不会豁免）。
 - **未知私有键告警（不报错）**：实例级未知键在装配每个 bot 时经 `adaptermgr.warnUnknownOptions` 告警，键集来自适配器的 `AdapterMetadata.Options`。适配器未声明 `Options`（空列表）时静默跳过。告警形如 `适配器不认识的配置键`，字段为 `bot`、`adapter`、`key`。
 - 装配期的其他告警：`adapters` 段声明了但未注册的适配器（`适配器已在 adapters 段声明但未注册（是否漏了空导入？）`）。
