@@ -114,6 +114,27 @@ func TestIsCardDir(t *testing.T) {
 	}
 }
 
+// TestCardOrdinal 验证 card<N> 按数值解析（排序用），连接器目录不参与。
+func TestCardOrdinal(t *testing.T) {
+	cases := []struct {
+		name string
+		want int
+		ok   bool
+	}{
+		{"card0", 0, true},
+		{"card10", 10, true},
+		{"card0-DP-1", 0, false},
+		{"card", 0, false},
+		{"cardX", 0, false},
+	}
+	for _, tc := range cases {
+		got, ok := cardOrdinal(tc.name)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Fatalf("cardOrdinal(%q) = (%d,%v), want (%d,%v)", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 // TestStatusCommand 走真实 Linux 主机采集路径（/proc、/sys 恒存在），
 // 只断言与主机无关的结构性前缀，不断言具体数值。
 func TestStatusCommand(t *testing.T) {

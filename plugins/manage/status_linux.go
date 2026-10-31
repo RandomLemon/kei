@@ -329,6 +329,15 @@ func collectGPUs() []gpuInfo {
 	if err != nil {
 		return nil
 	}
+	// os.ReadDir 只保证文件名字典序，card10 会排在 card2 前；按设备序号排序。
+	sort.SliceStable(entries, func(i, j int) bool {
+		ni, iok := cardOrdinal(entries[i].Name())
+		nj, jok := cardOrdinal(entries[j].Name())
+		if !iok || !jok {
+			return iok && !jok
+		}
+		return ni < nj
+	})
 	models := nvidiaModels()
 	var out []gpuInfo
 	for _, e := range entries {
@@ -358,12 +367,21 @@ func collectGPUs() []gpuInfo {
 
 // isCardDir 判断 DRM 目录名是否是主设备（card0、card1…），排除 card0-DP-1 等连接器。
 func isCardDir(name string) bool {
+	_, ok := cardOrdinal(name)
+	return ok
+}
+
+// cardOrdinal 解析 card<N> 的设备序号；不是主设备目录时返回 false。
+func cardOrdinal(name string) (int, bool) {
 	rest, ok := strings.CutPrefix(name, "card")
 	if !ok || rest == "" {
-		return false
+		return 0, false
 	}
-	_, err := strconv.Atoi(rest)
-	return err == nil
+	n, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // nvidiaModels 读取 /proc/driver/nvidia/gpus/<bdf>/information，返回 BDF → 型号。
