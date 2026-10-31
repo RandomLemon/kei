@@ -320,7 +320,7 @@ func (p *Plugin) Metadata() bot.Metadata {
 func (p *Plugin) Setup(ctx context.Context, reg bot.Registrar) error {
 	reg.OnCommand("echo", func(ctx context.Context, e *bot.Event, r bot.Reply) error {
 		if e.Command == nil || len(e.Command.Args) == 0 {
-			return r.Text("用法: /echo <文本>").Send(ctx)
+			return r.Text("用法: echo <文本>（使用配置的命令前缀）").Send(ctx)
 		}
 		return r.Text(strings.Join(e.Command.Args, " ")).Send(ctx)
 	}, bot.WithPriority(100), bot.WithID("echo:echo"))
