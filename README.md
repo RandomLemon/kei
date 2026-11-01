@@ -61,7 +61,7 @@ kei/
 │   └── kei-adapter-myim/  独立 module 的第三方适配器示例（只依赖 pkg/bot）
 ├── configs/
 │   └── config.yaml        示例配置
-└── docs/                  设计文档集（架构/领域模型/适配器/插件/引擎/配置/测试/阶段现状）
+└── docs/                  设计文档集（架构/领域模型/适配器/插件/引擎/存储/配置/测试/阶段现状）
 ```
 
 ## 环境准备（Nix + direnv）
@@ -646,7 +646,7 @@ OneBot 正向 WebSocket（握手校验、掩码方向、事件上行、按 echo 
   「写一个适配器」自行接入（独立包或独立 module，核心零改动）。
 - 同一平台配置多个 bot 时，主动发送必须在 `bot.Target.BotID` 指定 bot 名称；
   不指定则只有该平台仅有一个 bot 时才能自动选择。
-- `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。`sqlite`/`mysql` 方言需空导入 `pkg/kei/sql`（`cmd/bot` 已空导入；嵌入式使用请自行空导入，否则装配期报未知类型）。后端参数（`cleanup_interval`、`max_open_conns` 等）在配置加载阶段校验，类型不符或负数直接报错；存储键按插件名/适配器实例名自动隔离（`plugin:<name>:` / `adapter:<botID>:` 前缀），前缀与逻辑键合计最长 191 字节（因此插件/适配器实际可用的逻辑键更短），超长键在任何后端都返回同一个错误。
+- `storage.type` 支持 `memory`（默认，重启即丢）、`sqlite`（本地文件）与 `mysql`；配 `storage.type`/`storage.dsn` 即可切换，也可经 `Options.Storage` 注入自定义实现。`sqlite`/`mysql` 方言需空导入 `pkg/kei/sql`（`cmd/bot` 已空导入；嵌入式使用请自行空导入，否则装配期报未知类型）。后端参数（`cleanup_interval`、`max_open_conns` 等）在配置加载阶段校验，类型不符或负数直接报错；存储键按插件名/适配器实例名自动隔离（`plugin:<name>:` / `adapter:<botID>:` 前缀），前缀与逻辑键合计最长 191 字节（因此插件/适配器实际可用的逻辑键更短），超长键在任何后端都返回同一个错误。存储模块的后端、隔离与生命周期设计见 [docs/storage.md](docs/storage.md)。
 - OneBot 一个 bot 实例同一时刻只启用一种接入方式（`mode`）：HTTP 双向用
   `forward_http`/`reverse_http`，`reverse_ws` 由 OneBot 实现连入，`forward_ws` 由 kei
   主动连出且不监听端口。一个 bot 实例只服务一个账号（`self_id` 非空时按 `X-Self-ID`

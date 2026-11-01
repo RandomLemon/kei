@@ -160,4 +160,5 @@ kei-adapter-myim/         # 独立仓库/模块
 - [domain-model.md](domain-model.md)：`pkg/bot` 的公开领域模型与消息段。
 - [adapter.md](adapter.md)：适配器接口、注册表与工厂、元信息与权限、能力降级。
 - [engine.md](engine.md)：Engine、EventBus、路由与中间件。
+- [storage.md](storage.md)：`bot.Storage` 契约、内存/SQL 后端、类型注册表、命名空间隔离与生命周期。
 - [configuration.md](configuration.md)：配置键、默认值与环境变量覆盖规则。

@@ -154,6 +154,8 @@ type AdapterConfig struct {
 
 ### 12.5 `storage`
 
+存储模块的实现、装配链路与生命周期见 [`storage.md`](storage.md)；本节只描述配置键与取值校验。
+
 ```go
 type StorageConfig struct {
 	Type   string         `yaml:"type"`
@@ -176,7 +178,7 @@ type StorageConfig struct {
 | `conn_max_lifetime` | `mysql` | 时长或秒数 | 连接最长存活时间；`0` 表示不按龄关闭 |
 
     未列出的键（含拼错的键名）原样透传给后端而不报错：这是第三方后端的扩展空间，内置后端会忽略它们；`sqlite`/`memory` 也忽略上表的 MySQL 连接池键，同一份配置因此可以切换后端。校验存在的意义是避免取值被静默回落默认值——例如 `max_open_conns: "abc"` 会被 `Config.Int` 读成 `0`（不限制），`cleanup_interval: -5s` 会直接关掉后台清理。
-- **键长上限**：存储键最大 191 字节（`internal/storage.MaxKeyBytes`，取自 SQL 列定义的 `size:191`）。内存、SQLite、MySQL 三个内置后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（`errors.Is(err, storage.ErrKeyTooLong)`），不会出现「内存/SQLite 能存、只有 MySQL 报错」的差异。插件/适配器经框架拿到的存储还带 `plugin:<name>:`/`adapter:<botID>:` 隔离前缀（见 [plugin.md](plugin.md) 11.2、[adapter.md](adapter.md) 6.3），前缀计入上述字节数。
+- **键长上限**：存储键最大 191 字节（`internal/storage.MaxKeyBytes`，取自 SQL 列定义的 `size:191`）。内存、SQLite、MySQL 三个内置后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（核心侧可用 `errors.Is(err, storage.ErrKeyTooLong)` 判定；该哨兵位于 `internal/storage`，外部实现只能依赖错误文本），不会出现「内存/SQLite 能存、只有 MySQL 报错」的差异。插件/适配器经框架拿到的存储还带 `plugin:<name>:`/`adapter:<botID>:` 隔离前缀（见 [plugin.md](plugin.md) 11.2、[adapter.md](adapter.md) 6.3），前缀计入上述字节数。
 - **注入优先**：`Options.Storage` 非 nil 时优先使用（由调用方拥有，`Run` 不关闭）；为 nil 时按 `storage.type` 构造，并在 `Run` 返回前关闭自有实例。例外：关闭时事件总线未排空（`ErrShutdownIncomplete`）则保留该实例不关闭，避免在途 handler 使用已关闭的存储。
 
 ### 12.6 `engine`

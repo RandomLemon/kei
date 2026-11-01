@@ -393,6 +393,8 @@ func TargetFromEvent(ev *Event) Target
 
 ### 11.2 Storage
 
+存储模块的整体设计（后端实现、类型注册表、装配与生命周期）见 [`storage.md`](storage.md)；本节只描述插件可见的契约、权限语义与键空间。
+
 ```go
 // ErrNotFound 表示 Storage 中不存在所请求的键。
 //
@@ -426,7 +428,7 @@ type Storage interface {
 
 替换方式：配置 `storage.type`/`storage.dsn` 选择内置后端（`memory` 默认、`sqlite`、`mysql`，见 [configuration.md](configuration.md) 12.5），或 `kei.Options.Storage` 注入自定义 `bot.Storage`（非 nil 优先，由调用方拥有，`Run` 不关闭）。`pkg/kei.buildStorage` 为 nil 时按配置构造，并在 `Run` 返回前关闭自有实例（关闭时总线未排空则保留，见 [engine.md](engine.md) 7.3）。`internal/pluginmgr.Deps.Storage` 则接收最终解析出的实例，按插件权限分发。
 
-键空间与键长：插件拿到的 `Storage` 是**按插件名隔离的视图**——`internal/pluginmgr` 在组装 `PluginContext` 时与 `internal/engine.pluginAPI`（`BotAPI.Storage()`）都用 `storage.PluginScoped` 包一层，底层键统一带 `plugin:<插件名>:` 前缀。两个插件的同名键因此互不覆盖，插件也不需要自己拼前缀（键按原样传入，前缀由框架加；同一插件经 `PluginContext.Storage` 与 `BotAPI.Storage()` 看到的是同一批键）。键长上限按**底层键**计算，共 191 字节（`storage.MaxKeyBytes`，取自 SQL 列的 `size:191`）：内存、SQLite、MySQL 三个后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（`errors.Is(err, storage.ErrKeyTooLong)` 可判定），而不是只有 MySQL 报错；上限按字节计算，比 MySQL 的字符数约束更保守。由于框架注入的 `plugin:<插件名>:` 前缀也计入这 191 字节，插件实际可用的逻辑键更短：上限为 `191 - len("plugin:<插件名>:")` 字节。
+键空间与键长：插件拿到的 `Storage` 是**按插件名隔离的视图**——`internal/pluginmgr` 在组装 `PluginContext` 时与 `internal/engine.pluginAPI`（`BotAPI.Storage()`）都用 `storage.PluginScoped` 包一层，底层键统一带 `plugin:<插件名>:` 前缀。两个插件的同名键因此互不覆盖，插件也不需要自己拼前缀（键按原样传入，前缀由框架加；同一插件经 `PluginContext.Storage` 与 `BotAPI.Storage()` 看到的是同一批键）。键长上限按**底层键**计算，共 191 字节（`storage.MaxKeyBytes`，取自 SQL 列的 `size:191`）：内存、SQLite、MySQL 三个后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（核心侧可用 `errors.Is(err, storage.ErrKeyTooLong)` 判定；该哨兵定义在 `internal/storage`，插件/适配器侧只看到统一错误文本），而不是只有 MySQL 报错；上限按字节计算，比 MySQL 的字符数约束更保守。由于框架注入的 `plugin:<插件名>:` 前缀也计入这 191 字节，插件实际可用的逻辑键更短：上限为 `191 - len("plugin:<插件名>:")` 字节。
 
 SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参（`nil` 值归一为空 BLOB，避免 `NOT NULL` 与内存后端行为不一致），`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。清理失败不再静默：后台清理失败记 **Warn**（表在无界增长，必须告警），`Get` 惰性删除失败记 **Debug**（读取路径高频、多为并发删除等预期噪声，`Get` 仍照常返回 `bot.ErrNotFound`）；日志器经装配链传入（`storage.Open(kind, cfg, logger)` / `sqlstore.New(db, cleanup, logger)`，nil 时为 `slog.Default()`）。
 

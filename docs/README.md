@@ -14,6 +14,7 @@
 | 7、8、10 | Engine、EventBus 事件总线、路由与中间件 | [`engine.md`](engine.md) |
 | 9、11 | 插件系统、BotAPI 与插件上下文（Storage/权限/测试辅助） | [`plugin.md`](plugin.md) |
 | 12 | 配置：结构、键语义、环境变量覆盖、校验与告警 | [`configuration.md`](configuration.md) |
+| —（第 9、11、12 章的补充） | 存储模块：`bot.Storage` 契约、内存/SQL 后端、类型注册表、命名空间隔离、生命周期与扩展边界 | [`storage.md`](storage.md) |
 | 13、19 | 实现阶段回顾与交付物现状（含未实现项） | [`roadmap.md`](roadmap.md) |
 | 15、16、18 | 测试要求、构建与运行命令、完成定义（Definition of Done） | [`testing.md`](testing.md) |
 | —（第 9、10 章的补充） | 内置管理插件 `manage`：`/manage ping`、`/manage version`、`/manage plugins`、`/manage adapters`、`/manage admin`、`/manage status`、`/manage help` 的命令契约、配置键、管理员校验链路与已知边界 | [`plugins/manage.md`](plugins/manage.md) |
@@ -27,6 +28,7 @@
 3. 按角色选读：
    - 写平台适配器 → [`adapter.md`](adapter.md)。
    - 写插件 → [`plugin.md`](plugin.md)；事件投递与路由语义 → [`engine.md`](engine.md)。
+   - 需要键值存储 → [`storage.md`](storage.md)（后端、命名空间隔离、生命周期与自定义实现）。
    - 查内置管理命令（`/manage plugins`、`/manage adapters` 的管理员门槛与输出格式） → [`plugins/manage.md`](plugins/manage.md)。
    - 部署与运维 → [`configuration.md`](configuration.md) + [`README.md`](../README.md)。
 4. [`testing.md`](testing.md)：动手前确认质量门与测试要求。
