@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
@@ -93,12 +97,20 @@ func TestSQLStoreTable(t *testing.T) {
 	if len(rows) != 2 || rows[0].Key != "a" || rows[1].Key != "b" {
 		t.Fatalf("ListRows = %+v, want 键 a,b 升序", rows)
 	}
-	if len(rows[1].Value) != 0 {
-		t.Fatalf("nil 值行 = %q, want 空值", rows[1].Value)
+	if rows[1].Value != nil {
+		t.Fatalf("nil 值行 = %q, want nil 空值", rows[1].Value)
 	}
 	rows[0].Value[0] = 'Z'
 	if got, err := s.GetRow(ctx, "users", "a"); err != nil || string(got) != "a2" {
 		t.Fatalf("修改 ListRows 返回值后 GetRow = %q, %v, want a2", got, err)
+	}
+
+	// 零长度入参同样归一为空值，读回 nil（与内存实现一致）。
+	if err := s.InsertRow(ctx, "users", "e", []byte{}); err != nil {
+		t.Fatalf("InsertRow 零长度值: %v", err)
+	}
+	if got, err := s.GetRow(ctx, "users", "e"); err != nil || got != nil {
+		t.Fatalf("GetRow 零长度值 = %q, %v, want nil 空值", got, err)
 	}
 
 	// 缺表与缺行的错误区分。
@@ -169,6 +181,51 @@ func TestSQLStoreTable(t *testing.T) {
 	if rows, err := s.ListRows(ctx, "people"); err != nil || len(rows) != 0 {
 		t.Fatalf("重建后 ListRows = %v, %v, want 空", rows, err)
 	}
+
+	// 行键只在表内唯一：不同表可以有相同行键，互不覆盖（复合主键 (table_id, row_key)）。
+	if err := s.InsertRow(ctx, "people", "a", []byte("people-a")); err != nil {
+		t.Fatalf("people.InsertRow: %v", err)
+	}
+	if err := s.InsertRow(ctx, "taken", "a", []byte("taken-a")); err != nil {
+		t.Fatalf("taken.InsertRow: %v", err)
+	}
+	if got, err := s.GetRow(ctx, "people", "a"); err != nil || string(got) != "people-a" {
+		t.Fatalf("people.GetRow = %q, %v, want people-a", got, err)
+	}
+	if got, err := s.GetRow(ctx, "taken", "a"); err != nil || string(got) != "taken-a" {
+		t.Fatalf("taken.GetRow = %q, %v, want taken-a（不同表的同名行键不得互相覆盖）", got, err)
+	}
+}
+
+// TestSQLStoreTableWithoutTranslateOption 断言 sqlstore.New 会兜底开启
+// TranslateError：即使调用方（未来的方言包）忘了设置，重复建表/插入仍映射到
+// 公开错误哨兵，而不是泄露方言原始错误。
+func TestSQLStoreTableWithoutTranslateOption(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "raw.db")), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("gorm.Open: %v", err)
+	}
+	s, err := New(db, 0, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+
+	if err := s.CreateTable(ctx, "t"); err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+	if err := s.CreateTable(ctx, "t"); !errors.Is(err, bot.ErrTableExists) {
+		t.Fatalf("重复 CreateTable = %v, want ErrTableExists", err)
+	}
+	if err := s.InsertRow(ctx, "t", "k", nil); err != nil {
+		t.Fatalf("InsertRow: %v", err)
+	}
+	if err := s.InsertRow(ctx, "t", "k", nil); !errors.Is(err, bot.ErrRowExists) {
+		t.Fatalf("重复 InsertRow = %v, want ErrRowExists", err)
+	}
 }
 
 // TestSQLStoreTableContext 断言取消的 ctx 不会写入数据。
@@ -179,5 +236,41 @@ func TestSQLStoreTableContext(t *testing.T) {
 
 	if err := s.CreateTable(ctx, "t"); err == nil {
 		t.Fatal("CreateTable(已取消 ctx) = nil, want 错误")
+	}
+}
+
+// TestSQLStoreTableOrdering 断言 SQL 后端与内存实现一致地按字节序返回，
+// 不受 MySQL 默认 collation（大小写/重音不敏感）影响。
+func TestSQLStoreTableOrdering(t *testing.T) {
+	s := newTableStore(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"alpha", "Zeta"} {
+		if err := s.CreateTable(ctx, name); err != nil {
+			t.Fatalf("CreateTable(%s): %v", name, err)
+		}
+	}
+	names, err := s.ListTables(ctx)
+	if err != nil {
+		t.Fatalf("ListTables: %v", err)
+	}
+	if len(names) != 2 || names[0] != "Zeta" || names[1] != "alpha" {
+		t.Fatalf("ListTables = %v, want [Zeta alpha]（字节序：'Z' < 'a'）", names)
+	}
+
+	if err := s.CreateTable(ctx, "order"); err != nil {
+		t.Fatalf("CreateTable order: %v", err)
+	}
+	for _, key := range []string{"a", "B"} {
+		if err := s.InsertRow(ctx, "order", key, nil); err != nil {
+			t.Fatalf("InsertRow(%s): %v", key, err)
+		}
+	}
+	rows, err := s.ListRows(ctx, "order")
+	if err != nil {
+		t.Fatalf("ListRows: %v", err)
+	}
+	if len(rows) != 2 || rows[0].Key != "B" || rows[1].Key != "a" {
+		t.Fatalf("ListRows = %+v, want 键 [B a]（字节序：'B' < 'a'）", rows)
 	}
 }

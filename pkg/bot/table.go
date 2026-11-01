@@ -32,7 +32,8 @@ type TableRow struct {
 //
 // 表必须显式经 CreateTable 创建；InsertRow 不会自动建表。表名与行键均按字节
 // 原样存储，不做大小写归一，上限 191 字节（插件/适配器视图的表名前缀也计入）。
-// 实现必须并发安全，且所有方法必须尊重 ctx。
+// 行键只在表内唯一：不同表可以有相同行键。实现必须并发安全，且所有方法必须
+// 尊重 ctx。
 type TableStorage interface {
 	// CreateTable 创建表；表已存在时返回 ErrTableExists。
 	CreateTable(ctx context.Context, table string) error

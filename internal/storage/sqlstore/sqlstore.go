@@ -73,6 +73,11 @@ func NewWithClock(db *gorm.DB, cleanup time.Duration, now func() time.Time, logg
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// 表接口靠 gorm.ErrDuplicatedKey 判定「表/行已存在」；方言只有在
+	// TranslateError 开启时才会把重复键错误翻译成它。两个方言包已显式开启，
+	// 这里再兜底一次：Store 的公开语义不能取决于调用方是否记得设置该选项，
+	// 否则重复键会以方言原始错误泄露，ErrTableExists/ErrRowExists 静默失效。
+	db.Config.TranslateError = true
 	if err := db.AutoMigrate(&Entry{}, &TableEntry{}, &RowEntry{}); err != nil {
 		// 失败路径必须释放连接池（SQLite 还会占住文件句柄）：调用方拿到的是
 		// error 而非 Store，没有任何 closer，不关闭就是永久泄漏。

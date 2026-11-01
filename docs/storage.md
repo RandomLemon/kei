@@ -100,16 +100,18 @@ type TableStorage interface {
 | 操作 | 约定 |
 | --- | --- |
 | `CreateTable` | 表必须显式创建；已存在返回 `bot.ErrTableExists` |
-| `ListTables` | 按名称升序；无表返回空切片（len 0，不是 nil） |
+| `ListTables` | 按名称的**字节序**升序（Go 字符串比较）；无表返回空切片（len 0，不是 nil） |
 | `RenameTable` | 保留行数据；源不存在返回 `bot.ErrTableNotFound`，目标存在返回 `bot.ErrTableExists`；`oldName == newName` 时源存在返回 nil、不存在返回 `ErrTableNotFound` |
 | `DropTable` | 删除表及其全部行；表不存在返回 nil（幂等），与 `Delete` 语义一致 |
 | `InsertRow` | 不自动建表：表不存在返回 `bot.ErrTableNotFound`，行键已存在返回 `bot.ErrRowExists` |
 | `GetRow` | 表不存在返回 `bot.ErrTableNotFound`，行不存在返回 `bot.ErrNotFound`；返回值是副本 |
 | `UpdateRow` | 表不存在返回 `ErrTableNotFound`，行不存在返回 `bot.ErrNotFound`；新值等于旧值也是成功（SQL 后端可能报告 0 行受影响） |
 | `DeleteRow` | 表不存在返回 `ErrTableNotFound`，行不存在返回 nil |
-| `ListRows` | 表不存在返回 `ErrTableNotFound`；按行键升序返回全部行；空表返回空切片；值都是副本 |
-| 值拷贝 | `InsertRow`/`UpdateRow` 拷贝入参，`GetRow`/`ListRows` 返回副本；`nil` 值按空值处理（SQL 后端归一为空 BLOB） |
+| `ListRows` | 表不存在返回 `ErrTableNotFound`；按行键的**字节序**升序返回全部行；空表返回空切片；值都是副本 |
+| 值拷贝 | `InsertRow`/`UpdateRow` 拷贝入参，`GetRow`/`ListRows` 返回副本；空值（`nil` 或零长度）按空值处理：SQL 写入归一为空 BLOB，两个后端的读取都返回长度为 0 的 `nil` 切片 |
 | 名字校验 | 表名（视图前缀计入）与行键都必须非空、按字节 ≤ 191；不做字符集限制、不做大小写归一 |
+
+行键的唯一性只在表内成立：不同表可以有相同行键，行数据由表隔离（SQL 后端用 `(table_id, row_key)` 复合主键表达）。
 
 `Denied()` 是未声明 `PermStorage` 时注入的 KV 实现，三个方法都返回 `bot.ErrPermissionDenied`；`DeniedTables()` 是同一处境下的表实现，九个方法同样返回该哨兵。都是公开哨兵，插件/适配器可用 `errors.Is(err, bot.ErrPermissionDenied)` 判定。
 
@@ -187,13 +189,13 @@ func (RowEntry) TableName() string { return "kei_storage_rows" }
 
 表与行的实现要点（`internal/storage/sqlstore/table.go`）：
 
-- **重复键判定**：两个方言包的 `gorm.Config` 都开启 `TranslateError: true`，把方言的重复键错误统一翻译为 `gorm.ErrDuplicatedKey`；实现据此把 `CreateTable`/`RenameTable` 的冲突翻成 `bot.ErrTableExists`、`InsertRow` 的冲突翻成 `bot.ErrRowExists`，不匹配驱动私有错误类型。
+- **重复键判定**：两个方言包的 `gorm.Config` 都开启 `TranslateError: true`，把方言的重复键错误统一翻译为 `gorm.ErrDuplicatedKey`；`sqlstore.New`/`NewWithClock` 还会在构造时兜底开启该选项，避免调用方遗漏时重复键以方言原始错误泄露。实现据此把 `CreateTable`/`RenameTable` 的冲突翻成 `bot.ErrTableExists`、`InsertRow` 的冲突翻成 `bot.ErrRowExists`，不匹配驱动私有错误类型。
 - **CreateTable**：`CheckTableName` 后 `Create(&TableEntry{Name: name})`；`gorm.ErrDuplicatedKey` → `bot.ErrTableExists`。
-- **ListTables**：`Model(&TableEntry{}).Order("name").Pluck("name", &names)`；空结果归一为 `[]string{}`。
+- **ListTables**：`Model(&TableEntry{}).Pluck("name", &names)` 后在 Go 侧 `sort.Strings`（不依赖 `ORDER BY`：MySQL collation 会改变大小写/重音的相对顺序，与内存实现的字节序不一致）；空结果归一为 `[]string{}`。
 - **RenameTable**：校验两个名字；按 `name` 查源（缺失 → `ErrTableNotFound`）；同名直接 nil；否则 `Update("name", newName)`，冲突 → `ErrTableExists`，`RowsAffected == 0`（查到后被并发删除）→ `ErrTableNotFound`。
 - **DropTable**：事务内先查元数据（缺失返回 nil），再 `DELETE ... WHERE table_id = ?` 删行，最后删元数据；任一步失败整体回滚，不留孤儿行。
 - **InsertRow**：用一条 `INSERT INTO kei_storage_rows (table_id, row_key, value) SELECT id, ?, ? FROM kei_storage_tables WHERE name = ?` 同时完成表存在性检查与插入——先查后插会在两步之间与并发 `DropTable` 竞态并留下孤儿行。`RowsAffected == 0` → `ErrTableNotFound`。
-- **GetRow/ListRows/DeleteRow/UpdateRow**：先按 `name` 取表 ID（缺失 → `ErrTableNotFound`），再按 `(table_id, row_key)` 操作；`ListRows` 用 `Order("row_key")` 并返回副本。`UpdateRow` 在 `RowsAffected == 0` 时再查一次行是否存在：存在即成功（MySQL 对「值未变化」可能报告 0 行受影响），不存在才返回 `bot.ErrNotFound`。
+- **GetRow/ListRows/DeleteRow/UpdateRow**：先按 `name` 取表 ID（缺失 → `ErrTableNotFound`），再按 `(table_id, row_key)` 操作；`ListRows` 取回后在 Go 侧按行键字节序排序并返回副本（理由同 ListTables）。`UpdateRow` 在 `RowsAffected == 0` 时再查一次行是否存在：存在即成功（MySQL 对「值未变化」可能报告 0 行受影响），不存在才返回 `bot.ErrNotFound`。
 - **值归一**：`nil` value 归一为空 BLOB（`value` 列 `NOT NULL`），与 `Set` 同一处理。
 
 ### 3.3 方言包
@@ -313,10 +315,11 @@ func CheckRowKey(key string) error
 | `Close` | 停止 janitor，不封禁后续读写 | 停止 janitor 并关闭连接池，后续操作失败 |
 | `CreateTable` 冲突 | `bot.ErrTableExists` | `bot.ErrTableExists`（`gorm.ErrDuplicatedKey` 转换） |
 | `ListTables`/`ListRows` 空结果 | 非 nil 空切片 | 非 nil 空切片 |
+| `ListTables`/`ListRows` 顺序 | 字节序（`sort.Strings`/`sort.Slice`） | 字节序（Go 侧排序，不受 collation 影响） |
 | `DropTable` 缺表 | nil | nil |
 | `InsertRow` 缺表 | `bot.ErrTableNotFound` | `bot.ErrTableNotFound`（`INSERT ... SELECT` 0 行） |
 | `UpdateRow` 值未变化 | 成功 | 成功（`RowsAffected == 0` 时再查行存在性） |
-| 行值 nil | 存 nil，读回空值 | 归一为空 BLOB，读回空值 |
+| 行值空（nil/零长度） | 存 nil，读回 nil（len 0） | 归一为空 BLOB，读回 nil（len 0） |
 | 表数据 TTL | 无 | 无 |
 
 ## 7. 生命周期与所有权
@@ -379,7 +382,8 @@ err := kei.Run(ctx, kei.Options{
 6. **MySQL 的 `parseTime=true` 由调用方保证**：缺失时过期时间列无法扫描为 `time.Time`，驱动会报错；核心不做二次校验。
 7. **表接口没有 schema/TTL/分页**：行是「非空键 → 字节串」，`ListRows` 一次返回表内全部行；TTL 只属于 KV 层，分页与跨表事务不在本契约内。
 8. **SQL 表结构固定**：`kei_storage`（KV）与 `kei_storage_tables`/`kei_storage_rows`（表与行）由 `AutoMigrate` 创建/更新；逻辑表不映射为 SQL 真实表，因此没有按表 DDL、分库或迁移版本管理。
-9. **表名大小写不归一**：SQL 后端的默认 collation 可能把仅大小写不同的表名/行键视为相同（与 `kei_storage.key` 同样的后端语义），核心不额外配置 collation。
+9. **表名大小写不归一**：SQL 后端的默认 collation 可能把仅大小写不同的表名/行键视为相同（与 `kei_storage.key` 同样的后端语义），核心不额外配置 collation。返回顺序不受影响（见第 6 节），但唯一性与比较仍由 collation 决定。
+10. **并发表结构变更没有原子快照**：`InsertRow` 用单条语句同时做表存在性检查与插入，不会留下孤儿行；其余行操作先取表 ID 再执行，与并发 `DropTable` 交错时可能观察到 `bot.ErrNotFound`、空结果或 nil，而不是 `ErrTableNotFound`。需要严格并发语义的上层应把表结构变更与行读写串行化。
 
 ---
 

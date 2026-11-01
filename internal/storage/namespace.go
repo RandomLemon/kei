@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -89,7 +90,10 @@ func (s tableScoped) CreateTable(ctx context.Context, table string) error {
 	return s.inner.CreateTable(ctx, name)
 }
 
-// ListTables 只返回本命名空间内的表，并剥离前缀。
+// ListTables 只返回本命名空间内的表，剥离前缀并按名称升序返回。
+//
+// 排序在这里做而不是依赖 inner：剥离前缀后顺序理论上与物理名一致，但表视图
+// 可以包任意 bot.TableStorage 实现，不能把「底层按名返回」当成契约。
 func (s tableScoped) ListTables(ctx context.Context) ([]string, error) {
 	all, err := s.inner.ListTables(ctx)
 	if err != nil {
@@ -105,6 +109,7 @@ func (s tableScoped) ListTables(ctx context.Context) ([]string, error) {
 		}
 		names = append(names, stripped)
 	}
+	sort.Strings(names)
 	return names, nil
 }
 

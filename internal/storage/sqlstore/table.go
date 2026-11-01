@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"gorm.io/gorm"
 
@@ -58,11 +59,16 @@ func (s *Store) CreateTable(ctx context.Context, table string) error {
 }
 
 // ListTables 按名称升序返回全部表名；无表时返回空切片。
+//
+// 排序在 Go 侧按字节做而不依赖 ORDER BY：MySQL 的默认 collation 会让
+// "Zeta" 排在 "alpha" 之后，与内存实现（字节序）不一致。返回顺序是契约的
+// 一部分，不能随方言变化。
 func (s *Store) ListTables(ctx context.Context) ([]string, error) {
 	var names []string
-	if err := s.db.WithContext(ctx).Model(&TableEntry{}).Order("name").Pluck("name", &names).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&TableEntry{}).Pluck("name", &names).Error; err != nil {
 		return nil, err
 	}
+	sort.Strings(names)
 	if names == nil {
 		names = []string{}
 	}
@@ -227,6 +233,8 @@ func (s *Store) DeleteRow(ctx context.Context, table, key string) error {
 
 // ListRows 按行键升序返回表内全部行；表不存在返回 bot.ErrTableNotFound，
 // 空表返回空切片。返回值是副本。
+//
+// 与 ListTables 相同：排序在 Go 侧按字节做，避免 MySQL collation 改变返回顺序。
 func (s *Store) ListRows(ctx context.Context, table string) ([]bot.TableRow, error) {
 	if err := storage.CheckTableName(table); err != nil {
 		return nil, err
@@ -236,10 +244,10 @@ func (s *Store) ListRows(ctx context.Context, table string) ([]bot.TableRow, err
 		return nil, err
 	}
 	var entries []RowEntry
-	if err := s.db.WithContext(ctx).Where("table_id = ?", id).
-		Order("row_key").Find(&entries).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("table_id = ?", id).Find(&entries).Error; err != nil {
 		return nil, err
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
 	out := make([]bot.TableRow, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, bot.TableRow{Key: e.Key, Value: append([]byte(nil), e.Value...)})

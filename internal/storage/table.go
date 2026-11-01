@@ -210,9 +210,13 @@ func (m *Memory) ListRows(ctx context.Context, table string) ([]bot.TableRow, er
 	return out, nil
 }
 
-// copyBytes 拷贝行值，nil 保持 nil（空值语义与 Set 一致：nil 视同空值）。
+// copyBytes 拷贝行值；空值（nil 或零长度）统一为 nil。
+//
+// KV 层与 SQL 后端的表读回对空值都给出 nil（SQL 用 append(nil, empty...)），
+// 内存表实现若保留非 nil 空切片，同一份数据在 JSON 里会出现 "" 与 null 的
+// 后端差异。写入侧因此也把空值存成 nil。
 func copyBytes(value []byte) []byte {
-	if value == nil {
+	if len(value) == 0 {
 		return nil
 	}
 	out := make([]byte, len(value))

@@ -104,12 +104,18 @@ func tableCRUD(t *testing.T, ts bot.TableStorage) {
 		t.Fatalf("DeleteRow 缺行 = %v, want nil", err)
 	}
 
-	// nil 值按空值处理，两个后端都不得因此失败。
+	// 空值（nil 或零长度）按空值处理，两个后端都不得因此失败，且读回 nil。
 	if err := ts.InsertRow(ctx, "users", "n", nil); err != nil {
 		t.Fatalf("InsertRow nil 值: %v", err)
 	}
-	if got, err := ts.GetRow(ctx, "users", "n"); err != nil || len(got) != 0 {
-		t.Fatalf("GetRow nil 值 = %q, %v, want 空值", got, err)
+	if err := ts.InsertRow(ctx, "users", "e", []byte{}); err != nil {
+		t.Fatalf("InsertRow 零长度值: %v", err)
+	}
+	for _, key := range []string{"n", "e"} {
+		got, err := ts.GetRow(ctx, "users", key)
+		if err != nil || len(got) != 0 || got != nil {
+			t.Fatalf("GetRow(%s) = %q, %v, want nil 空值", key, got, err)
+		}
 	}
 
 	// 缺表的其余方法统一返回 ErrTableNotFound。
@@ -174,6 +180,20 @@ func tableCRUD(t *testing.T, ts bot.TableStorage) {
 	if rows, err := ts.ListRows(ctx, "people"); err != nil || len(rows) != 0 {
 		t.Fatalf("重建后 ListRows = %v, %v, want 空", rows, err)
 	}
+
+	// 行键只在表内唯一：不同表可以有相同行键，互不覆盖。
+	if err := ts.InsertRow(ctx, "people", "a", []byte("people-a")); err != nil {
+		t.Fatalf("people.InsertRow: %v", err)
+	}
+	if err := ts.InsertRow(ctx, "taken", "a", []byte("taken-a")); err != nil {
+		t.Fatalf("taken.InsertRow: %v", err)
+	}
+	if got, err := ts.GetRow(ctx, "people", "a"); err != nil || string(got) != "people-a" {
+		t.Fatalf("people.GetRow = %q, %v, want people-a", got, err)
+	}
+	if got, err := ts.GetRow(ctx, "taken", "a"); err != nil || string(got) != "taken-a" {
+		t.Fatalf("taken.GetRow = %q, %v, want taken-a（不同表的同名行键不得互相覆盖）", got, err)
+	}
 }
 
 // TestMemoryTableCRUD 断言内存后端的表与行 CRUD 语义。
@@ -201,6 +221,14 @@ func TestTableNameValidation(t *testing.T) {
 	}
 	if err := m.CreateTable(ctx, long); !errors.Is(err, ErrKeyTooLong) {
 		t.Fatalf("CreateTable 超长名 = %v, want ErrKeyTooLong", err)
+	}
+	// 上限本身必须可用（按字节 ≤ 191）。
+	exact := strings.Repeat("x", MaxKeyBytes)
+	if err := m.CreateTable(ctx, exact); err != nil {
+		t.Fatalf("CreateTable 191 字节名: %v", err)
+	}
+	if err := m.InsertRow(ctx, exact, strings.Repeat("k", MaxKeyBytes), nil); err != nil {
+		t.Fatalf("InsertRow 191 字节键: %v", err)
 	}
 	if err := m.CreateTable(ctx, "t"); err != nil {
 		t.Fatalf("CreateTable: %v", err)
@@ -256,6 +284,12 @@ func TestScopedTablesIsolateTables(t *testing.T) {
 	}
 	if len(names) != 2 || names[0] != "plugin:a:users" || names[1] != "plugin:b:users" {
 		t.Fatalf("root.ListTables = %v, want [plugin:a:users plugin:b:users]", names)
+	}
+	// 行键原样传递：底层按同一行键存放，值由表名（前缀）区分。
+	for table, want := range map[string]string{"plugin:a:users": "from-a", "plugin:b:users": "from-b"} {
+		if got, err := root.GetRow(ctx, table, "k"); err != nil || string(got) != want {
+			t.Fatalf("root.GetRow(%s) = %q, %v, want %q", table, got, err, want)
+		}
 	}
 
 	if got, err := a.GetRow(ctx, "users", "k"); err != nil || string(got) != "from-a" {
@@ -344,5 +378,64 @@ func TestDeniedTables(t *testing.T) {
 	}
 	if _, err := ts.ListRows(ctx, "t"); !errors.Is(err, bot.ErrPermissionDenied) {
 		t.Fatalf("ListRows = %v, want bot.ErrPermissionDenied", err)
+	}
+}
+
+// unorderedStore 让 ListTables 逆序返回，用来断言表视图自己排序，
+// 而不是依赖底层 bot.TableStorage 实现恰好有序。
+type unorderedStore struct{ *Memory }
+
+func (unorderedStore) ListTables(context.Context) ([]string, error) {
+	return []string{"plugin:p:b", "plugin:p:a"}, nil
+}
+
+// TestScopedTablesListSorts 断言视图剥离前缀后按逻辑名升序返回。
+func TestScopedTablesListSorts(t *testing.T) {
+	m := newMemoryStore(t)
+	view := PluginTables("p", unorderedStore{m})
+	if view == nil {
+		t.Fatal("PluginTables 返回 nil")
+	}
+	names, err := view.ListTables(context.Background())
+	if err != nil {
+		t.Fatalf("ListTables: %v", err)
+	}
+	if len(names) != 2 || names[0] != "a" || names[1] != "b" {
+		t.Fatalf("ListTables = %v, want [a b]", names)
+	}
+}
+
+// TestMemoryTableOrdering 断言排序按字节序，而不是按语言/区域规则。
+func TestMemoryTableOrdering(t *testing.T) {
+	m := newMemoryStore(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"alpha", "Zeta"} {
+		if err := m.CreateTable(ctx, name); err != nil {
+			t.Fatalf("CreateTable(%s): %v", name, err)
+		}
+	}
+	names, err := m.ListTables(ctx)
+	if err != nil {
+		t.Fatalf("ListTables: %v", err)
+	}
+	if len(names) != 2 || names[0] != "Zeta" || names[1] != "alpha" {
+		t.Fatalf("ListTables = %v, want [Zeta alpha]（字节序：'Z' < 'a'）", names)
+	}
+
+	if err := m.CreateTable(ctx, "order"); err != nil {
+		t.Fatalf("CreateTable order: %v", err)
+	}
+	for _, key := range []string{"a", "B"} {
+		if err := m.InsertRow(ctx, "order", key, nil); err != nil {
+			t.Fatalf("InsertRow(%s): %v", key, err)
+		}
+	}
+	rows, err := m.ListRows(ctx, "order")
+	if err != nil {
+		t.Fatalf("ListRows: %v", err)
+	}
+	if len(rows) != 2 || rows[0].Key != "B" || rows[1].Key != "a" {
+		t.Fatalf("ListRows = %+v, want 键 [B a]（字节序：'B' < 'a'）", rows)
 	}
 }
