@@ -16,8 +16,8 @@
   - 证据：`pkg/`、`internal/`、`adapters/`、`plugins/`、`cmd/`、`configs/`；各目录职责见 [architecture.md](architecture.md) 第 4 章。
 - [x] 已完成：在 `pkg/bot` 定义 Event、Message、Segment、User、Channel、Command。
   - 证据：`pkg/bot/event.go:27`、`:80`，`pkg/bot/message.go:19`、`:76`，`pkg/bot/user.go:4`、`:14`；字段与方法语义见 [domain-model.md](domain-model.md) 5.2–5.5。
-- [x] 已完成：在 `pkg/bot` 定义 Adapter、Plugin、Registrar、Reply、BotAPI、Storage。
-  - 证据：`pkg/bot/adapter.go:10`、`:28`，`pkg/bot/plugin.go:13`，`pkg/bot/registrar.go:98`，`pkg/bot/reply.go:9`，`pkg/bot/api.go:23`、`:36`；接口语义见 [adapter.md](adapter.md) 6.1 与 [plugin.md](plugin.md) 9.1–9.3、11.1–11.2。
+- [x] 已完成：在 `pkg/bot` 定义 Adapter、Plugin、Registrar、Reply、BotAPI、Storage、TableStorage。
+  - 证据：`pkg/bot/adapter.go:10`、`:28`，`pkg/bot/plugin.go:13`，`pkg/bot/registrar.go:98`，`pkg/bot/reply.go:9`，`pkg/bot/api.go:23`、`:36`，`pkg/bot/table.go`（`TableStorage`/`TableRow` 与表级错误哨兵）；接口语义见 [adapter.md](adapter.md) 6.1 与 [plugin.md](plugin.md) 9.1–9.3、11.1–11.2。
 - [x] 已完成：在 `pkg/bot` 定义 Adapter 注册表：`AdapterFactory`、`AdapterContext`、`AdapterMetadata`、`RegisterAdapter`、`RegisteredAdapters`、`LookupAdapter`（与插件注册表 API 对称）。
   - 证据：`pkg/bot/adapter_registry.go:19`、`:25`、`:41`（注册表类型）、`:120`（RegisterAdapter）、`:152`（RegisteredAdapters）、`:165`（LookupAdapter）；语义与签名见 [adapter.md](adapter.md) 6.2。
 - [x] 已完成：编写接口单元测试或编译测试。

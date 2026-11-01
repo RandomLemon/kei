@@ -109,7 +109,7 @@ type TableStorage interface {
 | `DeleteRow` | 表不存在返回 `ErrTableNotFound`，行不存在返回 nil |
 | `ListRows` | 表不存在返回 `ErrTableNotFound`；按行键升序返回全部行；空表返回空切片；值都是副本 |
 | 值拷贝 | `InsertRow`/`UpdateRow` 拷贝入参，`GetRow`/`ListRows` 返回副本；`nil` 值按空值处理（SQL 后端归一为空 BLOB） |
-| 名字校验 | 表名与行键都必须非空，且按字节 ≤ 191（含视图前缀）；不做字符集限制、不做大小写归一 |
+| 名字校验 | 表名（视图前缀计入）与行键都必须非空、按字节 ≤ 191；不做字符集限制、不做大小写归一 |
 
 `Denied()` 是未声明 `PermStorage` 时注入的 KV 实现，三个方法都返回 `bot.ErrPermissionDenied`；`DeniedTables()` 是同一处境下的表实现，九个方法同样返回该哨兵。都是公开哨兵，插件/适配器可用 `errors.Is(err, bot.ErrPermissionDenied)` 判定。
 

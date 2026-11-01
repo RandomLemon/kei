@@ -59,7 +59,7 @@ const (
 	PermReadUser Permission = "read_user"
 	// PermNetwork 允许发起外部网络请求。
 	PermNetwork Permission = "network"
-	// PermStorage 允许读写 Storage。
+	// PermStorage 允许读写 Storage 与表级存储（TableStorage）。
 	PermStorage Permission = "storage"
 	// PermNetListen 允许启动入站监听（webhook / 长连接），适配器使用。
 	PermNetListen Permission = "net_listen"
@@ -381,7 +381,7 @@ type BotAPI interface {
 - `Send`：未声明 `PermSendMessage` 时返回 `fmt.Errorf("engine: plugin %s lacks permission %s", ...)`，不发送；声明后转调 `Engine.Send`（发送前按适配器能力降级、按 bot 限流、失败按退避重试）。
 - `Reply`：所有插件都可使用，无需额外权限。
 - `Logger`：返回 `engine.log.With("plugin", <插件名>)` 派生的日志器。
-- `Storage`：声明了 `PermStorage` 时返回引擎存储，否则返回拒绝式实现（`Get`/`Set`/`Delete` 返回 `bot.ErrPermissionDenied`）。
+- `Storage`：声明了 `PermStorage` 时返回引擎存储，否则返回拒绝式实现（`Get`/`Set`/`Delete` 返回 `bot.ErrPermissionDenied`）。`BotAPI` 的方法集没有表接口，表级 CRUD 只经 `PluginContext.Tables` 提供（见 11.2.1）。
 
 `Target` 与 `TargetFromEvent` 可以把当前事件转成发送目标，用于插件的主动发送：
 
@@ -462,7 +462,7 @@ type TableStorage interface {
 - `ErrTableExists`（重复建表/重命名目标已存在）、`ErrRowExists`（重复插入）、`ErrNotFound`（行不存在）都是公开哨兵，可用 `errors.Is` 判定。
 - `DropTable` 缺表、`DeleteRow` 缺行都返回 nil（幂等）；`RenameTable` 保留行数据。
 - `ListTables`/`ListRows` 按名称升序，空结果返回空切片；`GetRow`/`ListRows` 返回值是副本，`InsertRow`/`UpdateRow` 拷贝入参。
-- 表名与行键必须非空且 ≤ 191 字节（视图前缀计入）；`UpdateRow` 写入与旧值相同的值也算成功。
+- 表名（其视图前缀计入）与行键都必须非空且 ≤ 191 字节；`UpdateRow` 写入与旧值相同的值也算成功。
 - 表视图由 `storage.PluginTables` 按 `plugin:<插件名>:` 给**表名**加前缀（行键原样传递），与 `Storage` 的键前缀一致；未声明 `PermStorage` 时是 `storage.DeniedTables()`（九个方法都返回 `bot.ErrPermissionDenied`）。
 - 注入的自定义 `Storage` 未实现 `bot.TableStorage` 时，`PluginContext.Tables` 为 nil；内置 `memory`/`sqlite`/`mysql` 始终可用。`BotAPI` 的方法集没有表接口（保持向后兼容），插件应从 `PluginContext` 取。
 

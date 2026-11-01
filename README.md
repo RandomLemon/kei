@@ -47,7 +47,7 @@ kei/
 │   ├── pluginmgr/         插件生命周期管理
 │   ├── adaptermgr/        适配器装配：注册表查表、权限裁剪、保留键校验
 │   ├── config/            YAML 配置加载与环境变量覆盖
-│   ├── storage/           bot.Storage 内存实现 + 类型注册表（sqlstore/sqlite/mysql 为 SQL 后端）
+│   ├── storage/           bot.Storage/bot.TableStorage 内存实现 + 类型注册表（sqlstore/sqlite/mysql 为 SQL 后端）
 │   ├── dedup/             带 TTL 与容量的去重集合
 │   └── ratelimit/         按 key 的令牌桶（非阻塞 Allow + 阻塞 Wait）
 ├── adapters/
@@ -177,7 +177,9 @@ curl -sS 127.0.0.1:19090/metrics | grep kei_events
 
   `Options.Storage` 为 nil 时按配置 `storage` 段构造：`storage.type` 取 `memory`（默认）/`sqlite`/`mysql`，
   `storage.dsn` 及段内其余键传给对应后端（见 [docs/configuration.md](docs/configuration.md) 12.5）；
-  未知 `storage.type` 在启动时直接报错并列出已注册类型。`sqlite`/`mysql` 方言为显式 opt-in：嵌入式使用需
+  未知 `storage.type` 在启动时直接报错并列出已注册类型。注入的实例同时实现 `bot.TableStorage` 时，
+  插件/适配器会自动获得表级 API（`PluginContext.Tables`/`AdapterContext.Tables`），内置后端始终支持。
+  `sqlite`/`mysql` 方言为显式 opt-in：嵌入式使用需
   空导入 `_ "github.com/RandomLemon/kei/pkg/kei/sql"`（`cmd/bot` 已空导入），只用 `memory` 时不要导入，
   以免引入 GORM 与 cgo。
 
