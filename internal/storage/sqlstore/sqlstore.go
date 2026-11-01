@@ -73,7 +73,7 @@ func NewWithClock(db *gorm.DB, cleanup time.Duration, now func() time.Time, logg
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if err := db.AutoMigrate(&Entry{}); err != nil {
+	if err := db.AutoMigrate(&Entry{}, &TableEntry{}, &RowEntry{}); err != nil {
 		// 失败路径必须释放连接池（SQLite 还会占住文件句柄）：调用方拿到的是
 		// error 而非 Store，没有任何 closer，不关闭就是永久泄漏。
 		return nil, errors.Join(fmt.Errorf("sqlstore: 建表: %w", err), CloseDB(db))
@@ -133,14 +133,9 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 	}
 	// value 列是 NOT NULL；nil []byte 会被驱动绑定为 SQL NULL。内存后端把 nil
 	// 当作空值接受，这里统一归一为空切片，避免同一调用因后端不同而失败。
-	if value == nil {
-		value = []byte{}
-	}
-	// 用 make 而不是 append(nil, value...)：后者对空切片会返回 nil，仍会被绑定
-	// 成 SQL NULL。Entry.Value 必须是长度 0、非 nil 的空 BLOB。
-	stored := make([]byte, len(value))
-	copy(stored, value)
-	e := Entry{Key: key, Value: stored}
+	// 归一同时完成拷贝（normalizeValue 用 make 而不是 append(nil, value...)，
+	// 后者对空切片仍返回 nil，会被绑定成 SQL NULL）。
+	e := Entry{Key: key, Value: normalizeValue(value)}
 	if ttl > 0 {
 		t := s.now().Add(ttl)
 		e.ExpiresAt = &t

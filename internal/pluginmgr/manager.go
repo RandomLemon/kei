@@ -255,6 +255,13 @@ func (m *Manager) contextFor(meta bot.Metadata) bot.PluginContext {
 			}
 			return storage.Denied()
 		}(),
+		Tables: func() bot.TableStorage {
+			if meta.HasPermission(bot.PermStorage) && m.deps.Storage != nil {
+				// 前缀与 Storage 一致；底层不支持表能力时为 nil。
+				return storage.PluginTables(meta.Name, m.deps.Storage)
+			}
+			return storage.DeniedTables()
+		}(),
 	}
 	if meta.HasPermission(bot.PermNetwork) {
 		pc.HTTPClient = m.deps.HTTPClient

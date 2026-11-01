@@ -31,6 +31,9 @@ func open(cfg *bot.Config, log *slog.Logger) (bot.Storage, error) {
 	}
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
+		// TranslateError 把方言的重复键错误翻译为 gorm.ErrDuplicatedKey：
+		// 表/行的「已存在」判定依赖它，不能靠匹配驱动私有错误类型。
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("storage: sqlite: 打开数据库: %w", err)

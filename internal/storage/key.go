@@ -28,6 +28,43 @@ func CheckKey(key string) error {
 	return fmt.Errorf("%w: %d 字节（上限 %d）: %q", ErrKeyTooLong, len(key), MaxKeyBytes, keyPreview(key))
 }
 
+// CheckTableName 校验表名可被任何内置后端使用：非空且不超过 MaxKeyBytes。
+//
+// 空名单独报错而不是允许：表名是命名集合的标识，空名没有可表达的含义，且 SQL
+// 后端的唯一索引会把所有空名并成一张表。命名空间前缀同样计入长度上限。
+func CheckTableName(name string) error {
+	if name == "" {
+		return errors.New("storage: 表名不能为空")
+	}
+	if len(name) > MaxKeyBytes {
+		return nameTooLong{kind: "表名", n: len(name)}
+	}
+	return nil
+}
+
+// nameTooLong 报出具体的名字类型（表名/行键），同时可用 errors.Is 识别为
+// ErrKeyTooLong：调用方既能得到可读原因，也能按统一哨兵判定。
+type nameTooLong struct {
+	kind string
+	n    int
+}
+
+func (e nameTooLong) Error() string {
+	return fmt.Sprintf("storage: %s超过长度上限: %d 字节（上限 %d）", e.kind, e.n, MaxKeyBytes)
+}
+
+func (e nameTooLong) Unwrap() error { return ErrKeyTooLong }
+
+// CheckRowKey 校验行键可被任何内置后端使用：非空且不超过 MaxKeyBytes。
+//
+// 行键为空时无法区分「没有行」与「空键的行」，因此与表名一样要求非空。
+func CheckRowKey(key string) error {
+	if key == "" {
+		return errors.New("storage: 行键不能为空")
+	}
+	return CheckKey(key)
+}
+
 // keyPreview 截断超长键用于错误信息，避免单条错误被长键撑爆。
 func keyPreview(key string) string {
 	const limit = 64

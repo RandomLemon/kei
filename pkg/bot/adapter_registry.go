@@ -35,6 +35,10 @@ type AdapterContext struct {
 	// （调用返回 ErrPermissionDenied）；可用时按 bot 实例隔离（底层键带
 	// adapter:<botID>: 前缀），多实例互不可见。
 	Storage Storage
+	// Tables 是表级存储，与 Storage 共用 PermStorage：声明时按同一 bot 实例隔离
+	// （表名带 adapter:<botID>: 前缀），未声明时为始终拒绝的实现
+	// （调用返回 ErrPermissionDenied）。注入的 Storage 未实现 TableStorage 时为 nil。
+	Tables TableStorage
 	// HTTPClient 仅在声明 PermNetwork 时非 nil；适配器依赖出站请求时应先检查。
 	HTTPClient *http.Client
 }

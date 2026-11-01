@@ -155,6 +155,12 @@ func TestBuildTrimsDependencies(t *testing.T) {
 	if _, err := bareAd.ac.Storage.Get(context.Background(), "k"); !errors.Is(err, bot.ErrPermissionDenied) {
 		t.Fatalf("未声明 storage 时应注入拒绝式存储, err = %v", err)
 	}
+	if bareAd.ac.Tables == nil {
+		t.Fatal("未声明 storage 时 Tables 也应是拒绝式实现而非 nil")
+	}
+	if err := bareAd.ac.Tables.CreateTable(context.Background(), "t"); !errors.Is(err, bot.ErrPermissionDenied) {
+		t.Fatalf("未声明 storage 时 Tables.CreateTable = %v, want ErrPermissionDenied", err)
+	}
 	if bareAd.ac.BotID != "bare-bot" || bareAd.ac.Logger == nil || bareAd.ac.Config == nil {
 		t.Fatalf("AdapterContext = %+v", bareAd.ac)
 	}
@@ -164,6 +170,9 @@ func TestBuildTrimsDependencies(t *testing.T) {
 	}
 	if err := fullAd.ac.Storage.Set(context.Background(), "k", []byte("v"), 0); err != nil {
 		t.Fatalf("声明 storage 时应可写: %v", err)
+	}
+	if err := fullAd.ac.Tables.CreateTable(context.Background(), "t"); err != nil {
+		t.Fatalf("声明 storage 时应可建表: %v", err)
 	}
 
 	list := bindings.List()
@@ -476,5 +485,62 @@ func TestValidateRegistrationRejects(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("错误 = %v, 期望包含 %q", err, want)
 		}
+	}
+}
+
+// TestBuildNamespacesTables 断言同平台多实例的表视图互不可见：各自创建同名表，
+// 底层表名分别带 adapter:<botID>: 前缀。
+func TestBuildNamespacesTables(t *testing.T) {
+	const name = "test-scoped-tables"
+	contexts := map[string]bot.AdapterContext{}
+	bot.RegisterAdapter(bot.AdapterMetadata{
+		Name: name, Platforms: []string{"recording"},
+		Permissions: []bot.Permission{bot.PermStorage},
+	}, func(ac bot.AdapterContext) (bot.Adapter, error) {
+		contexts[ac.BotID] = ac
+		return &recordingAdapter{name: name}, nil
+	})
+
+	mem := storage.NewMemory()
+	defer func() { _ = mem.Close() }()
+	cfg := &config.Config{Bots: []config.BotConfig{
+		{Name: "tables-1", Adapter: name},
+		{Name: "tables-2", Adapter: name},
+	}}
+	if _, err := Build(cfg, testDeps(mem, nil, nil)); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	first, second := contexts["tables-1"], contexts["tables-2"]
+	ctx := context.Background()
+
+	for botID, ac := range map[string]bot.AdapterContext{"tables-1": first, "tables-2": second} {
+		if ac.Tables == nil {
+			t.Fatalf("%s 的 Tables 为 nil", botID)
+		}
+		if err := ac.Tables.CreateTable(ctx, "users"); err != nil {
+			t.Fatalf("%s.CreateTable: %v", botID, err)
+		}
+		if err := ac.Tables.InsertRow(ctx, "users", "k", []byte(botID)); err != nil {
+			t.Fatalf("%s.InsertRow: %v", botID, err)
+		}
+	}
+
+	// 各自的视图只看到逻辑名与自己的行。
+	for botID, ac := range map[string]bot.AdapterContext{"tables-1": first, "tables-2": second} {
+		names, err := ac.Tables.ListTables(ctx)
+		if err != nil || len(names) != 1 || names[0] != "users" {
+			t.Fatalf("%s.ListTables = %v, %v, want [users]", botID, names, err)
+		}
+		if got, err := ac.Tables.GetRow(ctx, "users", "k"); err != nil || string(got) != botID {
+			t.Fatalf("%s.GetRow = %q, %v, want %q", botID, got, err, botID)
+		}
+	}
+	// 底层表名带实例前缀，互不覆盖。
+	names, err := mem.ListTables(ctx)
+	if err != nil {
+		t.Fatalf("根存储 ListTables: %v", err)
+	}
+	if len(names) != 2 || names[0] != "adapter:tables-1:users" || names[1] != "adapter:tables-2:users" {
+		t.Fatalf("根存储表名 = %v, want [adapter:tables-1:users adapter:tables-2:users]", names)
 	}
 }

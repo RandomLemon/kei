@@ -215,7 +215,7 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
   ```
 
 - 注册表校验（`ValidateRegistry`）报错条件：注册名重复（`adaptermgr: 适配器注册名重复: %s`）、元信息缺 `Platforms`（`adaptermgr: 适配器 %s 未声明 Platforms`）、声明了插件与适配器都不允许的 `PermAll`；另有被拒绝的注册（见附注）。
-- `AdapterMetadata.Permissions` 是装配裁剪的唯一依据：未声明 `PermStorage` 时注入 `storage.Denied()`，未声明 `PermNetwork` 时 `HTTPClient` 保持 nil；配置了保留键 `listen_addr`（`bot.OptListenAddr`）但未声明 `PermNetListen` 时装配失败：`config: bot %s 配置了保留键 %s，但适配器 %s 未声明 %s 权限`。
+- `AdapterMetadata.Permissions` 是装配裁剪的唯一依据：未声明 `PermStorage` 时注入 `storage.Denied()` 与 `storage.DeniedTables()`，未声明 `PermNetwork` 时 `HTTPClient` 保持 nil；配置了保留键 `listen_addr`（`bot.OptListenAddr`）但未声明 `PermNetListen` 时装配失败：`config: bot %s 配置了保留键 %s，但适配器 %s 未声明 %s 权限`。
 - 适配器不认识（未列入元信息 `Options`）的私有配置键只告警不报错。
 
 ### 7.7 发送链路：能力降级、令牌桶限流与退避重试

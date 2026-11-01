@@ -197,8 +197,11 @@ func buildInProcess(bc config.BotConfig, deps Deps) (Binding, error) {
 	if meta.HasPermission(bot.PermStorage) && deps.Storage != nil {
 		// 按键空间隔离：每个 bot 实例一份命名空间，同平台多实例互不可见。
 		ac.Storage = storage.AdapterScoped(bc.Name, deps.Storage)
+		// 表名用同一前缀隔离；底层不支持表能力时为 nil。
+		ac.Tables = storage.AdapterTables(bc.Name, deps.Storage)
 	} else {
 		ac.Storage = storage.Denied()
+		ac.Tables = storage.DeniedTables()
 	}
 	if meta.HasPermission(bot.PermNetwork) {
 		ac.HTTPClient = deps.HTTPClient

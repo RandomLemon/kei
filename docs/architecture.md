@@ -116,8 +116,8 @@ kei/
 │   ├── middleware/               # 中间件：Recover、Logger、Metrics、Timeout、Dedup、RateLimit、Auth
 │   ├── eventbus/                 # 事件总线：分片保序、去重、优雅关闭前排空队列
 │   ├── config/                   # YAML 配置加载、合并与校验，环境变量覆盖
-│   ├── storage/                  # bot.Storage 内存实现、权限拒绝实现与类型注册表（Register/Open/Kinds）
-│   │   ├── sqlstore/             # GORM 通用 SQL 实现：Entry 模型、Get/Set/Delete/Close、后台过期清理、连接池
+│   ├── storage/                  # bot.Storage/bot.TableStorage 内存实现、权限拒绝实现与类型注册表（Register/Open/Kinds）
+│   │   ├── sqlstore/             # GORM 通用 SQL 实现：Entry/TableEntry/RowEntry 模型、KV 与表 CRUD、后台过期清理、连接池
 │   │   ├── sqlite/               # SQLite 方言包：init 注册 "sqlite"（cgo 驱动，需 CGO_ENABLED=1）
 │   │   └── mysql/                # MySQL 方言包：init 注册 "mysql"（含连接池参数）
 │   ├── dedup/                    # 带 TTL 与容量上限的去重集合
@@ -160,5 +160,5 @@ kei-adapter-myim/         # 独立仓库/模块
 - [domain-model.md](domain-model.md)：`pkg/bot` 的公开领域模型与消息段。
 - [adapter.md](adapter.md)：适配器接口、注册表与工厂、元信息与权限、能力降级。
 - [engine.md](engine.md)：Engine、EventBus、路由与中间件。
-- [storage.md](storage.md)：`bot.Storage` 契约、内存/SQL 后端、类型注册表、命名空间隔离与生命周期。
+- [storage.md](storage.md)：`bot.Storage`/`bot.TableStorage` 契约、内存/SQL 后端、类型注册表、命名空间隔离与生命周期。
 - [configuration.md](configuration.md)：配置键、默认值与环境变量覆盖规则。

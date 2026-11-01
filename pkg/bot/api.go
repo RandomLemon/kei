@@ -30,6 +30,9 @@ var ErrPermissionDenied = errors.New("bot: permission denied")
 // 实现必须并发安全。框架传给插件/适配器的键不超过 191 字节，内置后端对超长键
 // 一律返回错误（internal/storage.CheckKey）；自定义实现应保证同样的行为，避免
 // 只有 SQL 后端会失败的键在各后端表现不一致。
+//
+// 表级与表内操作不在本接口里，见 TableStorage：内置后端由同一根实例实现两个
+// 接口，插件经 PluginContext.Tables 获取，适配器经 AdapterContext.Tables 获取。
 type Storage interface {
 	// Get 读取键值，键不存在时返回 ErrNotFound。
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -74,6 +77,11 @@ type PluginContext struct {
 	// 可用时按插件名隔离（底层键带 plugin:<name>: 前缀），不同插件互不可见；
 	// 未声明时得到始终拒绝的实现（调用返回 ErrPermissionDenied）。
 	Storage Storage
+	// Tables 是插件可用的表级存储，与 Storage 共用 PermStorage：
+	// 声明时按同一插件名隔离（表名带 plugin:<name>: 前缀），未声明时为始终拒绝的
+	// 实现（调用返回 ErrPermissionDenied）。注入的 Storage 未实现 TableStorage 时
+	// 为 nil。
+	Tables TableStorage
 	// HTTPClient 是带超时的 HTTP 客户端，插件需声明 PermNetwork 才能使用。
 	HTTPClient *http.Client
 	// Bot 是插件访问平台的唯一入口。

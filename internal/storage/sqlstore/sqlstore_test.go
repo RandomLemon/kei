@@ -23,7 +23,7 @@ import (
 // openGorm 打开一个指向 dsn 的 SQLite GORM 连接，失败即终止测试。
 func openGorm(t *testing.T, dsn string) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent), TranslateError: true})
 	if err != nil {
 		t.Fatalf("gorm.Open(%s): %v", dsn, err)
 	}

@@ -316,6 +316,29 @@ func TestPermissionScopedContext(t *testing.T) {
 			} else if !errors.Is(err, bot.ErrPermissionDenied) {
 				t.Fatalf("无存储权限时 Set = %v, want ErrPermissionDenied", err)
 			}
+
+			// 表能力与 Storage 共用 PermStorage，前缀必须一致（plugin:<name>:）。
+			if p.lastCtx.Tables == nil {
+				t.Fatal("Tables 恒不应为 nil（无权限时是拒绝式实现）")
+			}
+			err = p.lastCtx.Tables.CreateTable(context.Background(), "users")
+			if tc.wantStorage {
+				if err != nil {
+					t.Fatalf("有存储权限时 CreateTable 失败: %v", err)
+				}
+				names, err := store.ListTables(context.Background())
+				if err != nil {
+					t.Fatalf("根存储 ListTables: %v", err)
+				}
+				if len(names) != 1 || names[0] != "plugin:p:users" {
+					t.Fatalf("根存储表名 = %v, want [plugin:p:users]（与 Storage 同前缀）", names)
+				}
+				if got, err := p.lastCtx.Tables.ListTables(context.Background()); err != nil || len(got) != 1 || got[0] != "users" {
+					t.Fatalf("插件视图 ListTables = %v, %v, want [users]", got, err)
+				}
+			} else if !errors.Is(err, bot.ErrPermissionDenied) {
+				t.Fatalf("无存储权限时 CreateTable = %v, want ErrPermissionDenied", err)
+			}
 			if p.lastCtx.Name != "p" || p.lastCtx.Logger == nil || p.lastCtx.Bot == nil || p.lastCtx.Catalog == nil {
 				t.Fatalf("PluginContext 不完整: %+v", p.lastCtx)
 			}

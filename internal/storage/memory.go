@@ -18,7 +18,10 @@ const defaultCleanupInterval = time.Minute
 type Memory struct {
 	mu    sync.RWMutex
 	items map[string]item
-	now   func() time.Time
+	// tables 承载 bot.TableStorage 的表数据：表名 -> 行键 -> 行值。
+	// 表数据没有 TTL，不参与 janitor，也不计入 Len。
+	tables map[string]map[string][]byte
+	now    func() time.Time
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -56,9 +59,10 @@ func NewMemory() *Memory {
 // 被主动移除（Len 会计入它们）；Close 依旧可用且幂等。
 func NewMemoryWithCleanup(cleanup time.Duration) *Memory {
 	m := &Memory{
-		items: make(map[string]item),
-		now:   time.Now,
-		stop:  make(chan struct{}),
+		items:  make(map[string]item),
+		tables: make(map[string]map[string][]byte),
+		now:    time.Now,
+		stop:   make(chan struct{}),
 	}
 	if cleanup > 0 {
 		m.wg.Add(1)

@@ -23,7 +23,8 @@ import (
 func openDB(t *testing.T, path string) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:         logger.Default.LogMode(logger.Silent),
+		TranslateError: true,
 	})
 	if err != nil {
 		t.Fatalf("gorm.Open: %v", err)
@@ -207,5 +208,51 @@ func TestSQLiteBackgroundCleanup(t *testing.T) {
 			t.Fatal("后台清理未在 2s 内删除过期行")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestSQLiteTable 断言经注册表构造的 SQLite 后端同时提供表能力，
+// 且表与行在关闭/重开后仍然可读（AutoMigrate 与持久化路径都覆盖到）。
+func TestSQLiteTable(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "t.db")
+	ctx := context.Background()
+
+	first, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}), nil)
+	if err != nil {
+		t.Fatalf("Open(sqlite): %v", err)
+	}
+	tables, ok := first.(bot.TableStorage)
+	if !ok {
+		t.Fatal("Open(sqlite) 的实例未实现 bot.TableStorage")
+	}
+	if err := tables.CreateTable(ctx, "users"); err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+	if err := tables.InsertRow(ctx, "users", "a", []byte("a1")); err != nil {
+		t.Fatalf("InsertRow: %v", err)
+	}
+	if err := first.(interface{ Close() error }).Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	second, err := storage.Open("sqlite", bot.NewConfig(map[string]any{"dsn": dsn}), nil)
+	if err != nil {
+		t.Fatalf("重新 Open(sqlite): %v", err)
+	}
+	defer func() { _ = second.(interface{ Close() error }).Close() }()
+	tables2, ok := second.(bot.TableStorage)
+	if !ok {
+		t.Fatal("重新打开后的实例未实现 bot.TableStorage")
+	}
+	names, err := tables2.ListTables(ctx)
+	if err != nil {
+		t.Fatalf("重新打开后 ListTables: %v", err)
+	}
+	if len(names) != 1 || names[0] != "users" {
+		t.Fatalf("重新打开后 ListTables = %v, want [users]", names)
+	}
+	got, err := tables2.GetRow(ctx, "users", "a")
+	if err != nil || string(got) != "a1" {
+		t.Fatalf("重新打开后 GetRow = %q, %v, want a1", got, err)
 	}
 }

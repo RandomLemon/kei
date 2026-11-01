@@ -54,6 +54,8 @@ type Options struct {
 	// Storage 是插件存储；非 nil 时优先使用（由调用方拥有，Run 不关闭）。
 	// 为 nil 时按配置 storage.type 构造（默认 memory），并在 Run 返回前关闭；
 	// 若关闭时总线未排空（ErrShutdownIncomplete），自有存储会保留不关闭。
+	// 注入实例同时实现 bot.TableStorage 时，插件/适配器自动获得表 API
+	// （PluginContext.Tables / AdapterContext.Tables）；否则该字段为 nil。
 	Storage bot.Storage
 }
 
