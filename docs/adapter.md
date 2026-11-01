@@ -163,13 +163,10 @@ type AdapterContext struct {
 	Config *Config
 	// Logger 不为 nil；适配器日志必须使用它，并带上 bot/adapter 字段。
 	Logger *slog.Logger
-	// Storage 仅在声明 PermStorage 时是可用实现，否则为始终拒绝的实现；
-	// 可用时是按 bot 实例隔离的视图（底层键带 adapter:<botID>: 前缀）。
+	// Storage 与 Tables 仅在声明 PermStorage 时可用，否则是始终拒绝的实现；
+	// 权限、隔离前缀与 nil 语义见 storage.md 第 5.2 节。
 	Storage Storage
-	// Tables 是表级存储，与 Storage 共用 PermStorage：可用时表名带
-	// adapter:<botID>: 前缀，多实例互不可见；未声明时为始终拒绝的实现；
-	// 注入的 Storage 未实现 TableStorage 时为 nil。
-	Tables TableStorage
+	Tables  TableStorage
 	// HTTPClient 仅在声明 PermNetwork 时非 nil；适配器依赖出站请求时应先检查。
 	HTTPClient *http.Client
 }
@@ -283,7 +280,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 | --- | --- | --- |
 | `send_message` | 出站发送（适配器自己的 `Send`） | 仅审计；权限模型与插件共用。进程内适配器路径上没有任何 `PermSendMessage` 检查，`Send` 始终可用 |
 | `network` | 出站网络请求 | `AdapterContext.HTTPClient` 为 nil |
-| `storage` | 读写去重/状态缓存 | 注入拒绝式 `Storage`（`internal/storage.Denied()`）与拒绝式 `Tables`（`DeniedTables()`），全部方法返回 `bot.ErrPermissionDenied`（`errors.Is` 可判定）；授予时注入的是带 `adapter:<botID>:` 前缀的隔离视图（键与表名同前缀），注入的 `Storage` 不支持表能力时 `Tables` 为 nil |
+| `storage` | 读写去重/状态缓存 | 见 [`storage.md`](storage.md) 第 5.2 节：未声明时注入拒绝式 `Storage`/`Tables`，任意调用返回 `bot.ErrPermissionDenied` |
 | `net_listen` | 启动入站监听（webhook / 长连接） | 配置里出现保留键 `listen_addr` 时启动失败 |
 | `receive_event` | 保留权限，仅作声明与审计 | 核心当前不据此裁剪任何依赖 |
 | `*` | 不适用于适配器（声明即启动失败） | — |
@@ -297,7 +294,7 @@ func LookupAdapter(name string) (AdapterMetadata, AdapterFactory, bool)
 各条的落地位置：
 
 - 注册表校验：`internal/adaptermgr.ValidateRegistry` = `validateRegistryOf` + `validateRegistrationRejects`。报错条件为「存在被拒绝的注册（空注册名或 nil 工厂）」「注册名重复」「元信息缺 `Platforms`」「声明了 `PermAll`」，文案分别是 `适配器注册被拒绝: <名字或<空名>>（<原因>）…`、`适配器注册名重复: …`、`适配器 %s 未声明 Platforms`、`适配器 %s 不得声明 * 权限（插件与适配器都需逐项声明）`。插件侧的对应门是 `pluginmgr.Add`：插件名（`[a-z0-9_-]`）、重名、`PermAll` 与 `Options` 未知键告警，见 [plugin.md](plugin.md) 9.1。
-- 依赖裁剪：`PermStorage` 且 `Deps.Storage != nil` 时注入真实存储（`storage.AdapterScoped` 包一层，底层键带 `adapter:<botID>:` 前缀，同平台多实例因此互不可见；键长上限与内存/SQL 后端一致，见 6.7 与 [plugin.md](plugin.md) 11.2），表视图由 `storage.AdapterTables` 以同一前缀隔离（表名带 `adapter:<botID>:`，行键不变；底层不实现 `bot.TableStorage` 时 `Tables` 为 nil）；否则一律注入 `storage.Denied()` 与 `storage.DeniedTables()`（未授予、或授予了但核心没有可用存储，结果相同）；只有声明了 `PermNetwork` 才注入 `Deps.HTTPClient`，未声明时该字段保持 nil。`PermSendMessage` 不参与任何裁剪。
+- 依赖裁剪：`PermStorage` 的存储与表视图规则见 [`storage.md`](storage.md) 第 5.2 节（隔离前缀、未授权时的拒绝式实现）；未声明 `PermNetwork` 时 `Deps.HTTPClient` 保持 nil；保留键校验见下条。`PermSendMessage` 不参与任何裁剪。
 - 保留键校验：`checkReservedOptions(botID, settings, adapter, perms)` 在 `adaptermgr.Validate` 执行；`listen_addr` 值为 nil 或去空白后为空时视为未配置。报错文案：`配置了保留键 listen_addr，但适配器 %s 未声明 net_listen 权限`。
 - `net_listen` 的校验只覆盖保留键 `listen_addr`：适配器是否真的监听、监听在哪个地址，核心不检查也不拦截；换用别的配置键做入站监听则完全不受该权限约束。
 - 适配器元信息的 `Options` 只影响未知键告警（见 6.5），不影响权限。
@@ -392,7 +389,7 @@ bots:
 
 约定与校验：
 
-- `AdapterContext` 的字段就是全部可用依赖：`BotID`（实例名，必须写进 `Event.BotID` 与 `SendRequest.BotID`）、`Config`、`Logger`、`Storage`、`HTTPClient`。`Config` 是 `bot.NewConfig(bots[] 条目中除 name/adapter/enabled/plugins 外的键)`（`NewConfig` 深拷贝，`Raw()` 返回副本，适配器改配置不会回到 `config.Config`），`Get`/`String`/`Bool`/`Int`/`Duration`/`Strings` 都支持 `"a.b.c"` 多级键，键缺失或类型不符时返回默认值。
+- `AdapterContext` 的字段就是全部可用依赖：`BotID`（实例名，必须写进 `Event.BotID` 与 `SendRequest.BotID`）、`Config`、`Logger`、`Storage`、`Tables`、`HTTPClient`。`Storage`/`Tables` 的权限与隔离语义见 [storage.md](storage.md) 第 5.2 节。`Config` 是 `bot.NewConfig(bots[] 条目中除 name/adapter/enabled/plugins 外的键)`（`NewConfig` 深拷贝，`Raw()` 返回副本，适配器改配置不会回到 `config.Config`），`Get`/`String`/`Bool`/`Int`/`Duration`/`Strings` 都支持 `"a.b.c"` 多级键，键缺失或类型不符时返回默认值。
 - 实例级开关：`bots[]` 条目上的 `enabled: false` 跳过该实例（见 6.7），此时该实例的 `Settings` 不参与任何校验，也不会产生未知键告警。
 - 声明了 `PermNetListen` 的适配器才允许在实例配置里出现保留键 `listen_addr`（见 6.3）；`Options` 非空时应把 `listen_addr` 一并列入，否则会被当作未知键告警。
 - 未知键告警：`internal/adaptermgr.warnUnknownOptions` 对「不在 `AdapterMetadata.Options` 中的私有键」记 warn 日志 `适配器不认识的配置键`，字段为 `bot`/`adapter`/`key`。`Options` 为空表示不校验、静默跳过（此时连 `listen_addr` 也不会告警）；只告警不报错，以支持第三方适配器独立演进。

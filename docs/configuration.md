@@ -166,20 +166,20 @@ type StorageConfig struct {
 
 存储后端由 `storage.type` 选择，`dsn` 与其余键进入 `Params` 后原样交给对应后端。`type` 默认 `memory`，`storage` 段整体可以省略。
 
-- **已注册类型**：`memory`（默认，进程内内存，重启即丢）、`sqlite`（GORM + cgo 版 `github.com/mattn/go-sqlite3`，`dsn` 是文件路径或 `file:...?params`）、`mysql`（GORM + `github.com/go-sql-driver/mysql`，`dsn` 形如 `user:pass@tcp(host:3306)/db?parseTime=true`）。`parseTime=true` 是过期时间列能扫描为 `time.Time` 的前提，核心不校验，缺失时由驱动报错。**SQL 方言是显式 opt-in**：未空导入 `pkg/kei/sql` 时只有 `memory` 注册，配置 `storage.type: sqlite/mysql` 会在装配期报未知类型；嵌入式使用需自行空导入 `_ "github.com/RandomLemon/kei/pkg/kei/sql"`（`cmd/bot` 已空导入），以免不用 SQL 后端却引入 GORM 与 cgo（见 [architecture.md](architecture.md) 3.1）。
-- **类型注册表在装配期**：`internal/storage` 提供 `Register`/`Open`/`Kinds`，各后端包在 `init()` 注册；`pkg/kei.buildStorage` 调用 `storage.Open`，未知类型在此报错并列出已注册类型：`kei: 初始化 storage: storage: 未知存储类型 "x"（已注册: memory, mysql, sqlite）`。配置层不维护类型白名单，第三方可注入 `Options.Storage` 使用自定义实现。
+- **已注册类型**：`memory`（默认）、`sqlite`（`dsn` 是文件路径或 `file:...?params`）、`mysql`（`dsn` 形如 `user:pass@tcp(host:3306)/db?parseTime=true`）。各类型的驱动、持久化与参数要求见 [`storage.md`](storage.md) 第 3 节。**SQL 方言是显式 opt-in**：未空导入 `pkg/kei/sql` 时只有 `memory` 注册，配置 `storage.type: sqlite/mysql` 会在装配期报未知类型；嵌入式使用需自行空导入 `_ "github.com/RandomLemon/kei/pkg/kei/sql"`（`cmd/bot` 已空导入），以免不用 SQL 后端却引入 GORM 与 cgo（见 [architecture.md](architecture.md) 3.1）。
+- **类型是否存在由装配期判定**：配置层不维护类型白名单，`storage.Open` 在装配时对未知类型报错并列出已注册类型（`kei: 初始化 storage: storage: 未知存储类型 "x"（已注册: memory, mysql, sqlite）`）；注册表、注入与装配细节见 [`storage.md`](storage.md) 第 4 节。
 - **后端参数**：`type`/`dsn` 之外的键进入 `Params` 并原样传给后端；下列已知键的取值在配置层校验（`StorageConfig.validate`），类型不符、非整数或负数直接报错，错误路径为 `storage.params.<key>`，环境变量覆盖的值同样校验：
 
 | 键 | 适用后端 | 取值 | 语义 |
 | --- | --- | --- | --- |
-| `cleanup_interval` | `memory`、`sqlite`、`mysql` | 时长字符串（`1m`）或秒数 | 过期条目后台清理间隔，默认 `1m`；`0` 关闭后台清理（过期键读取时仍判为不存在；SQL 后端在 `Get` 命中过期行时惰性删除，内存实现不删除、`Len` 计入它们）。清理失败不再静默：后台清理失败记 Warn、惰性删除失败记 Debug |
+| `cleanup_interval` | `memory`、`sqlite`、`mysql` | 时长字符串（`1m`）或秒数 | 过期条目后台清理间隔，默认 `1m`；`0` 关闭后台清理。清理与过期判定的行为见 [`storage.md`](storage.md) 3.1、3.2 |
 | `max_open_conns` | `mysql` | 非负整数 | 连接池最大连接数；`0` 表示不限制；三者都缺失时不改动驱动默认值 |
 | `max_idle_conns` | `mysql` | 非负整数 | 最大空闲连接数；`0` 表示不保留 |
 | `conn_max_lifetime` | `mysql` | 时长或秒数 | 连接最长存活时间；`0` 表示不按龄关闭 |
 
     未列出的键（含拼错的键名）原样透传给后端而不报错：这是第三方后端的扩展空间，内置后端会忽略它们；`sqlite`/`memory` 也忽略上表的 MySQL 连接池键，同一份配置因此可以切换后端。校验存在的意义是避免取值被静默回落默认值——例如 `max_open_conns: "abc"` 会被 `Config.Int` 读成 `0`（不限制），`cleanup_interval: -5s` 会直接关掉后台清理。
-- **键长上限**：存储键最大 191 字节（`internal/storage.MaxKeyBytes`，取自 SQL 列定义的 `size:191`）。内存、SQLite、MySQL 三个内置后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（核心侧可用 `errors.Is(err, storage.ErrKeyTooLong)` 判定；该哨兵位于 `internal/storage`，外部实现只能依赖错误文本），不会出现「内存/SQLite 能存、只有 MySQL 报错」的差异。插件/适配器经框架拿到的存储还带 `plugin:<name>:`/`adapter:<botID>:` 隔离前缀（见 [plugin.md](plugin.md) 11.2、[adapter.md](adapter.md) 6.3），前缀计入上述字节数。表级存储的表名与行键同样受 191 字节上限（`storage.CheckTableName`/`storage.CheckRowKey`），表名的视图前缀计入、行键不含前缀（见 [storage.md](storage.md) 第 6 节）。
-- **注入优先**：`Options.Storage` 非 nil 时优先使用（由调用方拥有，`Run` 不关闭）；为 nil 时按 `storage.type` 构造，并在 `Run` 返回前关闭自有实例。例外：关闭时事件总线未排空（`ErrShutdownIncomplete`）则保留该实例不关闭，避免在途 handler 使用已关闭的存储。表能力不额外配置：注入实例同时实现 `bot.TableStorage` 即自动可用，否则插件/适配器的 `Tables` 为 nil（见 [storage.md](storage.md) 4.2）。
+- **键与表名的长度上限**：存储键、表名与行键的长度规则（191 字节、视图前缀的计入方式、拒绝错误）见 [`storage.md`](storage.md) 第 6 节。
+- **注入优先**：`Options.Storage` 非 nil 时优先使用，否则按 `storage.type` 构造；实例所有权、关闭时机与表能力的传递方式见 [`storage.md`](storage.md) 第 4.2、7 节。
 
 ### 12.6 `engine`
 

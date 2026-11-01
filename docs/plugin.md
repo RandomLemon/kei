@@ -381,7 +381,7 @@ type BotAPI interface {
 - `Send`：未声明 `PermSendMessage` 时返回 `fmt.Errorf("engine: plugin %s lacks permission %s", ...)`，不发送；声明后转调 `Engine.Send`（发送前按适配器能力降级、按 bot 限流、失败按退避重试）。
 - `Reply`：所有插件都可使用，无需额外权限。
 - `Logger`：返回 `engine.log.With("plugin", <插件名>)` 派生的日志器。
-- `Storage`：声明了 `PermStorage` 时返回引擎存储，否则返回拒绝式实现（`Get`/`Set`/`Delete` 返回 `bot.ErrPermissionDenied`）。`BotAPI` 的方法集没有表接口，表级 CRUD 只经 `PluginContext.Tables` 提供（见 11.2.1）。
+- `Storage`：声明了 `PermStorage` 时返回引擎存储，否则返回拒绝式实现（调用返回 `bot.ErrPermissionDenied`）。`BotAPI` 的方法集没有表接口，表级 CRUD 只经 `PluginContext.Tables` 提供；权限、前缀与 nil 语义见 [`storage.md`](storage.md) 第 5.1 节。
 
 `Target` 与 `TargetFromEvent` 可以把当前事件转成发送目标，用于插件的主动发送：
 
@@ -391,80 +391,12 @@ func TargetFromEvent(ev *Event) Target
 
 事件上行与消息下行的完整链路、`SendResult`、`SendRequest` 与降级细节见 [domain-model.md](domain-model.md) 与 [adapter.md](adapter.md)。
 
-### 11.2 Storage
+### 11.2 Storage 与表级存储
 
-存储模块的整体设计（后端实现、类型注册表、装配与生命周期）见 [`storage.md`](storage.md)；本节只描述插件可见的契约、权限语义与键空间。
+存储模块的契约、后端语义、隔离规则、长度上限、生命周期与扩展方式以 [`storage.md`](storage.md) 为**唯一规范**。插件侧只有两点需要记住：
 
-```go
-// ErrNotFound 表示 Storage 中不存在所请求的键。
-//
-// 实现必须保证「键不存在」返回可被 errors.Is(err, ErrNotFound) 识别的错误。
-var ErrNotFound = errors.New("bot: storage: key not found")
-
-// ErrPermissionDenied 表示访问因缺少所需权限而被拒绝。
-//
-// 实现必须保证「拒绝访问」返回可被 errors.Is(err, ErrPermissionDenied) 识别的错误。
-var ErrPermissionDenied = errors.New("bot: permission denied")
-
-// Storage 是插件可用的键值存储。
-//
-// 默认内存实现；可经配置 storage.type 切换为 sqlite/mysql，或注入自定义实现。
-// 实现必须并发安全。
-type Storage interface {
-	// Get 读取键值，键不存在时返回 ErrNotFound。
-	Get(ctx context.Context, key string) ([]byte, error)
-	// Set 写入键值；ttl <= 0 表示永不过期。
-	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
-	// Delete 删除键值，键不存在时不返回错误。
-	Delete(ctx context.Context, key string) error
-}
-```
-
-内存实现位于 `internal/storage`：
-
-- `storage.NewMemory() *Memory` / `storage.NewMemoryWithCleanup(interval)`：构造并发安全的存储并启动过期清理 goroutine（默认 `defaultCleanupInterval = time.Minute` 扫一次，`interval <= 0` 时不启动）。经注册表 `storage.Open("memory", cfg, logger)` 使用时读取 `cleanup_interval`（默认 1 分钟，`0` 关闭后台清理，与 SQL 后端同义）。使用完必须 `Close()` 释放后台 goroutine，`Close` 可重复调用。
-- `Get` 返回值的副本，键不存在或已过期返回 `bot.ErrNotFound`；`Set` 拷贝入参切片，`ttl <= 0` 表示永不过期；`Delete` 对不存在的键返回 nil；`Len()` 返回当前条目数（含尚未清理的过期条目）。入参 ctx 已取消时立即返回 `ctx.Err()`。
-- `storage.Denied() bot.Storage`：拒绝一切访问的实现，`Get`/`Set`/`Delete` 都返回 `bot.ErrPermissionDenied`（公开哨兵，插件/适配器可经 `errors.Is(err, bot.ErrPermissionDenied)` 判定）。未声明 `PermStorage` 的插件（`internal/engine.pluginAPI`）与适配器（`internal/adaptermgr`）拿到的就是它。
-
-替换方式：配置 `storage.type`/`storage.dsn` 选择内置后端（`memory` 默认、`sqlite`、`mysql`，见 [configuration.md](configuration.md) 12.5），或 `kei.Options.Storage` 注入自定义 `bot.Storage`（非 nil 优先，由调用方拥有，`Run` 不关闭）。`pkg/kei.buildStorage` 为 nil 时按配置构造，并在 `Run` 返回前关闭自有实例（关闭时总线未排空则保留，见 [engine.md](engine.md) 7.3）。`internal/pluginmgr.Deps.Storage` 则接收最终解析出的实例，按插件权限分发。
-
-键空间与键长：插件拿到的 `Storage` 是**按插件名隔离的视图**——`internal/pluginmgr` 在组装 `PluginContext` 时与 `internal/engine.pluginAPI`（`BotAPI.Storage()`）都用 `storage.PluginScoped` 包一层，底层键统一带 `plugin:<插件名>:` 前缀。两个插件的同名键因此互不覆盖，插件也不需要自己拼前缀（键按原样传入，前缀由框架加；同一插件经 `PluginContext.Storage` 与 `BotAPI.Storage()` 看到的是同一批键）。键长上限按**底层键**计算，共 191 字节（`storage.MaxKeyBytes`，取自 SQL 列的 `size:191`）：内存、SQLite、MySQL 三个后端都在读写前调用 `storage.CheckKey`，超长键统一返回 `storage: 键超过长度上限`（核心侧可用 `errors.Is(err, storage.ErrKeyTooLong)` 判定；该哨兵定义在 `internal/storage`，插件/适配器侧只看到统一错误文本），而不是只有 MySQL 报错；上限按字节计算，比 MySQL 的字符数约束更保守。由于框架注入的 `plugin:<插件名>:` 前缀也计入这 191 字节，插件实际可用的逻辑键更短：上限为 `191 - len("plugin:<插件名>:")` 字节。
-
-SQL 后端（`internal/storage/sqlstore` + `sqlite`/`mysql` 方言包）与内存实现语义一致：`Get` 返回副本、过期键返回 `bot.ErrNotFound`（并在命中时惰性删除该行），`Set` upsert 且拷贝入参（`nil` 值归一为空 BLOB，避免 `NOT NULL` 与内存后端行为不一致），`Delete` 缺键返回 nil，`Close` 停后台清理并关连接、可重复调用。清理失败不再静默：后台清理失败记 **Warn**（表在无界增长，必须告警），`Get` 惰性删除失败记 **Debug**（读取路径高频、多为并发删除等预期噪声，`Get` 仍照常返回 `bot.ErrNotFound`）；日志器经装配链传入（`storage.Open(kind, cfg, logger)` / `sqlstore.New(db, cleanup, logger)`，nil 时为 `slog.Default()`）。
-
-### 11.2.1 表级存储（`TableStorage`）
-
-KV 之外，插件还可经 `PluginContext.Tables` 拿到表级与表内 CRUD（`pkg/bot/table.go`，公开接口 `bot.TableStorage`）：表是命名集合，行是无模式的「非空键 → 字节串」，不提供列 schema、TTL、分页或跨表事务。
-
-```go
-type TableRow struct {
-	Key   string
-	Value []byte
-}
-
-type TableStorage interface {
-	CreateTable(ctx context.Context, table string) error
-	ListTables(ctx context.Context) ([]string, error)
-	RenameTable(ctx context.Context, oldName, newName string) error
-	DropTable(ctx context.Context, table string) error
-
-	InsertRow(ctx context.Context, table, key string, value []byte) error
-	GetRow(ctx context.Context, table, key string) ([]byte, error)
-	UpdateRow(ctx context.Context, table, key string, value []byte) error
-	DeleteRow(ctx context.Context, table, key string) error
-	ListRows(ctx context.Context, table string) ([]TableRow, error)
-}
-```
-
-关键语义（完整表格见 [`storage.md`](storage.md) 第 2 节）：
-
-- 表必须显式 `CreateTable`，`InsertRow` 不自动建表；表不存在时行操作返回 `bot.ErrTableNotFound`。
-- `ErrTableExists`（重复建表/重命名目标已存在）、`ErrRowExists`（重复插入）、`ErrNotFound`（行不存在）都是公开哨兵，可用 `errors.Is` 判定。
-- `DropTable` 缺表、`DeleteRow` 缺行都返回 nil（幂等）；`RenameTable` 保留行数据。
-- `ListTables`/`ListRows` 按名称升序，空结果返回空切片；`GetRow`/`ListRows` 返回值是副本，`InsertRow`/`UpdateRow` 拷贝入参。
-- 表名（其视图前缀计入）与行键都必须非空且 ≤ 191 字节；`UpdateRow` 写入与旧值相同的值也算成功。
-- 表视图由 `storage.PluginTables` 按 `plugin:<插件名>:` 给**表名**加前缀（行键原样传递），与 `Storage` 的键前缀一致；未声明 `PermStorage` 时是 `storage.DeniedTables()`（九个方法都返回 `bot.ErrPermissionDenied`）。
-- 注入的自定义 `Storage` 未实现 `bot.TableStorage` 时，`PluginContext.Tables` 为 nil；内置 `memory`/`sqlite`/`mysql` 始终可用。`BotAPI` 的方法集没有表接口（保持向后兼容），插件应从 `PluginContext` 取。
+- 声明 `PermStorage` 才能使用 `PluginContext.Storage`（KV，`bot.Storage`）与 `PluginContext.Tables`（表级，`bot.TableStorage`）；未声明时两者都是拒绝式实现，任意调用返回 `bot.ErrPermissionDenied`。
+- `BotAPI` 的方法集只有 KV，没有表接口；表级 CRUD 只能从 `PluginContext.Tables` 取。
 
 ### 11.3 PluginContext
 
@@ -481,7 +413,7 @@ type PluginContext struct {
 	// Storage 是插件可用的键值存储，插件需声明 PermStorage 才能使用。
 	Storage Storage
 	// Tables 是插件可用的表级存储，与 Storage 共用 PermStorage；
-	// 注入的 Storage 未实现 TableStorage 时为 nil。
+	// 字段语义见 storage.md 第 5.1 节。
 	Tables TableStorage
 	// HTTPClient 是带超时的 HTTP 客户端，插件需声明 PermNetwork 才能使用。
 	HTTPClient *http.Client
@@ -517,8 +449,8 @@ type AdapterCatalog interface {
 | `Name` | `Metadata().Name` | 用于日志与配置查找 |
 | `Config` | `pluginmgr.Deps.Configs[name]` | 缺失时为 `bot.NewConfig(nil)` 空配置，取值方法安全；构造时深拷贝来源 map，插件与引擎不共享可变值（`Raw()` 返回副本） |
 | `Logger` | `pluginmgr.Deps.Logger` | 派生自根日志器并绑定 `plugin` 字段 |
-| `Storage` | `pluginmgr.Deps.Storage` | 未声明 `PermStorage` 或引擎未提供存储时为 `storage.Denied()`；可用时是带 `plugin:<插件名>:` 前缀的隔离视图（见 11.2） |
-| `Tables` | `pluginmgr.Deps.Storage`（类型断言 `bot.TableStorage`） | 与 `Storage` 共用 `PermStorage`：未声明时为 `storage.DeniedTables()`（全部返回 `bot.ErrPermissionDenied`）；可用时是带同一前缀的表视图（见 11.2.1）；底层不支持表能力时为 nil |
+| `Storage` | `pluginmgr.Deps.Storage` | 权限、隔离与拒绝语义见 [`storage.md`](storage.md) 第 5.1 节 |
+| `Tables` | `pluginmgr.Deps.Storage`（类型断言 `bot.TableStorage`） | 与 `Storage` 共用 `PermStorage`；权限、前缀与 nil 语义见 [`storage.md`](storage.md) 第 5.1 节 |
 | `HTTPClient` | `pluginmgr.Deps.HTTPClient` | 仅声明 `PermNetwork` 时非 nil |
 | `Bot` | `pluginmgr.Deps.API(name, meta)` | 每插件独立门面；`Deps.API` 为 nil 时该字段为空（`nil` 接口） |
 | `Catalog` | `pluginmgr.Deps.Catalog` | 引擎实现 `bot.PluginCatalog`；未接线时为 nil |
@@ -549,7 +481,7 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 | --- | --- |
 | `send_message` | `BotAPI.Send` 返回错误 `engine: plugin <name> lacks permission send_message`；`Reply` 不受影响 |
 | `network` | `PluginContext.HTTPClient` 为 nil，插件应自行降级或报错 |
-| `storage` | `PluginContext.Storage` 与 `BotAPI.Storage()` 都是 `storage.Denied()`、`PluginContext.Tables` 是 `storage.DeniedTables()`，任意调用返回 `bot.ErrPermissionDenied`（`errors.Is` 可判定） |
+| `storage` | `PluginContext.Storage`/`BotAPI.Storage()`/`PluginContext.Tables` 的权限、隔离与拒绝语义见 [`storage.md`](storage.md) 第 5.1 节；未声明时任意调用返回 `bot.ErrPermissionDenied` |
 | `admin` | 仅作声明与审计；管理员校验实际由 `Rule.AdminOnly` + Auth 中间件按 `auth.admin_users` 完成，与插件元信息无关 |
 | `read_user` | 仅作声明与审计，核心当前不据此裁剪任何依赖（用户信息本就在 `Event.Sender` 中） |
 | `net_listen` / `receive_event` | 属于适配器语义，插件不涉及 |
@@ -558,7 +490,7 @@ func (c *Config) Unmarshal(v any) error            // json.Marshal(raw) 后 json
 要点：
 
 1. `BotAPI` 是插件与平台交互的唯一入口，`Send` 需要 `PermSendMessage`，`Reply` 始终可用。
-2. `Storage` 默认内存实现，可经配置 `storage.type` 切换为 `sqlite`/`mysql`，或经 `kei.Options.Storage` 注入自定义实现。
+2. 存储的默认后端、可切换类型与注入方式见 [`storage.md`](storage.md) 第 3、4 节。
 3. 插件通过 `PluginContext` 获取配置、日志、HTTP Client、Storage、表级存储（`Tables`）、插件目录与适配器目录。
 4. 插件默认不能任意发消息（需 `PermSendMessage`）、不能读写存储（需 `PermStorage`）、不能发起出站请求（需 `PermNetwork`）；核心不提供文件访问能力。
 

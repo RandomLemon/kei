@@ -17,7 +17,7 @@
 - [x] 已完成：在 `pkg/bot` 定义 Event、Message、Segment、User、Channel、Command。
   - 证据：`pkg/bot/event.go:27`、`:80`，`pkg/bot/message.go:19`、`:76`，`pkg/bot/user.go:4`、`:14`；字段与方法语义见 [domain-model.md](domain-model.md) 5.2–5.5。
 - [x] 已完成：在 `pkg/bot` 定义 Adapter、Plugin、Registrar、Reply、BotAPI、Storage、TableStorage。
-  - 证据：`pkg/bot/adapter.go:10`、`:28`，`pkg/bot/plugin.go:13`，`pkg/bot/registrar.go:98`，`pkg/bot/reply.go:9`，`pkg/bot/api.go:23`、`:36`，`pkg/bot/table.go`（`TableStorage`/`TableRow` 与表级错误哨兵）；接口语义见 [adapter.md](adapter.md) 6.1 与 [plugin.md](plugin.md) 9.1–9.3、11.1–11.2。
+  - 证据：`pkg/bot/adapter.go:10`、`:28`，`pkg/bot/plugin.go:13`，`pkg/bot/registrar.go:98`，`pkg/bot/reply.go:9`，`pkg/bot/api.go:23`、`:36`，`pkg/bot/table.go`（`TableStorage`/`TableRow` 与表级错误哨兵）；接口语义见 [adapter.md](adapter.md) 6.1、[plugin.md](plugin.md) 9.1–9.3、11.1–11.2 与 [storage.md](storage.md) 第 2 节。
 - [x] 已完成：在 `pkg/bot` 定义 Adapter 注册表：`AdapterFactory`、`AdapterContext`、`AdapterMetadata`、`RegisterAdapter`、`RegisteredAdapters`、`LookupAdapter`（与插件注册表 API 对称）。
   - 证据：`pkg/bot/adapter_registry.go:19`、`:25`、`:41`（注册表类型）、`:120`（RegisterAdapter）、`:152`（RegisteredAdapters）、`:165`（LookupAdapter）；语义与签名见 [adapter.md](adapter.md) 6.2。
 - [x] 已完成：编写接口单元测试或编译测试。
@@ -101,7 +101,7 @@
   - 语义、环境变量覆盖与两层开关的区别见 [configuration.md](configuration.md) 12.2、12.9 第 6 条与 [adapter.md](adapter.md) 6.7。
 - [x] 已完成：可插拔存储后端 —— `storage.type` 选 `memory`（默认）/`sqlite`/`mysql`，新增类型只需一个包 + `init()` 注册，核心不改配置结构。
   - 证据：`internal/storage/registry.go`（`Register`/`Open`/`Kinds`）、`internal/storage/memory.go`（`init()` 注册）、`internal/storage/sqlstore/`（GORM 通用实现）、`internal/storage/sqlite/`、`internal/storage/mysql/`、`internal/config/config.go`（`StorageConfig`/`decodeStorage`/`StorageConfig.validate`）、`internal/config/env.go`（`KEI_STORAGE_*`）、`pkg/kei/assemble.go`（`buildStorage` 注入优先、否则按配置构造）。
-  - 语义、参数与未知类型报错文案见 [configuration.md](configuration.md) 12.5；SQL 实现与内存实现的一致性见 [plugin.md](plugin.md) 11.2；测试 `internal/storage/registry_test.go`、`internal/storage/sqlite/sqlite_test.go`（`internal/storage/mysql/mysql_test.go` 默认跳过）。
+  - 语义、参数与未知类型报错文案见 [configuration.md](configuration.md) 12.5（键与校验）与 [storage.md](storage.md) 第 3、4 节（后端与装配）；测试 `internal/storage/registry_test.go`、`internal/storage/sqlite/sqlite_test.go`（`internal/storage/mysql/mysql_test.go` 默认跳过）。
 - [x] 已完成：验收：`go run ./cmd/bot -config configs/config.yaml` 可启动并优雅退出。
   - 证据：`configs/config.yaml` 可被加载并校验（`cmd/bot/main_test.go` TestExampleConfigLoads）；插件仅启用 `echo` 与 `manage`。
 

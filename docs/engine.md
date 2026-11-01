@@ -79,7 +79,7 @@ type AdapterBinding struct {
 
 `Engine` 实现 `bot.BotAPI`、`bot.PluginCatalog`、`bot.AdapterCatalog` 三个接口，并提供 `Rules()`、`RegistrationErrors()`、`Bus()`、`Logger()`、`Storage()`、`Adapter(botID)`、`Adapters()`。`Adapters()` 返回深拷贝快照（`Platforms`/`Permissions`/`Options` 切片全部复制），调用方修改不影响引擎内部状态；`Rules()` 与 `RegistrationErrors()` 同样是隔离副本，引擎不暴露可写的路由器（注册与启动期调整详见第 10 章）。
 
-插件拿到的不是引擎本体：`engine.pluginAPI` 按插件名与元信息包装出专属 `bot.BotAPI`，`Send` 需要 `PermSendMessage`（否则返回 `engine: plugin %s lacks permission %s`），`Reply` 所有插件可用，`Storage()` 在未声明 `PermStorage` 时返回 `storage.Denied()`，`Logger()` 带 `plugin` 字段。详见 [plugin.md](plugin.md)。
+插件拿到的不是引擎本体：`engine.pluginAPI` 按插件名与元信息包装出专属 `bot.BotAPI`，`Send` 需要 `PermSendMessage`（否则返回 `engine: plugin %s lacks permission %s`），`Reply` 所有插件可用，`Storage()` 的权限与隔离语义见 [storage.md](storage.md) 第 5.1 节，`Logger()` 带 `plugin` 字段。详见 [plugin.md](plugin.md)。
 
 ### 7.2 启动顺序
 
@@ -215,7 +215,7 @@ func (e *Engine) handle(ctx context.Context, ev *bot.Event) {
   ```
 
 - 注册表校验（`ValidateRegistry`）报错条件：注册名重复（`adaptermgr: 适配器注册名重复: %s`）、元信息缺 `Platforms`（`adaptermgr: 适配器 %s 未声明 Platforms`）、声明了插件与适配器都不允许的 `PermAll`；另有被拒绝的注册（见附注）。
-- `AdapterMetadata.Permissions` 是装配裁剪的唯一依据：未声明 `PermStorage` 时注入 `storage.Denied()` 与 `storage.DeniedTables()`，未声明 `PermNetwork` 时 `HTTPClient` 保持 nil；表视图的授予与裁剪见 [plugin.md](plugin.md) 11.2.1；配置了保留键 `listen_addr`（`bot.OptListenAddr`）但未声明 `PermNetListen` 时装配失败：`config: bot %s 配置了保留键 %s，但适配器 %s 未声明 %s 权限`。
+- `AdapterMetadata.Permissions` 是装配裁剪的唯一依据：`PermStorage` 的存储/表视图规则见 [`storage.md`](storage.md) 第 5.2 节，`PermNetwork` 决定 `HTTPClient`（未声明为 nil）；配置了保留键 `listen_addr`（`bot.OptListenAddr`）但未声明 `PermNetListen` 时装配失败：`config: bot %s 配置了保留键 %s，但适配器 %s 未声明 %s 权限`。
 - 适配器不认识（未列入元信息 `Options`）的私有配置键只告警不报错。
 
 ### 7.7 发送链路：能力降级、令牌桶限流与退避重试

@@ -2,7 +2,7 @@
 
 `Storage` 是 kei 暴露给插件与适配器的唯一键值存储抽象：一次装配只有一个根实例，插件/适配器经权限裁剪拿到带命名空间前缀的视图或拒绝式实现；后端通过 `init()` 注册表可插拔，内置 `memory`、`sqlite`、`mysql` 三种。内置后端同时实现可选的 `TableStorage`（表级与表内 CRUD），表视图同样按前缀隔离，经 `PluginContext.Tables`/`AdapterContext.Tables` 分发。
 
-本文覆盖存储模块的公开契约、后端实现、注册与装配、键空间隔离、生命周期、配置与扩展边界。插件侧 `PluginContext.Storage` 的权限语义见 [`plugin.md`](plugin.md) 11.2，配置键全表见 [`configuration.md`](configuration.md) 12.5，适配器侧裁剪见 [`adapter.md`](adapter.md) 6.3。本文是模块文档，节号只用于本文内部引用，不占用早期设计稿的 1-19 章号。
+本文是存储模块的**唯一规范**：公开契约、后端实现、注册与装配、键空间与视图隔离、生命周期、配置语义、扩展边界都以本文为准。其他文档只描述各自领域并链接到这里——插件/适配器上下文的结构体字段见 [`plugin.md`](plugin.md) 11.3 与 [`adapter.md`](adapter.md) 6.1，`storage` 段的配置键、默认值与取值校验见 [`configuration.md`](configuration.md) 12.5，测试清单与质量门见 [`testing.md`](testing.md)。本文节号只用于内部引用，不占用早期设计稿的 1-19 章号。
 
 不覆盖：业务数据建模（表是无 schema 的「键 → 字节串」行集合，不提供列定义）、去重与限流内部实现（分别见 `internal/dedup`、`internal/ratelimit`）、插件如何声明权限（见 [`plugin.md`](plugin.md) 9.1）。
 
@@ -239,28 +239,11 @@ func Kinds() []string
 
 表能力不需要额外装配：`pluginmgr`/`adaptermgr` 对最终拿到的根实例做 `bot.TableStorage` 类型断言（`storage.PluginTables`/`storage.AdapterTables`），支持就返回带前缀的表视图，不支持则 `Tables` 为 nil。因此注入的自定义 `Options.Storage` 只要同时实现 `bot.TableStorage`，插件/适配器就自动获得表 API；内置 `memory`/`sqlite`/`mysql` 始终支持。
 
-### 4.3 配置解码与校验
+### 4.3 配置
 
-`internal/config/config.go`：
+`storage` 段的配置键（`type`/`dsn`/`params`）、默认值、取值校验与环境变量覆盖由 [`configuration.md`](configuration.md) 12.5 定义；`StorageConfig` 结构与 `StorageConfig.validate` 的核对也在那里。本文不重复键表，只在第 3 节说明这些参数在各后端上的**行为**（`cleanup_interval`、连接池键等），在第 4.2 节说明装配时如何选实例。
 
-```go
-type StorageConfig struct {
-	Type   string         `yaml:"type"`
-	DSN    string         `yaml:"dsn"`
-	Params map[string]any // type/dsn 之外的键
-}
-```
-
-- `storage` 段整体可省略或为 `null`，`applyDefaults` 把空 `type` 填为 `memory`。
-- `type` 必须匹配 `^[a-z0-9_-]+$`；是否存在不在配置层校验，由装配期 `storage.Open` 判定。
-- `dsn` 是否必填不在配置层校验，由各后端 opener 负责。
-- 已知参数在配置层校验，与 `type` 无关：`cleanup_interval` 被三个内置后端使用，`max_open_conns`/`max_idle_conns`/`conn_max_lifetime` 只被 MySQL 使用；类型不符、非整数或负数直接报错，路径为 `storage.params.<key>`。
-- 未列出的键原样进入 `Params` 透传给后端，不报错，这是第三方后端的扩展空间；内置后端会忽略不认识的键。
-- 环境变量覆盖：`KEI_STORAGE_TYPE`、`KEI_STORAGE_DSN`、`KEI_STORAGE_PARAMS_<KEY>`；空白值等同未设置。
-
-配置键的完整语义与默认值以 [`configuration.md`](configuration.md) 12.5 为准，本节只列存储模块需要知道的装配事实。
-
-## 5. 权限与键空间隔离
+## 5. 权限、键空间与视图隔离
 
 运行期分发点有三处，全部在核心内部：
 
@@ -277,9 +260,25 @@ type StorageConfig struct {
 - 同一插件的 `PluginContext.Storage` 与 `BotAPI.Storage()` 使用相同前缀，看到的是同一批键；不同插件、同平台不同 bot 实例之间互不可见。
 - `scoped` 是值类型包装器，`Get`/`Set`/`Delete` 都调用 `inner` 并拼接同一前缀；不缓存、不做额外校验，键长校验由底层后端执行。
 - `tableScoped`（`internal/storage/namespace.go`）是同一思想的表版本：**只给表名加前缀，行键原样传递**（行已被表名限定在命名空间内）。入口先 `CheckTableName`/`CheckRowKey`，再调用 inner 的 `prefix+table`；`ListTables` 取回全部表名后只保留带本前缀的项、剥离前缀并排序，剥离后为空的名字跳过。
-- `PluginContext.Tables` 与 `BotAPI.Storage()` 的表能力目前只经前者暴露：`BotAPI` 的方法集没有表接口（保持向后兼容）。
 - 前缀计入 191 字节上限：插件实际可用的逻辑键/表名上限是 `191 - len("plugin:<name>:")`，适配器是 `191 - len("adapter:<botID>:")`。
 - `Denied`/`DeniedTables` 不依赖 ctx，方法直接返回 `bot.ErrPermissionDenied`；未声明权限的插件/适配器可以在启动后稳定获得该哨兵，便于测试与降级。
+
+### 5.1 插件视图
+
+字段定义在 [`plugin.md`](plugin.md) 11.3（`PluginContext`），行为以本节为准：
+
+- 声明 `PermStorage` 且管理器有存储时：`PluginContext.Storage` = `PluginScoped(name, store)`，`PluginContext.Tables` = `PluginTables(name, store)`；两者前缀相同，插件按逻辑名字调用，不需要自己拼前缀。
+- `BotAPI.Storage()` 与 `PluginContext.Storage` 是同一个前缀、同一批键；`BotAPI` 的方法集只有 KV，**没有表接口**（保持向后兼容），表级 CRUD 只能从 `PluginContext.Tables` 取。
+- 未声明 `PermStorage`（或管理器没有可用存储）时：`Storage` 为 `Denied()`、`Tables` 为 `DeniedTables()`，任意调用返回 `bot.ErrPermissionDenied`。
+- 声明了 `PermStorage` 但根实例不实现 `bot.TableStorage` 时：`Tables` 为 nil，表示后端不支持该项能力，而不是拒绝访问；`Storage` 仍可用。
+
+### 5.2 适配器视图
+
+字段定义在 [`adapter.md`](adapter.md) 6.1（`AdapterContext`），行为以本节为准：
+
+- 声明 `PermStorage` 且管理器有存储时：`AdapterContext.Storage` = `AdapterScoped(botID, store)`，`AdapterContext.Tables` = `AdapterTables(botID, store)`；同平台多实例互不可见。
+- 未声明 `PermStorage`（或管理器没有可用存储）时：`Storage` 为 `Denied()`、`Tables` 为 `DeniedTables()`。
+- 声明了 `PermStorage` 但根实例不实现 `bot.TableStorage` 时：`Tables` 为 nil，`Storage` 仍可用。
 
 ## 6. 键长与跨后端一致性
 
@@ -343,7 +342,7 @@ func CheckRowKey(key string) error
 2. 在 `init()` 中调用 `storage.Register("<kind>", opener)`；`opener` 从 `*bot.Config` 读取 `dsn`/参数并构造实例。
 3. 复用 `storage.CheckKey`/`CheckTableName`/`CheckRowKey` 与 `bot.ErrNotFound` 语义；需要 TTL 时自行实现 janitor，并保证 `Close` 幂等。
 4. 在 `pkg/kei/sql` 或新的 opt-in 包中按需空导入，避免默认二进制引入额外依赖。
-5. 更新本文与 [`configuration.md`](configuration.md) 12.5 的类型/参数表。
+5. 更新本文（后端行为）与 [`configuration.md`](configuration.md) 12.5（键与校验）的类型/参数表。
 
 ### 8.2 第三方自定义实现
 
@@ -368,24 +367,12 @@ err := kei.Run(ctx, kei.Options{
 
 `internal/storage` 的注册表不感知第三方实现；配置层也不维护类型白名单，未知 `storage.type` 只在装配期报错。
 
-## 9. 测试与已知边界
+## 9. 已知边界
 
-测试文件与覆盖点：
-
-| 文件 | 覆盖 |
-| --- | --- |
-| `internal/storage/memory_test.go` | 往返、TTL、ctx 取消、`Close` 幂等、`Denied`、并发、键长、命名空间隔离、`cleanup_interval` |
-| `internal/storage/table_test.go` | 表与行 CRUD（`TestMemoryTableCRUD`）、表名/行键校验（`TestTableNameValidation`）、视图隔离与前缀（`TestScopedTablesIsolateTables`、`TestAdapterTablesScoped`）、不支持表的后端得到 nil 视图（`TestTablesUnsupported`）、拒绝式表实现（`TestDeniedTables`） |
-| `internal/storage/registry_test.go` | `Kinds` 升序、`Open("memory")`、未知类型报错并列出已注册名 |
-| `internal/storage/sqlstore/sqlstore_test.go` | 建表失败回收连接池、`CloseDB` 幂等、MySQL 保留字引用、惰性清理/后台清理失败日志 |
-| `internal/storage/sqlstore/table_test.go` | SQL 表/行 CRUD（`TestSQLStoreTable`）：重复建表与重复行、目标冲突重命名、缺表幂等删除、相同值更新、值拷贝、空切片非 nil、`DropTable` 不残留行；取消 ctx 不写入（`TestSQLStoreTableContext`） |
-| `internal/storage/sqlite/sqlite_test.go` | 经注册表往返、拷贝语义、缺失键、`Close` 幂等、同文件重开持久化（含表与行，`TestSQLiteTable`）、键长、假时钟 TTL、后台清理 |
-| `internal/storage/mysql/mysql_test.go` | 默认 `t.Skip`；设置 `KEI_TEST_MYSQL_DSN` 时跑真实 MySQL 往返与 TTL |
-
-已知边界：
+测试文件、用例与质量门命令见 [`testing.md`](testing.md)（`internal/storage`、`internal/storage/sqlstore`、`internal/storage/sqlite`、`internal/storage/mysql` 行与第 15、16、18 章）；本节只保留实现层面的已知边界：
 
 1. **SQL 方言是显式 opt-in**：未空导入 `pkg/kei/sql` 时只有 `memory` 注册；配置 `sqlite`/`mysql` 会在装配期报未知类型，而不是静默回落到内存。
-2. **MySQL 测试默认跳过**：需要真实实例与 `KEI_TEST_MYSQL_DSN`，CI 不启动 MySQL；SQL 表/行语义由 SQLite 用例证明。
+2. **MySQL 路径没有 CI 覆盖**：真实 MySQL 的往返与表语义需设置 `KEI_TEST_MYSQL_DSN` 手动运行（见 `testing.md`）；CI 只用 SQLite 证明 SQL 后端，两者共用 `sqlstore`，但方言层的错误翻译与 DDL 差异只能靠该用例发现。
 3. **`Memory.Close` 不是关闭栅栏**：关闭后仍可读写，只是不再后台清理；需要「关闭后拒绝访问」的语义应使用 SQL 后端或自定义实现。
 4. **`Memory` 不惰性删除过期条目**：过期键只在 `Get` 时判为不存在，`Len` 仍会计入；SQL 后端会在 `Get` 命中时惰性删除。
 5. **`ErrKeyTooLong` 是内部哨兵**：外部插件/适配器无法 `errors.Is` 引用它，只能依赖统一错误文本；公开契约只承诺行为一致，不承诺哨兵可达。
@@ -399,8 +386,8 @@ err := kei.Run(ctx, kei.Options{
 ## 相关文档
 
 - [`architecture.md`](architecture.md)：目录结构、装配门面与核心分层（第 3、4 章）。
-- [`plugin.md`](plugin.md)：`PluginContext.Storage`/`PluginContext.Tables`、`BotAPI.Storage()` 与权限降级（第 9、11 章）。
-- [`adapter.md`](adapter.md)：`AdapterContext.Storage`/`AdapterContext.Tables` 与适配器权限裁剪（第 6 章）。
-- [`configuration.md`](configuration.md)：`storage` 段、参数校验与环境变量覆盖（12.5、12.7）。
+- [`plugin.md`](plugin.md)：`PluginContext` 字段定义与插件权限表（第 9、11 章），字段行为以本文第 5.1 节为准。
+- [`adapter.md`](adapter.md)：`AdapterContext` 字段定义与适配器权限表（第 6 章），字段行为以本文第 5.2 节为准。
+- [`configuration.md`](configuration.md)：`storage` 段的键、默认值、取值校验与环境变量覆盖（12.5、12.7）。
 - [`engine.md`](engine.md)：事件总线排空与 `ErrShutdownIncomplete` 对存储关闭的影响（7.3）。
-- [`testing.md`](testing.md)：存储相关测试清单与质量门命令（第 15、18 章）。
+- [`testing.md`](testing.md)：存储相关测试清单与质量门命令（第 15、16、18 章）。
